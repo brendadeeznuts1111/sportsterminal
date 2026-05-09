@@ -151,6 +151,17 @@ describe('Buckeye getWebLog helpers', () => {
     expect(body.get('agentID')).toBe('AGENT1');
     expect(body.get('start')).toBe('05/01/2026');
     expect(body.get('RRO')).toBe('1');
+    expect(body.get('agentOwner')).toBe('AGENT1');
+    expect(body.get('agentSite')).toBe('1');
+  });
+
+  test('leaves customerID blank when no player filter is requested', () => {
+    const body = buildWebLogBody('AGENT1', {
+      start: '2026-05-01',
+      end: '2026-05-02',
+      type: 'A',
+    });
+    expect(body.get('customerID')).toBe('');
   });
 
   test('enforces users-by-IP 7 day limit', () => {

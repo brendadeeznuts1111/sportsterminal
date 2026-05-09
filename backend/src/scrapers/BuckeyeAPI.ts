@@ -1512,6 +1512,7 @@ const KNOWN_BET_TYPE_LABELS: Record<string, string> = {
   E: 'Exotic',
   T: 'Teaser',
   C: 'Custom',
+  I: 'In-Play',
 };
 
 const SPORTSBOOK_TERMS = [
@@ -2208,7 +2209,7 @@ export function buildWebLogBody(agentId: string, options: BuckeyeWebLogOptions):
   validateWebLogRange(options);
   return new URLSearchParams({
     agentID: agentId,
-    customerID: String(options.customerID ?? 0),
+    customerID: String(options.customerID ?? ''),
     start: normalizeWebLogDate(options.start, options.type),
     end: normalizeWebLogDate(options.end, options.type),
     type: options.type,
@@ -2216,6 +2217,8 @@ export function buildWebLogBody(agentId: string, options: BuckeyeWebLogOptions):
     ip: options.ip || '',
     operation: 'getWebLog',
     RRO: '1',
+    agentOwner: agentId,
+    agentSite: '1',
   });
 }
 

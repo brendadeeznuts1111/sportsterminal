@@ -18,7 +18,7 @@ import {
   registerAgentPerformanceRoutes,
   registerAgentDownlineRoutes,
   registerAgentHierarchyRoutes,
-  registerAgentHierarchyTreeRoutes,
+  registerCachedAgentHierarchyTreeRoutes,
   registerAgentRefreshRoutes,
   registerAgentProfileRoutes,
   registerAgentPlayersRoutes,
@@ -121,7 +121,7 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
   });
 
   router.get('/api/agents/hierarchy/tree', async (url, request) => {
-    return registerAgentHierarchyTreeRoutes(url, request, deps.scraperManager);
+    return registerCachedAgentHierarchyTreeRoutes(url, request, deps.scraperManager);
   });
 
   router.post('/api/agents/refresh', async (url, request) => {

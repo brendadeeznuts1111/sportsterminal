@@ -2620,32 +2620,17 @@ export class BuckeyeScraperManager {
   }
 
   /**
-   * Persist agent performance report to weekly_figures and agent_performance tables.
+   * Persist the raw agent performance report summary.
    */
   private async persistAgentPerformanceAnalytics(result: BuckeyeAgentPerformanceResult): Promise<void> {
     const { parsed } = result;
     const rows = parsed?.rows || [];
 
-    // Insert into weekly_figures table
-    for (const row of rows) {
-      await this.db.run(
-        `INSERT OR IGNORE INTO weekly_figures
-        (agent_id, week_start_date, sport, handle, win_loss, wager_type, raw_json, ingested_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          result.agentId || result.params?.agentID || '',
-          result.params?.start || '',
-          result.params?.sport || '',
-          row.volume || 0,
-          row.net || 0,
-          result.params?.wagerType || '',
-          JSON.stringify(row),
-          new Date().toISOString(),
-        ]
-      );
-    }
+    // NOTE: Per-row performance data belongs in agent_performance_snapshots
+    // (populated by persistAgentPerformanceReport), NOT in weekly_figures.
+    // Weekly_figures is reserved for weekly figure summary data only.
 
-    // Insert into agent_performance table
+    // Insert summary into agent_performance table
     await this.db.run(
       `INSERT OR REPLACE INTO agent_performance
       (agent_id, recorded_at, performance_json)

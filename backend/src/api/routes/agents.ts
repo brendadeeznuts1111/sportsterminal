@@ -2,10 +2,30 @@
  * Agent routes
  */
 import { createRouteHandler, createParamRouteHandler, createMethodRouteHandler } from './base';
-import { loadLocalAgentHierarchy } from '../helpers';
+import { corsHeaders, loadLocalAgentHierarchy } from '../helpers';
 import { logRequest } from '../../utils/logger';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 import { syncAgentProjectionTables, upsertLiveAgentHierarchy } from '../../services/HierarchyBackfillService';
+
+const HIERARCHY_TREE_CACHE_TTL_MS = 60_000;
+
+let hierarchyTreeCache:
+  | {
+      json: string;
+      gzip: Uint8Array;
+      etag: string;
+      generatedAt: number;
+      responseMeta: {
+        agentCount: number;
+        rootCount: number;
+        maxLastRefreshed: string;
+      };
+    }
+  | null = null;
+
+export function clearAgentHierarchyTreeCache(): void {
+  hierarchyTreeCache = null;
+}
 
 export const registerAgentRoutes = createRouteHandler('/api/agents', async (_url, _req, scraperManager) => {
   logRequest('GET', '/api/agents');
@@ -63,6 +83,7 @@ export const registerAgentRefreshRoutes = createMethodRouteHandler(
       { GENERAL: [], error: 'Buckeye hierarchy refresh timed out after 10s' }
     );
     if (Array.isArray(liveHierarchy?.GENERAL) && liveHierarchy.GENERAL.length > 0) {
+      clearAgentHierarchyTreeCache();
       return {
         ...(await upsertLiveAgentHierarchy(db, liveHierarchy, 'buckeye_api')),
         source: 'buckeye_api',
@@ -84,6 +105,33 @@ export const registerAgentHierarchyTreeRoutes = createRouteHandler('/api/agents/
   logRequest('GET', '/api/agents/hierarchy/tree');
   return getAgentHierarchyTree(scraperManager.getDatabase());
 });
+
+export async function registerCachedAgentHierarchyTreeRoutes(
+  url: URL,
+  request: Request,
+  scraperManager: BuckeyeScraperManager
+): Promise<Response | null> {
+  if (url.pathname !== '/api/agents/hierarchy/tree') return null;
+  logRequest('GET', '/api/agents/hierarchy/tree');
+  const payload = await getCachedAgentHierarchyTree(scraperManager.getDatabase());
+  const headers = new Headers(corsHeaders);
+  headers.set('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+  headers.set('ETag', payload.etag);
+  headers.set('X-Cache', payload.cacheHit ? 'HIT' : 'MISS');
+  headers.set('X-Agent-Count', String(payload.agentCount));
+
+  if (request.headers.get('if-none-match') === payload.etag) {
+    return new Response(null, { status: 304, headers });
+  }
+
+  if ((request.headers.get('accept-encoding') || '').includes('gzip')) {
+    headers.set('Content-Encoding', 'gzip');
+    headers.set('Vary', 'Accept-Encoding');
+    return new Response(payload.gzip, { headers });
+  }
+
+  return new Response(payload.json, { headers });
+}
 
 export const registerAgentProfileRoutes = createParamRouteHandler(
   '/api/agents/:agentId',
@@ -131,7 +179,9 @@ export const registerAgentBackfillRoutes = createMethodRouteHandler(
   'POST',
   async (_url, _req, scraperManager) => {
     logRequest('POST', '/api/agents/backfill/hierarchy');
-    return scraperManager.backfillAgentHierarchy();
+    const result = await scraperManager.backfillAgentHierarchy();
+    clearAgentHierarchyTreeCache();
+    return result;
   }
 );
 
@@ -166,6 +216,73 @@ async function getAgentHierarchyTree(db: any): Promise<any> {
       maxLevel: nodes.reduce((max: number, node: any) => Math.max(max, Number(node.level || 0)), 0),
       refreshedAt: new Date().toISOString(),
     },
+  };
+}
+
+async function getCachedAgentHierarchyTree(db: any): Promise<{
+  json: string;
+  gzip: Uint8Array;
+  etag: string;
+  agentCount: number;
+  cacheHit: boolean;
+}> {
+  const now = Date.now();
+  if (hierarchyTreeCache && now - hierarchyTreeCache.generatedAt < HIERARCHY_TREE_CACHE_TTL_MS) {
+    return {
+      json: hierarchyTreeCache.json,
+      gzip: hierarchyTreeCache.gzip,
+      etag: hierarchyTreeCache.etag,
+      agentCount: hierarchyTreeCache.responseMeta.agentCount,
+      cacheHit: true,
+    };
+  }
+
+  const version = await db.get(
+    `SELECT
+       COUNT(*) AS agentCount,
+       MAX(last_refreshed) AS maxLastRefreshed
+     FROM agent_hierarchy
+     WHERE provider = 'buckeye'`
+  );
+  const agentCount = Number(version?.agentCount || 0);
+  const maxLastRefreshed = String(version?.maxLastRefreshed || '');
+
+  if (
+    hierarchyTreeCache
+    && hierarchyTreeCache.responseMeta.agentCount === agentCount
+    && hierarchyTreeCache.responseMeta.maxLastRefreshed === maxLastRefreshed
+  ) {
+    hierarchyTreeCache.generatedAt = now;
+    return {
+      json: hierarchyTreeCache.json,
+      gzip: hierarchyTreeCache.gzip,
+      etag: hierarchyTreeCache.etag,
+      agentCount: hierarchyTreeCache.responseMeta.agentCount,
+      cacheHit: true,
+    };
+  }
+
+  const tree = await getAgentHierarchyTree(db);
+  const json = JSON.stringify(tree);
+  const gzip = Bun.gzipSync(json);
+  hierarchyTreeCache = {
+    json,
+    gzip,
+    etag: `W/"agents-${tree.meta.agentCount}-${tree.meta.rootCount}-${tree.meta.maxLevel}-${gzip.byteLength}"`,
+    generatedAt: now,
+    responseMeta: {
+      agentCount: tree.meta.agentCount,
+      rootCount: tree.meta.rootCount,
+      maxLastRefreshed,
+    },
+  };
+
+  return {
+    json: hierarchyTreeCache.json,
+    gzip: hierarchyTreeCache.gzip,
+    etag: hierarchyTreeCache.etag,
+    agentCount: hierarchyTreeCache.responseMeta.agentCount,
+    cacheHit: false,
   };
 }
 

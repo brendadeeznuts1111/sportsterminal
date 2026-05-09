@@ -4780,10 +4780,12 @@ async function refreshAgentDownline(force = false) {
   }
 
   try {
-    // Fetch real hierarchy from Buckeye
-    const hierarchyRes = await fetch(`${getApiBaseUrl()}/api/agents/hierarchy`);
+    // Fetch the cached real hierarchy projection. The v1 shape is shared with
+    // Player Intelligence, then adapted into this view's legacy node shape.
+    const hierarchyRes = await fetch(`${getApiBaseUrl()}/api/v1/agents/hierarchy`);
     if (!hierarchyRes.ok) throw new Error(`Hierarchy request failed: ${hierarchyRes.status}`);
     const hierarchyData = await hierarchyRes.json();
+    const cachedTree = Array.isArray(hierarchyData?.tree) ? normalizeCachedAgentTree(hierarchyData.tree) : [];
     const general = Array.isArray(hierarchyData) ? hierarchyData : (hierarchyData.GENERAL || []);
 
     // Fetch wager-derived stats
@@ -4795,9 +4797,9 @@ async function refreshAgentDownline(force = false) {
     agentStatsMap = {};
     (Array.isArray(statsData) ? statsData : []).forEach(s => { agentStatsMap[s.agent_login] = s; });
 
-    if (general.length > 0) {
-      // Build tree from flat GENERAL array using Level field
-      agentTreeData = buildAgentTree(general);
+    if (cachedTree.length > 0 || general.length > 0) {
+      // Build tree from cached nodes when available; fall back to raw GENERAL.
+      agentTreeData = cachedTree.length ? cachedTree : buildAgentTree(general);
       agentTreeFlat = flattenAgentTree(agentTreeData);
       // Merge stats into tree nodes
       mergeAgentStats(agentTreeData);
@@ -4822,6 +4824,32 @@ async function refreshAgentDownline(force = false) {
       setAgentTreeLoading(false, 'No agent hierarchy loaded. Check seeded hierarchy data or connect to Buckeye.');
     }
   }
+}
+
+function normalizeCachedAgentTree(nodes) {
+  return (nodes || []).map(node => {
+    const rates = node.rates || {};
+    const level = Number(node.level) || Number(node.Level) || 1;
+    return {
+      ...node,
+      AgentID: node.agentId || node.AgentID || node.login,
+      Login: node.login || node.agentId || node.AgentID,
+      AgentType: node.agentType || node.AgentType || 'A',
+      HeadCountRateM: Number(rates.HeadCountRateM ?? rates.headCount ?? node.HeadCountRateM ?? 0),
+      InetHeadCountRateM: Number(rates.InetHeadCountRateM ?? rates.inetHeadCount ?? node.InetHeadCountRateM ?? 0),
+      CasinoHeadCountRateM: Number(rates.CasinoHeadCountRateM ?? rates.casinoHeadCount ?? node.CasinoHeadCountRateM ?? 0),
+      LiveBettingRateM: Number(rates.LiveBettingRateM ?? rates.liveBetting ?? node.LiveBettingRateM ?? 0),
+      SeqNumber: Number(node.seqNumber ?? node.SeqNumber ?? 0),
+      Level: level,
+      agent: node.login || node.agentId || node.AgentID,
+      type: node.agentType || node.AgentType || 'A',
+      commission: Number(rates.HeadCountRateM ?? rates.headCount ?? node.HeadCountRateM ?? 0),
+      level,
+      playerCount: Number(node.playerCount ?? node.PlayerCount ?? 0),
+      children: normalizeCachedAgentTree(node.children || []),
+      expanded: level <= 2,
+    };
+  });
 }
 
 async function loadAgentPatternCounts() {
