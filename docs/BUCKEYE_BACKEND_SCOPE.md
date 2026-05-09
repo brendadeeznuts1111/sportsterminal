@@ -19,6 +19,8 @@ Amount units remain important:
 
 All Manager/System endpoints are under `https://fantasy402.com` unless overridden by `BUCKEYE_BASE_URL`.
 
+Product-context notes from Buckeye's public `manual-agent.pdf` and `FAQ.pdf` are summarized in `docs/BUCKEYE_MANUAL_FINDINGS.md`. Those manuals describe the agent UI rather than JSON payloads, but they confirm the report semantics behind Weekly Figures, Agent Performance, IP Tracker, Transaction History, Free Plays, Agent Admin, and accounting rates.
+
 | Family | Operation | Method | Path | Notes |
 |--------|-----------|--------|------|-------|
 | Auth | `authenticateCustomer` | POST | `/cloud/api/System/authenticateCustomer` | Returns short-lived JWT |
@@ -44,6 +46,13 @@ All Manager/System endpoints are under `https://fantasy402.com` unless overridde
 | Messages | `getMessage` | POST | `/cloud/api/Manager/getMessage` | Manager message context |
 | Messages | `getNewEmailsCount` | POST | `/cloud/api/Manager/getNewEmailsCount` | Notification count |
 | Agents | `getListAgenstByAgent` | POST | `/cloud/api/Manager/getListAgenstByAgent` | Downline/list context, name is misspelled upstream |
+
+Manual-derived context:
+
+- Weekly Figures is a week/accounting report with daily figure, weekly total, end balance, pending balance, deposits/withdrawals, and last wager columns. Keep `weekly_figures` summary/detail data separate from Agent Performance rows.
+- Transaction History can filter deposits, withdrawals, adjustments, fees, promotional rows, transfers, and free-play-only rows. Preserve these categories distinctly when raw Buckeye rows expose them.
+- IP Tracker has Web Access Log, Global IP Match, Account IP Match, and Users by IP modes. `getWebLog` is the access-log base; multi-account matching should be modeled as a match/report layer over those rows or a separately captured mode.
+- Agent Admin is the UI source for expandable hierarchy, last-week player count, balances, settle values, last transaction, and permissions. The current hierarchy endpoint covers the tree/rate portion; account/permission details need separate captures before being exposed.
 
 Authentication generally needs:
 

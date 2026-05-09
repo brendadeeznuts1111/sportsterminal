@@ -2,6 +2,8 @@
 
 Player 360 is real API first. The modal must hydrate from `/api/v1/players/:playerId/profile` and supporting Player 360 routes. It must not fabricate profile stats from browser-side mock data when an endpoint fails.
 
+Buckeye's public `manual-agent.pdf` and `FAQ.pdf` confirm the UI/report semantics behind the Player 360 sources. See `docs/BUCKEYE_MANUAL_FINDINGS.md` for the reviewed notes.
+
 ## Refresh And Scale Model
 
 Player 360 uses a hybrid hotset model. `getBetTicker` remains real-time and cheap enough to run continuously. Heavy player endpoints are TTL-based and on-demand so a 50k-customer archive does not trigger 50k profile, ledger, or KYC calls.
@@ -93,4 +95,18 @@ Observed rows include:
 
 `getTransactionHistory` and `getReportDeletedTransactions` use the same local contract. The parser also accepts common aliases such as `TransactionDateTime`, `TransactionDate`, `TransactionType`, `TransactionCode`, `Customer`, `Credit`, `Debit`, `AgentId`, `MasterAgentID`, and `DeletedBy` so field-name drift in Buckeye payloads does not blank the Player 360 ledger. Deleted report rows use `deleted-<DocumentNumber>` as the local row ID so they do not overwrite active ledger documents.
 
-Free-play classification is intentionally conservative until exact Buckeye `TranType` examples are proven. Rows are promoted only when description/raw text includes terms such as `free play`, `freeplay`, `fp`, `bonus play`, `promo`, `redeem`, `expired`, or `credit pct`; ambiguous `F`/`H` rows without those terms remain normal credit/debit/other categories.
+Free-play classification is intentionally conservative until exact Buckeye `TranType` examples are proven. The manuals confirm that Promotional Credit/Debit changes balance without counting as deposit/withdrawal and without affecting daily figure, while Free Plays have a separate balance, pending free-play risk, add/subtract transactions, and a transaction table. Rows are promoted only when description/raw text includes terms such as `free play`, `freeplay`, `fp`, `bonus play`, `promo`, `redeem`, `expired`, or `credit pct`; ambiguous `F`/`H` rows without those terms remain normal credit/debit/other categories.
+
+`freePlaySummary.outstandingEstimate` is ledger-derived. Treat it as an estimate until a raw Buckeye free-play balance source is captured.
+
+## Manual-Confirmed Risk Signals
+
+Buckeye's Analysis UI is straight-wager focused and compares wagered lines against closing lines. It specifically reinforces these Player 360 risk candidates:
+
+| Signal | Manual context | Local status |
+|---|---|---|
+| Closing-line advantage | Consistently getting materially better spread/total points or moneyline cents is a red flag. | Partial; use only when line/open/close data exists. |
+| Prop-heavy behavior | Prop-only or prop-dominant accounts are called out as risky, especially when beating the line. | Available from wager description parsing, but CLV support is partial. |
+| Oddball markets | Minor/non-primary markets are weaker and should be monitored when concentration is high. | Available from sport/league classification where parsed. |
+| Non-game periods | High non-game period share is called out in the Analysis section. | Candidate; depends on reliable period parsing. |
+| Shared IPs | IP Tracker Account IP Match and Users by IP are explicit multi-account investigation tools. | Derived through `player_links` and access-log overlap; add dedicated match endpoint later. |
