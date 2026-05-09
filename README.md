@@ -1,434 +1,305 @@
-# Sports Terminal - Buckeye PPH Integration
+# Sports Terminal v5.2
 
-A production-grade sports betting terminal with real-time agent hierarchy scraping, player P&L tracking, and risk exposure monitoring for Buckeye per-head operators.
+Sports Terminal is a Bun-powered betting operations terminal for Buckeye PPH live wager monitoring, 16-book odds comparison, exposure tracking, player drill-downs, alerts, and webhook delivery.
 
-## 🎯 Architecture Overview
+The app is intentionally simple to run locally: one Bun backend serves both the API/WebSocket layer and the single-file frontend at `http://localhost:3000/`.
 
+## Current Status
+
+Implemented:
+
+- Buckeye live wager API client for `fantasy402.com`
+- WebSocket auth/session flow with token resume
+- Cloudflare `cf_clearance` cookie support from the Settings UI
+- Bun native SQLite via `bun:sqlite`
+- Demo odds grid with 16 books, consensus, best-line highlighting, movements, and book health
+- Buckeye wager feed, agent downline, player search/detail, sport and agent exposure
+- Alert rules, alert history, toast toggle, webhook CRUD, retries, and delivery log
+- Static SPA served by the backend
+
+Partial or planned:
+
+- Patterns tab has demo UI plus backend steam/reverse-line detection plumbing, but no persistent pattern history or rules engine yet.
+- Polymarket, Kalshi, Ace Per Head, Metallic, heatmap, candlestick, and bet builder are placeholders.
+- Live odds require `ODDS_API_KEY`; otherwise the demo provider is used.
+
+## Requirements
+
+- Bun `1.3.13+`
+- Windows PowerShell or another shell that can run Bun
+- Buckeye credentials and a fresh `cf_clearance` cookie for live Buckeye polling
+
+No Node install, Python, Chrome, Puppeteer, or external SQLite package is required for normal local development.
+
+## Quick Start
+
+From the repo root:
+
+```powershell
+cd C:\Users\bobby\sportsterminal
+bun install
+bun run dev
 ```
-┌─────────────────────────────────────────┐
-│      Frontend (HTML/JavaScript)         │
-│  • Odds Grid                            │
-│  • Agent Tree Navigation                │
-│  • Player P&L Dashboard                 │
-│  • Risk Alert System                    │
-│  • WebSocket Client                     │
-└────────────────┬────────────────────────┘
-                 │ WebSocket (JWT Auth)
-                 │
-┌────────────────▼────────────────────────┐
-│    Bun Backend (TypeScript)             │
-│  • WebSocket Server                     │
-│  • Scraper Manager                      │
-│  • SQLite Database (AES-GCM encrypted)  │
-│  • Risk Engine                          │
-└────────────────┬────────────────────────┘
-                 │ Puppeteer
-                 │
-┌────────────────▼────────────────────────┐
-│   Buckeye Agent Portal (Headless)       │
-│  • Login & Session Management           │
-│  • Downline Tree Scraping               │
-│  • Player Data Extraction               │
-│  • Odds & Bets Monitoring               │
-└─────────────────────────────────────────┘
+
+Open:
+
+```text
+http://localhost:3000/
 ```
 
-## 🚀 Quick Start
+The backend serves:
 
-### Prerequisites
-- **Node.js/Bun**: v1.1.42+
-- **Python**: 3.10+
-- **Chrome/Chromium**: For Puppeteer (auto-installed)
-- **SQLite3**: For database
+- Frontend: `GET /`
+- Health: `GET /health`
+- API routes: `GET /api/...`
+- WebSocket: same host, upgraded automatically by the frontend
 
-### Backend Setup
+## Environment
 
-1. **Install dependencies**
-   ```bash
-   cd backend
-   cp .env.example .env
-   # Edit .env with your Buckeye credentials and JWT secret
-   bun install
-   ```
+Copy the example file when you need local overrides:
 
-2. **Configure credentials** (.env)
-   ```env
-   BUCKEYE_AGENT_ID=your_agent_id
-   BUCKEYE_PASSWORD=your_password
-   BUCKEYE_LOGIN_URL=https://buckeyeagent.com/login
-   PORT=3000
-   JWT_SECRET=your_jwt_secret_key_min_32_chars
-   DATABASE_URL=sqlite:./data/terminal.db
-   HEADLESS=true
-   DEBUG_SCRAPER=false
-   ```
+```powershell
+Copy-Item backend\.env.example backend\.env
+```
 
-3. **Start the server**
-   ```bash
-   bun run start
-   ```
+Common values:
 
-   Expected output:
-   ```
-   ✅ Database initialized
-   ✅ Scraper manager initialized
-   🚀 Backend running at http://0.0.0.0:3000
-   ```
+```env
+PORT=3000
+HOST=0.0.0.0
+DEBUG=false
+BUCKEYE_BASE_URL=https://fantasy402.com
+POLL_INTERVAL_MS=5000
+TOKEN_RENEWAL_MINUTES=15
+JWT_SECRET=change-me-in-production-min-32-chars
+DATABASE_URL=sqlite:./data/terminal.db
+```
 
-### Frontend Setup
+`DATABASE_URL` can be either `sqlite:./data/terminal.db` or `./data/terminal.db`; the backend normalizes both for Bun SQLite.
 
-1. **Open in browser**
-   - Direct: Open `frontend/public/index.html` in your browser
-   - Or: Serve via HTTP
-   ```bash
-   cd frontend/public
-   python -m http.server 8000
-   # Visit http://localhost:8000/index.html
-   ```
+Credentials can be entered in the Settings UI. The backend does not require Buckeye credentials to boot; it starts with demo odds and empty live wager data until a Buckeye connection is made.
 
-2. **Connect to backend**
-   - Settings → Test Connection (verify WebSocket is reachable)
-   - Authentication → Enter your Buckeye credentials
-   - Click "Connect to Buckeye"
+## Scripts
 
-## 📊 Core Features by Sidebar Tab
+Run from `C:\Users\bobby\sportsterminal`:
 
-### Trading Floor (Zone 1 — Odds Grid)
-- **16-book comparison grid** across NBA, MLB, NHL, NCAAB, NFL, Soccer, Tennis, UFC
-- **Consensus column** with market-average lines
-- **Best-line highlighting** (gold border on best price per outcome)
-- **Line movement arrows** (▲/▼ with delta) stored and displayed in real time
-- **Spread/total prices** shown as small `(+105)` / `(-110)` next to line values
-- **Pattern icons** (🔥 steam move, 🚨 reverse line) on game rows with tooltips
-- **Detail drawers** per game with sparkline + per-book breakdown
-- **Demo data** from `DemoOddsProvider` (add `ODDS_API_KEY` env var for The Odds API)
+```powershell
+bun run dev          # Hot-reload backend + frontend at http://localhost:3000/
+bun run start        # Production-style backend start
+bun test             # All backend tests
+bun run build        # Bundle backend to backend/dist/
+bun run status       # Show port usage and Bun processes
+bun run stop         # Stop the process listening on port 3000
+bun run clean-start  # Stop then start dev server
+bun run serve        # Optional static frontend-only server on port 3001
+bun run db:migrate   # Run SQLite migrations
+```
 
-### Patterns (Zone 2 — Partial)
-- **Demo pattern list** with 4 hardcoded rows and severity scoring bars
-- **Backend detection**: Steam move (3+ books within 90s) and reverse line detection in `OddsPoller`
-- **Simulate button** for testing alert flows
-- *Missing*: Real pattern storage, custom rules engine, auto-trading execution
+`bun run serve` is optional. It serves only static files from `frontend/public`; the normal app path is `bun run dev`.
 
-### Positions (Zone 4 — Exposure)
-- **Sport Exposure table**: Sortable by sport, total, %, live count, top game, popular side, avg price, game total
-- **Agent Exposure table**: Sortable by agent, total, %, live count, top customer, top game
-- Data derived from live `buckeyeWagers` — updates as new bets arrive
+## Local Verification
 
-### Buckeye (Zone 4 — Live Wager Feed)
-- **Real-time bet ticker** from `fantasy402.com/cloud/api/Manager/getBetTicker`
-- **Filters**: Wager type (Straight/Parlay/Live/Alert/Prop), VIP only, min bet threshold
-- **Stats cards**: Total wagers, volume, unique customers, active agents, alert count, live count, max wager
-- **Bottom panels**: Top Agents by Volume, Sport Breakdown, Game Breakdown
-- **Amount normalization**: API returns cents → displayed as dollars
-- **Prop bet detection** from `ShortDesc` (player props, O/U, spreads)
+```powershell
+bun test
+bun run build
+Invoke-RestMethod http://localhost:3000/health
+```
 
-### Downline (Zone 4 — Agent Network)
-- **Agent hierarchy** derived from wager data (no DOM scraping)
-- **Stats cards**: Total agents, active agents, total volume, average wager
-- **Sortable agent table** with volume, wager count, top customer, top game
-- **Customer drill-down**: Click agent → see their customers with individual volumes and % of agent's book
+Expected health shape:
 
-### Player Search (Zone 4 — Player Drill-Down)
-- **Search by login** with live filtering
-- **Player list** with wager count, total volume, total risk, net P&L
-- **Click-through to Player Detail** with stats, 7-day P&L bars, wager breakdown
-
-### Alerts (Zone 4 + 8)
-- **7 alert rules**: High Volume, ALERT Writer, Live Large, Parlay Payout, VIP, Exotic Large, Teaser Large
-- **Severity levels**: Critical (red), Warning (yellow), Info (blue)
-- **Toast notifications** with on/off toggle (persisted in `localStorage`)
-- **Alert history** with acknowledged filter
-
-### Webhooks (Zone 8)
-- **CRUD webhooks** for Discord, Slack, Telegram, Generic
-- **Trigger filtering** by severity (`all`, `critical`, `warning`, `info`)
-- **Retry logic**: 3 attempts with exponential backoff
-- **Delivery log** with payload, response status, success/failure
-
-### Settings (Zone 4 — System)
-- **Backend URL** and endpoint configuration
-- **Buckeye credentials** + Cloudflare `cf_clearance` cookie
-- **Auto-connect** toggle with session persistence (JWT in `localStorage`)
-- **Test Connection** button to verify WebSocket reachability
-- **Toast toggle** for alert notifications
-
-## 📡 WebSocket Protocol
-
-### Client → Server
-
-#### Authentication
 ```json
 {
-  "type": "auth",
-  "agentId": "AGN123",
-  "username": "agent_username",
-  "password": "password"
-}
-```
-
-#### Request Data
-```json
-{
-  "type": "request_data",
-  "agentId": "AGN123"
-}
-```
-
-#### Force Refresh
-```json
-{
-  "type": "refresh",
-  "agentId": "AGN123"
-}
-```
-
-### Server → Client
-
-#### Authentication Response
-```json
-{
-  "type": "auth_response",
-  "success": true,
-  "message": "Authenticated"
-}
-```
-
-#### Data Response
-```json
-{
-  "type": "data_response",
-  "agentId": "AGN123",
-  "data": {
-    "agent": { "id": "AGN123", "name": "Main Agent", "balance": 50000, "credit": 100000 },
-    "players": [
-      { "id": "PLY001", "name": "John", "net_pnl": 2500, "ytd_pnl": 10000, "exposure": 3500 }
-    ],
-    "bets": [
-      { "id": "BET001", "player_id": "PLY001", "wager": 100, "odds": 1.95, "status": "pending" }
-    ],
-    "alerts": [
-      { "id": "ALR001", "type": "exposure_warning", "player_id": "PLY001", "value": 5500, "threshold": 5000 }
-    ]
+  "status": "ok",
+  "scrapers": {
+    "activeAgents": 0,
+    "agents": []
   }
 }
 ```
 
-#### Error Response
-```json
-{
-  "type": "error",
-  "message": "Error description"
-}
+## UI Map
+
+### Trading
+
+- `Trading Floor`: 16-book odds grid with consensus, best-line highlighting, spread/total prices, movement arrows, pattern icons, detail drawers, and book settings.
+- `Patterns`: Demo pattern rows and simulate button; real persistence/rules engine is still pending.
+
+### Positions
+
+- `Positions`: Sport and agent exposure breakdowns from Buckeye wager data, with sortable tables and recent positions.
+
+### PPH Books
+
+- `Buckeye`: Live `getBetTicker` feed, wager filters, stats cards, agent/sport/game panels, and alert badges.
+- `Ace Per Head`: Placeholder.
+- `Metallic`: Placeholder.
+
+### Agent Network
+
+- `Agent Tree`: Visual hierarchy canvas using live hierarchy when available, with local ignored export fallback.
+- `Downline`: Agent hierarchy stats, sortable agent table, customer drill-down, volume/risk/alert summaries.
+- `Player Search`: Search by login and open player details.
+- `Player Detail`: Stats, 7-day P&L bars, wager breakdown, and recent wagers.
+
+### Exchanges
+
+- `Polymarket`: Placeholder.
+- `Kalshi`: Placeholder.
+
+### System
+
+- `Alerts`: Alert history, severity badges, acknowledged filtering, and toast toggle.
+- `Webhooks`: Discord, Slack, Telegram, and generic webhook CRUD with trigger filters and delivery logs.
+- `Settings`: Backend URL, Buckeye base URL, agent credentials, Cloudflare cookie, auto-connect, connection test, and connect/disconnect controls.
+
+### Coming Soon
+
+- Movement Heatmap
+- Candlestick Charts
+- Bet Builder
+
+## Backend Architecture
+
+```text
+backend/
+  src/
+    index.ts              Bun HTTP server, API routes, WebSocket upgrade, static frontend serving
+    database.ts           Bun SQLite wrapper, schema init, migrations, credential encryption helpers
+    scrapers/
+      BuckeyeAPI.ts       HTTP client for fantasy402.com auth/getBetTicker/renewToken
+      ScraperManager.ts   Agent polling lifecycle, backoff, DB persistence, exposure queries
+    odds/
+      OddsPoller.ts       Demo/live odds polling, persistence, movements, matrix views
+      providers/
+        DemoOddsProvider.ts
+        TheOddsApiProvider.ts
+    risk/
+      AlertEngine.ts      Wager alert detection rules
+    services/
+      WebhookService.ts   Webhook CRUD, payload formatting, retry, delivery logging
+  tests/
+    api.test.ts
+    odds.test.ts
+    webhook.test.ts
 ```
 
-## 🛠 Configuration Reference
+The project uses a root Bun workspace lockfile: `bun.lock`.
 
-### BuckeyeConfig (src/scrapers/buckeye/config.ts)
+## API Highlights
 
-```typescript
-{
-  loginUrl: "https://buckeyeagent.com/login",
-  baseUrl: "https://buckeyeagent.com",
+Health and metrics:
 
-  endpoints: {
-    odds: "/lines/basketball",        // Sport-specific
-    bets: "/active-bets",
-    downlineTree: "/agents",
-    playersList: "/players",
-    playerDetails: "/player-details",
-    pnlReport: "/pnl-report"
-  },
+- `GET /health`
+- `GET /metrics`
 
-  selectors: {
-    login: {
-      usernameInput: "#agent_id",
-      passwordInput: "#password",
-      submitButton: "button[type='submit']"
-    },
-    tree: {
-      root: "#agent-tree",
-      agentRow: ".agent-row",
-      agentIdAttr: "data-agent-id",
-      agentName: ".agent-name",
-      agentBalance: ".balance",
-      agentCredit: ".credit"
-    },
-    // ... more selectors
-  },
+Buckeye and exposure:
 
-  intervals: {
-    odds: 30000,         // 30 seconds
-    bets: 30000,
-    downline: 90000,     // 90 seconds
-    playerDetails: 300000 // 5 minutes
-  },
+- `GET /api/stats`
+- `GET /api/wagers`
+- `GET /api/wagers/alerts`
+- `GET /api/wagers/live`
+- `GET /api/agents`
+- `GET /api/agents/downline`
+- `GET /api/agents/hierarchy`
+- `GET /api/exposure/sports`
+- `GET /api/exposure/agents`
+- `POST /api/connect`
 
-  thresholds: {
-    exposureWarning: 5000,
-    exposureCritical: 20000,
-    pnlAlert: 1000
-  }
-}
+Odds:
+
+- `GET /api/odds/live`
+- `GET /api/odds/events`
+- `GET /api/odds/snapshots`
+- `GET /api/odds/movements`
+- `GET /api/books`
+- `GET /api/books/status`
+
+Webhooks:
+
+- `GET /api/webhooks`
+- `POST /api/webhooks`
+- `GET /api/webhooks/:id`
+- `PUT /api/webhooks/:id`
+- `DELETE /api/webhooks/:id`
+- `GET /api/webhooks/:id/deliveries`
+
+## Data Notes
+
+- Buckeye amount fields arrive in cents.
+- `BuckeyeAPI.normalizeWager()` converts wager amounts to dollars before persistence.
+- SQLite stores dollar values.
+- Frontend displays dollar values directly.
+- Local database lives at `backend/data/terminal.db` and is ignored by Git.
+
+Ignored local data/tools:
+
+- `backend/data/`
+- `backend/dist/`
+- `node_modules/`
+- `backend/node_modules/`
+- `docs/agentslistharz.md`
+- `docs/agentobject.md`
+- `docs/*.exe`
+
+The ignored docs exports may contain sensitive customer/agent data and should not be committed.
+
+## Troubleshooting
+
+### App does not open locally
+
+Check server status:
+
+```powershell
+bun run status
 ```
 
-## 📊 Database Schema
+Start fresh:
 
-### agents
-```sql
-CREATE TABLE agents (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  provider TEXT DEFAULT 'buckeye',
-  parent_agent_id TEXT,
-  tier INTEGER,
-  credit REAL,
-  balance REAL,
-  status TEXT DEFAULT 'active',
-  last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
-);
+```powershell
+bun run clean-start
 ```
 
-### players
-```sql
-CREATE TABLE players (
-  id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  net_pnl REAL DEFAULT 0,
-  ytd_pnl REAL DEFAULT 0,
-  exposure REAL DEFAULT 0,
-  credit_limit REAL,
-  status TEXT DEFAULT 'active',
-  last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (agent_id) REFERENCES agents(id)
-);
+Then open `http://localhost:3000/`.
+
+### Port 3000 is already in use
+
+```powershell
+bun run stop
+bun run dev
 ```
 
-### bets
-```sql
-CREATE TABLE bets (
-  id TEXT PRIMARY KEY,
-  player_id TEXT NOT NULL,
-  agent_id TEXT NOT NULL,
-  event_id TEXT,
-  wager REAL,
-  odds REAL,
-  status TEXT DEFAULT 'pending',
-  pnl REAL,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  graded_at DATETIME,
-  FOREIGN KEY (player_id) REFERENCES players(id),
-  FOREIGN KEY (agent_id) REFERENCES agents(id)
-);
+### Dependencies look stale
+
+```powershell
+Remove-Item -Recurse -Force node_modules, backend\node_modules -ErrorAction SilentlyContinue
+bun install
 ```
 
-### risk_alerts
-```sql
-CREATE TABLE risk_alerts (
-  id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL,
-  player_id TEXT,
-  type TEXT NOT NULL,
-  value REAL,
-  threshold REAL,
-  message TEXT,
-  acknowledged BOOLEAN DEFAULT 0,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (agent_id) REFERENCES agents(id),
-  FOREIGN KEY (player_id) REFERENCES players(id)
-);
+### Buckeye login fails
+
+- Confirm agent ID and password.
+- Paste a fresh `cf_clearance` cookie into Settings.
+- Confirm `BUCKEYE_BASE_URL=https://fantasy402.com`.
+- Enable `DEBUG=true` for verbose backend logging.
+
+### Odds grid works but Buckeye data is empty
+
+That is expected before connecting Buckeye. Demo odds run automatically; live wager data appears after Buckeye auth starts polling.
+
+## GitHub
+
+Remote:
+
+```text
+origin https://github.com/brendadeeznuts1111/sportsterminal.git
 ```
 
-## 🔒 Security Considerations
+Main branch:
 
-1. **Credential Encryption**: All stored credentials encrypted with AES-256-GCM
-2. **HTTP API Client**: Direct API polling (no Puppeteer/browser automation)
-3. **JWT Tokens**: Session authentication via WebSocket
-4. **HTTPS**: Deploy backend behind HTTPS reverse proxy (Nginx/Caddy)
-5. **Rate Limiting**: Built-in concurrency limits to avoid detection
-6. **Session Persistence**: JWT token + Cloudflare cookie in `localStorage`
-
-## 🧪 Testing
-
-### Health Check
-```bash
-curl http://localhost:3000/health
+```text
+main
 ```
 
-### Metrics
-```bash
-curl http://localhost:3000/metrics
-```
+## License
 
-### Browser Console
-```javascript
-// Test WebSocket connection
-const ws = new WebSocket('ws://localhost:3000/ws');
-ws.onopen = () => console.log('Connected');
-ws.send(JSON.stringify({ type: 'auth', agentId: 'TEST', username: 'user', password: 'pass' }));
-```
-
-## 📈 Next Steps (Planned by Zone)
-
-### Zone 2 — Pattern Detection & Trading Automation 🔄
-- [ ] Store detected patterns in `detected_patterns` table
-- [ ] Pattern history endpoint `GET /api/patterns/history`
-- [ ] Custom rules engine (`user_rules` table + evaluator)
-- [ ] Auto-trading simulation on pattern match
-- [ ] Frontend rule builder UI
-
-### Zone 3 — Kalshi & Exchanges ⬜️
-- [ ] Kalshi API poller with WebSocket push
-- [ ] Kalshi position tracker (`kalshi_positions` table)
-- [ ] Unrealised/realised P&L dashboard
-- [ ] Polymarket direct API integration
-
-### Zone 1 — Odds Grid (Real Data) ⬜️
-- [ ] Activate The Odds API (set `ODDS_API_KEY` env var)
-- [ ] Kalshi odds feed
-- [ ] Candlestick charts (OHLC + volume)
-- [ ] Movement heatmap
-
-### Zone 4 — Backend Ops (Remaining Gaps) ⬜️
-- [ ] Ace Per Head (APH) scraper
-- [ ] Metallic (MET) scraper
-- [ ] Prom-client metrics endpoint
-- [ ] Idle shutdown (stop scrapers when no WS clients)
-- [ ] JWT enforcement on WebSocket upgrade
-- [ ] Rate limiting (100 req/min sliding window)
-
-### General
-- [ ] PDF export for reports
-- [ ] Mobile app (React Native)
-- [ ] Bet tracking journal with EV calculator
-
-## 🐛 Troubleshooting
-
-### WebSocket Connection Fails
-- Check backend is running: `curl http://localhost:3000/health`
-- Check firewall allows port 3000
-- Verify `serverUrl` in Settings matches backend
-
-### Login Fails
-- Verify credentials in .env are correct
-- Check Buckeye URL is correct
-- Enable `DEBUG_SCRAPER=true` in .env for detailed logs
-- Check for CAPTCHA (requires manual solving)
-
-### Data Not Updating
-- Click "🔄 Refresh" button
-- Check backend logs for scraper errors
-- Verify selectors match current Buckeye HTML structure
-
-### Performance Issues
-- Reduce scraping frequency in `config.ts`
-- Increase `maxGlobalConcurrency` limits
-- Deploy on larger machine if needed
-
-## 📝 License
-
-Private / Proprietary
-
-## 👥 Support
-
-For issues or questions about Buckeye integration, refer to the Buckeye Agent Portal documentation or contact support.
+Private / proprietary.
