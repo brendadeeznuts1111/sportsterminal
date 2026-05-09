@@ -183,6 +183,7 @@ async function startServer() {
         scraperManager,
         oddsPoller,
         secretVault,
+        performanceCache,
       }, getRateLimiter());
 
       if (result !== null) {
