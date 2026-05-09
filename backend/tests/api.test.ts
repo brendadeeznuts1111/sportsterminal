@@ -439,3 +439,30 @@ describe('BuckeyeScraperManager weekly figures', () => {
     expect(result.data.GENERAL[0].agent).toBe('A2');
   });
 });
+
+describe('BuckeyeScraperManager player details', () => {
+  test('returns projected net exposure from the player detail endpoint data', async () => {
+    const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
+    const getSql: string[] = [];
+    const fakeDb = {
+      get: async (sql: string) => {
+        getSql.push(sql);
+        return {
+          login: 'PLAYER1',
+          agent_login: 'AGENT1',
+          wager_count: 2,
+          total_volume: 300,
+          total_potential_payout: 250,
+          projected_net_exposure: 50,
+        };
+      },
+      all: async () => [{ agent_login: 'AGENT1' }],
+    };
+    const manager = new BuckeyeScraperManager(fakeDb as any, () => {}, false);
+
+    const result = await manager.getPlayerDetails('PLAYER1');
+
+    expect(getSql[0]).toContain('projected_net_exposure');
+    expect(result.profile.projected_net_exposure).toBe(50);
+  });
+});

@@ -1,10 +1,10 @@
 # Sports Terminal v5.2 Implementation Tracker
 
-> Last updated: **2026-05-08 15:00**  
-> Started: **2026-05-08**  
-> Phase order: **Zone 4 → 1 → 8 → 2 → 3**  
-> Build mode: **full-stack**  
-> Auth: **none-dev**  
+> Last updated: **2026-05-08 15:00**
+> Started: **2026-05-08**
+> Phase order: **Zone 4 → 1 → 8 → 2 → 3**
+> Build mode: **full-stack**
+> Auth: **none-dev**
 > Auto‑confirm: **yes**
 
 ---
@@ -85,7 +85,7 @@ Status: **✅ Complete**
 - [ ] Unit tests for queue sequencing, timeout, and concurrency
 
 ### 4.2 /metrics Endpoint
-- [x] Basic `/metrics` exists (returns scraper manager state)  
+- [x] Basic `/metrics` exists (returns scraper manager state)
 - [ ] Install `prom-client` (updated `package.json`)
 - [ ] Create `src/api/metrics.ts` with counters/histograms
   - [ ] `wagers_total`
@@ -97,7 +97,7 @@ Status: **✅ Complete**
 - [ ] Unit test: endpoint returns valid metrics format
 
 ### 4.3 Idle Shutdown
-- [x] `ScraperManager.stopAgent()` clears poll + renewal timers  
+- [x] `ScraperManager.stopAgent()` clears poll + renewal timers
 - [ ] Add `IDLE_TIMEOUT_MS` env var reading
 - [ ] In `ScraperManager`, track connected WS clients
 - [ ] Start idle timer with on‑zero clients; stop scrapers when timer expires
@@ -105,18 +105,18 @@ Status: **✅ Complete**
 - [ ] Unit test: simulate connect/disconnect cycle
 
 ### 4.4 JWT Enforcement (WebSocket)
-- [ ] Add `jose` library for JWT verification
-- [ ] Modify WebSocket upgrade handler to extract token from query string or `sec‑websocket‑protocol`
-- [ ] Validate HS256 token; reject with 401 if invalid
-- [ ] Dev bypass: skip check if `NODE_ENV=development`
-- [ ] Generate helper script to create tokens (`scripts/generate-jwt.ts`)
-- [ ] Unit test: token validation (valid, expired, wrong secret)
+- [x] Add `jose` library for JWT verification
+- [x] Modify WebSocket upgrade handler to extract token from query string or `sec‑websocket‑protocol`
+- [x] Validate HS256 token; reject with 401 if invalid
+- [x] Dev bypass: skip check if `NODE_ENV=development`
+- [x] Generate helper script to create tokens (`scripts/generate-jwt.ts`)
+- [x] Unit test: token validation (valid, expired, wrong secret)
 
 ### 4.5 Rate Limiting (HTTP)
-- [ ] Implement simple IP‑based sliding window (100 req/min)
-- [ ] Apply to all HTTP endpoints (before route handling)
-- [ ] Return 429 with `Retry-After` header when exceeded
-- [ ] Unit test: burst >100, wait, resume
+- [x] Implement simple IP‑based sliding window (100 req/min)
+- [x] Apply to all HTTP endpoints (before route handling)
+- [x] Return 429 with `Retry-After` header when exceeded
+- [x] Unit test: burst >100, wait, resume
 
 ### 4.6 Documentation & Deployment
 - [x] `.env.example` updated with new vars (`BUCKEYE_BASE_URL`, `POLL_INTERVAL_MS`, `TOKEN_RENEWAL_MINUTES`)

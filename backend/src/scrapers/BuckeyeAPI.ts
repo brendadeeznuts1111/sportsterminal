@@ -72,6 +72,26 @@ export interface BuckeyeWeeklyFigureResult {
   data: unknown;
 }
 
+export type BuckeyeWebLogType = 'A' | 'B' | 'C' | 'I';
+
+export interface BuckeyeWebLogOptions {
+  customerID?: string | number;
+  start: string;
+  end: string;
+  type: BuckeyeWebLogType;
+  actions?: string;
+  ip?: string;
+}
+
+export interface BuckeyeWebLogRow {
+  LoginID: string;
+  IPAddress: string;
+  AccessDateTime: string;
+  Operation: string;
+  Data: string;
+  raw: Record<string, unknown>;
+}
+
 export interface BuckeyeAccountFeatureFlag {
   key: string;
   value: boolean;
@@ -591,6 +611,59 @@ export class BuckeyeAPI {
     return this.token;
   }
 
+  async getWebLog(options: BuckeyeWebLogOptions): Promise<BuckeyeWebLogRow[]> {
+    if (!this.loggedIn) {
+      throw new Error('Not authenticated. Call login() first.');
+    }
+
+    validateWebLogRange(options);
+    const body = buildWebLogBody(this.agentId, options);
+    const endpoints = [
+      `${this.baseUrl}/qubic/api/Manager/getWebLog`,
+      `${this.baseUrl}/cloud/api/Manager/getWebLog`,
+    ];
+
+    let lastError = '';
+    for (const endpoint of endpoints) {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'Authorization': `Bearer ${this.token}`,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json, text/javascript, */*; q=0.01',
+          'X-Requested-With': 'XMLHttpRequest',
+          'Origin': this.baseUrl,
+          'Referer': `${this.baseUrl}/manager.html`,
+          ...(this.cfCookie ? { 'Cookie': this.cfCookie } : {}),
+        },
+        body,
+      });
+
+      const text = await response.text().catch(() => '');
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          this.loggedIn = false;
+        }
+        lastError = `${response.status} ${response.statusText} - ${text.substring(0, 160)}`;
+        continue;
+      }
+
+      let data: any = {};
+      try {
+        data = JSON.parse(text);
+      } catch {
+        lastError = `Non-JSON getWebLog response from ${endpoint}: ${text.substring(0, 160)}`;
+        continue;
+      }
+
+      const list = Array.isArray(data?.LIST) ? data.LIST : [];
+      return list.map(normalizeWebLogRow);
+    }
+
+    throw new Error(`getWebLog failed: ${lastError || 'all endpoints failed'}`);
+  }
+
   private normalizeWager(raw: any): EnrichedWager {
     // Buckeye API returns amounts in cents; convert to dollars
     const amountWagered = (Number(raw.AmountWagered) || 0) / 100;
@@ -874,4 +947,69 @@ function stringValue(value: unknown): string {
 
 function numberValue(value: unknown): number {
   return typeof value === 'number' ? value : Number(value) || 0;
+}
+
+export function buildWebLogBody(agentId: string, options: BuckeyeWebLogOptions): URLSearchParams {
+  validateWebLogRange(options);
+  return new URLSearchParams({
+    agentID: agentId,
+    customerID: String(options.customerID ?? 0),
+    start: normalizeWebLogDate(options.start, options.type),
+    end: normalizeWebLogDate(options.end, options.type),
+    type: options.type,
+    actions: options.actions || 'ALL',
+    ip: options.ip || '',
+    operation: 'getWebLog',
+    RRO: '1',
+  });
+}
+
+export function validateWebLogRange(options: BuckeyeWebLogOptions): void {
+  const start = parseWebLogDate(options.start);
+  const end = parseWebLogDate(options.end);
+  if (!start || !end) {
+    throw new Error('Invalid getWebLog date range');
+  }
+  if (start.getTime() > end.getTime()) {
+    throw new Error('getWebLog start date must be before end date');
+  }
+  const days = Math.ceil((end.getTime() - start.getTime()) / 86400000) + 1;
+  const maxDays = options.type === 'I' ? 7 : 30;
+  if (days > maxDays) {
+    throw new Error(`getWebLog type ${options.type} supports a maximum ${maxDays}-day range`);
+  }
+}
+
+function parseWebLogDate(value: string): Date | null {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return null;
+  const parsed = new Date(trimmed);
+  if (Number.isFinite(parsed.getTime())) return parsed;
+  const slash = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (slash) {
+    const [, mm, dd, yyyy] = slash;
+    return new Date(Number(yyyy), Number(mm) - 1, Number(dd));
+  }
+  return null;
+}
+
+function normalizeWebLogDate(value: string, type: BuckeyeWebLogType): string {
+  const date = parseWebLogDate(value);
+  if (!date) return value;
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  if (type === 'C') return `${yyyy}-${mm}-${dd}`;
+  return `${mm}/${dd}/${yyyy}`;
+}
+
+function normalizeWebLogRow(raw: any): BuckeyeWebLogRow {
+  return {
+    LoginID: String(raw.LoginID || raw.Login || raw.CustomerID || '').trim(),
+    IPAddress: String(raw.IPAddress || raw.IP || raw.ip || '').trim(),
+    AccessDateTime: String(raw.AccessDateTime || raw.DateTime || raw.CreatedAt || '').trim(),
+    Operation: String(raw.Operation || '').trim(),
+    Data: String(raw.Data || '').trim(),
+    raw: raw && typeof raw === 'object' ? raw : {},
+  };
 }

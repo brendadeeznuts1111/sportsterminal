@@ -65,14 +65,17 @@ Copy-Item backend\.env.example backend\.env
 Common values:
 
 ```env
-PORT=3000
+PORT=3002
 HOST=0.0.0.0
 DEBUG=false
+NODE_ENV=development          # Set to 'production' to enable JWT + rate limiting
 BUCKEYE_BASE_URL=https://fantasy402.com
 POLL_INTERVAL_MS=5000
 TOKEN_RENEWAL_MINUTES=15
 JWT_SECRET=change-me-in-production-min-32-chars
 DATABASE_URL=sqlite:./data/terminal.db
+RATE_LIMIT_MAX=100            # Max HTTP requests per window per IP
+RATE_LIMIT_WINDOW_MS=60000    # Rate limit window in ms
 ```
 
 `DATABASE_URL` can be either `sqlite:./data/terminal.db` or `./data/terminal.db`; the backend normalizes both for Bun SQLite.

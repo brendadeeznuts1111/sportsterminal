@@ -9,11 +9,13 @@ import { BuckeyeAPI, BuckeyeCredentials, type BuckeyeWeeklyFigureOptions } from 
 import { LiveAgentTree } from './LiveAgentTree';
 import { evaluateWager, Alert } from '../risk/AlertEngine';
 import { WebhookService } from '../services/WebhookService';
+import { PatternService } from '../patterns/PatternService';
 
 interface AgentInstance {
   api: BuckeyeAPI;
   intervalId: ReturnType<typeof setInterval>;
   renewalId: ReturnType<typeof setInterval>;
+  accessLogId?: ReturnType<typeof setInterval>;
   credentials: BuckeyeCredentials;
   lastPoll: number;
   errorCount: number;
@@ -29,7 +31,9 @@ export class BuckeyeScraperManager {
   private broadcast: (msg: object) => void;
   private pollIntervalMs: number = 5000;
   private tokenRenewalMs: number = 15 * 60 * 1000; // 15 minutes
+  private accessLogIntervalMs: number = 10 * 60 * 1000;
   private webhookService: WebhookService;
+  private patternService: PatternService;
   private accountInfoCache: Map<string, { data: any; timestamp: number }> = new Map();
   private accountInfoCacheTtlMs: number = 5 * 60 * 1000;
 
@@ -40,6 +44,7 @@ export class BuckeyeScraperManager {
     this.broadcast = broadcast;
     this.debugMode = debugMode;
     this.webhookService = new WebhookService(db);
+    this.patternService = new PatternService(db, broadcast);
   }
 
   /**
@@ -71,9 +76,11 @@ export class BuckeyeScraperManager {
 
     this.agents.set(agentId, instance);
     await this.initializeLiveAgentTree(agentId, instance);
+    this.startAccessLogPolling(agentId, instance);
     console.log(`[Manager] Started polling for ${agentId} every ${this.pollIntervalMs}ms`);
 
     setImmediate(() => this.pollAgent(agentId));
+    setImmediate(() => this.refreshAccessLogs(agentId).catch(err => console.warn(`[Manager] Access log refresh failed for ${agentId}:`, err.message)));
   }
 
   /**
@@ -112,9 +119,11 @@ export class BuckeyeScraperManager {
 
     this.agents.set(agentId, instance);
     await this.initializeLiveAgentTree(agentId, instance);
+    this.startAccessLogPolling(agentId, instance);
     console.log(`[Manager] Resumed session for ${agentId}`);
 
     setImmediate(() => this.pollAgent(agentId));
+    setImmediate(() => this.refreshAccessLogs(agentId).catch(err => console.warn(`[Manager] Access log refresh failed for ${agentId}:`, err.message)));
     return true;
   }
 
@@ -131,6 +140,7 @@ export class BuckeyeScraperManager {
 
     clearInterval(instance.intervalId);
     clearInterval(instance.renewalId);
+    if (instance.accessLogId) clearInterval(instance.accessLogId);
     this.agents.delete(agentId);
     console.log(`[Manager] Stopped polling for ${agentId}`);
   }
@@ -140,6 +150,10 @@ export class BuckeyeScraperManager {
    */
   async forceRefresh(agentId: string): Promise<void> {
     await this.pollAgent(agentId);
+  }
+
+  async forceAccessLogRefresh(agentId: string): Promise<any> {
+    return this.refreshAccessLogs(agentId);
   }
 
   /**
@@ -418,6 +432,8 @@ export class BuckeyeScraperManager {
         SUM(amount_wagered) as total_volume,
         SUM(volume_amount) as total_risk,
         SUM(to_win_amount) as total_potential_payout,
+        -- Projection only: wagered amount minus possible payout, not settled P/L.
+        COALESCE(SUM(amount_wagered), 0) - COALESCE(SUM(to_win_amount), 0) as projected_net_exposure,
         AVG(amount_wagered) as avg_wager,
         MAX(amount_wagered) as max_wager,
         MIN(insert_datetime) as first_wager_at,
@@ -434,7 +450,7 @@ export class BuckeyeScraperManager {
 
     return {
       playerId,
-      profile: profile || {},
+      profile: profile && profile.wager_count > 0 ? profile : {},
       agents: agents.map((a) => a.agent_login),
     };
   }
@@ -716,9 +732,12 @@ export class BuckeyeScraperManager {
       const changes = instance.api.detectChanges(wagers);
 
       for (const change of changes) {
-        await this.persistWager(change.wager);
+        const correlation = await this.persistWager(change.wager);
 
         if (change.type === 'new') {
+          const patterns = await this.patternService.analyzeWager(change.wager, correlation);
+          await this.patternService.persistPatterns(patterns);
+
           instance.liveTree?.processWager(change.wager);
           this.broadcast({
             type: 'wager.new',
@@ -809,13 +828,18 @@ export class BuckeyeScraperManager {
   /**
    * Insert or replace wager in database.
    */
-  private async persistWager(wager: any): Promise<void> {
+  private async persistWager(wager: any): Promise<Awaited<ReturnType<PatternService['correlateWager']>>> {
+    const correlation = await this.patternService.correlateWager(wager);
+    const parsed = correlation.parsed;
+
     await this.db.run(
       `INSERT OR REPLACE INTO wagers
       (wager_number, agent_id, customer_id, login, wager_type,
        amount_wagered, to_win_amount, volume_amount, insert_datetime,
-       ticket_writer, short_desc, vip, agent_login, sport, scraped_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ticket_writer, short_desc, vip, agent_login, sport,
+       parsed_game, parsed_market, parsed_side, parsed_price, parsed_period,
+       matched_event_id, pin_reference_json, scraped_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         wager.WagerNumber,
         wager.AgentID,
@@ -831,9 +855,52 @@ export class BuckeyeScraperManager {
         wager.VIP,
         wager.AgentLogin,
         this.parseSport(wager.ShortDesc),
+        parsed.game,
+        parsed.market,
+        parsed.side,
+        parsed.price,
+        parsed.period,
+        correlation.match.eventId,
+        JSON.stringify(correlation.pinReference || {}),
         new Date().toISOString(),
       ]
     );
+
+    return correlation;
+  }
+
+  async getAccessLogs(limit: number = 200): Promise<any[]> {
+    return this.db.all(
+      `SELECT * FROM access_logs ORDER BY access_datetime DESC LIMIT ?`,
+      [Math.min(Math.max(limit, 1), 500)]
+    );
+  }
+
+  private startAccessLogPolling(agentId: string, instance: AgentInstance): void {
+    if (instance.accessLogId) clearInterval(instance.accessLogId);
+    instance.accessLogId = setInterval(() => {
+      this.refreshAccessLogs(agentId).catch(err => {
+        console.warn(`[Manager] Access log refresh failed for ${agentId}:`, err.message);
+      });
+    }, this.accessLogIntervalMs);
+  }
+
+  private async refreshAccessLogs(agentId: string): Promise<{ fetched: number; inserted: number; patterns: number }> {
+    const instance = this.agents.get(agentId);
+    if (!instance) throw new Error(`Agent ${agentId} is not active`);
+
+    const end = new Date();
+    const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+    const rows = await instance.api.getWebLog({
+      start: this.formatWebLogDate(start),
+      end: this.formatWebLogDate(end),
+      type: 'A',
+      actions: 'ALL',
+    });
+    const inserted = await this.patternService.persistAccessLogs(agentId, rows, 'A');
+    const patterns = await this.patternService.analyzeAccessLogs(agentId);
+    const persisted = await this.patternService.persistPatterns(patterns);
+    return { fetched: rows.length, inserted, patterns: persisted.length };
   }
 
   /**
@@ -870,6 +937,12 @@ export class BuckeyeScraperManager {
     if (desc.includes('Golf')) return 'Golf';
     if (desc.includes('Football')) return 'Football';
     return 'Other';
+  }
+
+  private formatWebLogDate(date: Date): string {
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
+    return `${mm}/${dd}/${date.getFullYear()}`;
   }
 
   private parseGame(desc: string): string {

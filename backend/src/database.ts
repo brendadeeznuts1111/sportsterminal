@@ -112,6 +112,13 @@ export async function initDatabase(): Promise<AppDatabase> {
       vip TEXT NOT NULL,
       agent_login TEXT NOT NULL,
       sport TEXT,
+      parsed_game TEXT,
+      parsed_market TEXT,
+      parsed_side TEXT,
+      parsed_price REAL,
+      parsed_period TEXT,
+      matched_event_id TEXT,
+      pin_reference_json TEXT,
       scraped_at TEXT NOT NULL
     );
 
@@ -241,14 +248,60 @@ export async function initDatabase(): Promise<AppDatabase> {
       last_error TEXT
     );
 
+    -- Persisted line-movement pattern detections
+    CREATE TABLE IF NOT EXISTS detected_patterns (
+      id TEXT PRIMARY KEY,
+      event_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      market TEXT NOT NULL,
+      side TEXT NOT NULL,
+      severity TEXT CHECK(severity IN ('info','warning','critical')) NOT NULL,
+      score INTEGER NOT NULL DEFAULT 0,
+      category TEXT NOT NULL DEFAULT 'odds',
+      trigger_book TEXT,
+      details_json TEXT NOT NULL DEFAULT '{}',
+      description TEXT,
+      detected_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (event_id) REFERENCES events(id)
+    );
+
+    -- Buckeye IP tracker / web access log rows
+    CREATE TABLE IF NOT EXISTS access_logs (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      login_id TEXT NOT NULL,
+      ip_address TEXT NOT NULL,
+      access_datetime TEXT NOT NULL,
+      operation TEXT,
+      data TEXT,
+      log_type TEXT NOT NULL,
+      pulled_at TEXT NOT NULL,
+      raw_json TEXT NOT NULL DEFAULT '{}'
+    );
+
     CREATE INDEX IF NOT EXISTS idx_odds_snapshots_event ON odds_snapshots(event_id);
     CREATE INDEX IF NOT EXISTS idx_line_movements_event ON line_movements(event_id, book, market);
     CREATE INDEX IF NOT EXISTS idx_line_movements_time ON line_movements(recorded_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_detected_patterns_time ON detected_patterns(detected_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_detected_patterns_event ON detected_patterns(event_id, detected_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_detected_patterns_type ON detected_patterns(type, detected_at DESC);
   `);
 
   console.log('📊 Database tables created');
   await migrateDatabase(db);
+  await createPostMigrationIndexes(db);
   return db;
+}
+
+async function createPostMigrationIndexes(db: AppDatabase): Promise<void> {
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_detected_patterns_category ON detected_patterns(category, detected_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_access_logs_ip_time ON access_logs(ip_address, access_datetime DESC);
+    CREATE INDEX IF NOT EXISTS idx_access_logs_login_time ON access_logs(login_id, access_datetime DESC);
+    CREATE INDEX IF NOT EXISTS idx_wagers_event_time ON wagers(matched_event_id, insert_datetime DESC);
+    CREATE INDEX IF NOT EXISTS idx_wagers_game_side_time ON wagers(parsed_game, parsed_market, parsed_side, insert_datetime DESC);
+  `);
 }
 
 /**
@@ -271,7 +324,30 @@ export async function migrateDatabase(db: any) {
       console.log('📊 Migration: added spread_away_price to odds_snapshots');
     }
 
-    // Future migrations go here
+    const wagerColumns = await db.all(`PRAGMA table_info(wagers)`);
+    const wagerColumnNames = new Set(wagerColumns.map((c: any) => c.name));
+    const wagerAdds: Array<[string, string]> = [
+      ['parsed_game', 'TEXT'],
+      ['parsed_market', 'TEXT'],
+      ['parsed_side', 'TEXT'],
+      ['parsed_price', 'REAL'],
+      ['parsed_period', 'TEXT'],
+      ['matched_event_id', 'TEXT'],
+      ['pin_reference_json', 'TEXT'],
+    ];
+    for (const [name, type] of wagerAdds) {
+      if (!wagerColumnNames.has(name)) {
+        await db.exec(`ALTER TABLE wagers ADD COLUMN ${name} ${type}`);
+        console.log(`📊 Migration: added ${name} to wagers`);
+      }
+    }
+
+    const patternColumns = await db.all(`PRAGMA table_info(detected_patterns)`);
+    const patternColumnNames = new Set(patternColumns.map((c: any) => c.name));
+    if (!patternColumnNames.has('category')) {
+      await db.exec(`ALTER TABLE detected_patterns ADD COLUMN category TEXT NOT NULL DEFAULT 'odds'`);
+      console.log('📊 Migration: added category to detected_patterns');
+    }
   } catch (err) {
     console.error('📊 Migration error:', err);
   }

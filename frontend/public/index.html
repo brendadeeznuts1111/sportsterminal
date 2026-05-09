@@ -485,32 +485,102 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
     <!-- SECTION: Patterns -->
     <div id="patternsSection" class="section-content flex-1 overflow-y-auto p-4 hidden">
       <div class="flex items-center justify-between mb-4">
-        <h2 class="text-lg font-bold">Pattern Detection</h2>
-        <button class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--accent);color:#fff;" onclick="simulatePatterns()">Simulate Patterns</button>
+        <div>
+          <h2 class="text-lg font-bold">Pattern Detection</h2>
+          <div class="text-xs mt-1" style="color:var(--text-dim);">Movement history, sharp/public divergence, and anomaly catches</div>
+        </div>
+        <div class="flex items-center gap-2 flex-wrap justify-end">
+          <select id="patternTypeFilter" class="px-2 py-1.5 rounded text-xs" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onchange="loadPatterns(true)">
+            <option value="all">All patterns</option>
+            <option value="Steam Move">Steam moves</option>
+            <option value="Reverse Line">Reverse line</option>
+            <option value="Syndicate Play">Syndicate</option>
+            <option value="Arbitrage">Arbitrage</option>
+            <option value="Agent Swarm">Agent swarm</option>
+            <option value="Cross-Agent Swarm">Cross-agent swarm</option>
+            <option value="Shared IP Cluster">Shared IP</option>
+            <option value="IP Follow Pattern">IP follow</option>
+            <option value="Live Past-Post Risk">Past-post risk</option>
+            <option value="Late Live Spike">Late live spike</option>
+            <option value="Pinnacle Drift Bet">PIN drift</option>
+            <option value="Post-PIN Move Bet">Post-PIN move</option>
+            <option value="Repeat Timing Signature">Timing signature</option>
+            <option value="Steam Chase">Steam chase</option>
+            <option value="Bad Feed / Book Risk">Feed risk</option>
+          </select>
+          <select id="patternMarketFilter" class="px-2 py-1.5 rounded text-xs" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onchange="loadPatterns(true)">
+            <option value="all">All markets</option>
+            <option value="spread">Spread</option>
+            <option value="moneyline">Moneyline</option>
+            <option value="total">Total</option>
+            <option value="other">Other</option>
+          </select>
+          <select id="patternSportFilter" class="px-2 py-1.5 rounded text-xs" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onchange="loadPatterns(true)">
+            <option value="all">All sports</option>
+            <option value="Basketball">Basketball</option>
+            <option value="Baseball">Baseball</option>
+            <option value="Football">Football</option>
+            <option value="Hockey">Hockey</option>
+            <option value="Soccer">Soccer</option>
+            <option value="Tennis">Tennis</option>
+            <option value="MMA">MMA</option>
+            <option value="System">System</option>
+          </select>
+          <select id="patternAgentFilter" class="px-2 py-1.5 rounded text-xs min-w-[120px]" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onchange="loadPatterns(true)">
+            <option value="all">All agents</option>
+          </select>
+          <select id="patternWindowFilter" class="px-2 py-1.5 rounded text-xs" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onchange="loadPatterns(true)">
+            <option value="6">6h</option>
+            <option value="24" selected>24h</option>
+            <option value="72">72h</option>
+            <option value="168">7d</option>
+          </select>
+          <button id="patternRefreshBtn" class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--accent);color:#fff;" onclick="loadPatterns(true)">Refresh</button>
+        </div>
+      </div>
+      <div class="flex flex-wrap gap-2 mb-4" id="patternCategoryTabs">
+        <button class="pattern-category-tab px-2.5 py-1 rounded text-xs font-semibold" data-category="all" onclick="setPatternCategory('all')">All</button>
+        <button class="pattern-category-tab px-2.5 py-1 rounded text-xs font-semibold" data-category="odds" onclick="setPatternCategory('odds')">Odds</button>
+        <button class="pattern-category-tab px-2.5 py-1 rounded text-xs font-semibold" data-category="wagers" onclick="setPatternCategory('wagers')">Wagers</button>
+        <button class="pattern-category-tab px-2.5 py-1 rounded text-xs font-semibold" data-category="agents" onclick="setPatternCategory('agents')">Agents</button>
+        <button class="pattern-category-tab px-2.5 py-1 rounded text-xs font-semibold" data-category="ip" onclick="setPatternCategory('ip')">IP</button>
+        <button class="pattern-category-tab px-2.5 py-1 rounded text-xs font-semibold" data-category="live" onclick="setPatternCategory('live')">Live</button>
+        <button class="pattern-category-tab px-2.5 py-1 rounded text-xs font-semibold" data-category="feed" onclick="setPatternCategory('feed')">Feed</button>
       </div>
       <div class="grid grid-cols-4 gap-3 mb-4">
         <div class="rounded-lg p-3 border" style="background:var(--panel);border-color:var(--border);">
           <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Steam Moves</div>
-          <div class="text-2xl font-bold" style="color:var(--red);">12</div>
+          <div id="patternSteamCount" class="text-2xl font-bold" style="color:var(--red);">0</div>
         </div>
         <div class="rounded-lg p-3 border" style="background:var(--panel);border-color:var(--border);">
           <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Reverse Line</div>
-          <div class="text-2xl font-bold" style="color:var(--yellow);">8</div>
+          <div id="patternReverseCount" class="text-2xl font-bold" style="color:var(--yellow);">0</div>
         </div>
         <div class="rounded-lg p-3 border" style="background:var(--panel);border-color:var(--border);">
           <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Syndicate</div>
-          <div class="text-2xl font-bold" style="color:var(--blue);">5</div>
+          <div id="patternSyndicateCount" class="text-2xl font-bold" style="color:var(--blue);">0</div>
         </div>
         <div class="rounded-lg p-3 border" style="background:var(--panel);border-color:var(--border);">
           <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Arbitrage</div>
-          <div class="text-2xl font-bold" style="color:var(--green);">3</div>
+          <div id="patternArbCount" class="text-2xl font-bold" style="color:var(--green);">0</div>
         </div>
       </div>
-      <div class="rounded-lg border overflow-hidden" style="background:var(--panel);border-color:var(--border);">
-        <table class="w-full text-xs">
-          <thead><tr style="background:var(--bg);"><th class="text-left px-3 py-2">Pattern</th><th class="text-left px-3 py-2">Game</th><th class="text-left px-3 py-2">Details</th><th class="text-center px-3 py-2">Severity</th><th class="text-center px-3 py-2">Time</th></tr></thead>
-          <tbody id="patternsTable"></tbody>
-        </table>
+      <div class="grid grid-cols-3 gap-4 mb-4">
+        <div class="col-span-2 rounded-lg border overflow-hidden" style="background:var(--panel);border-color:var(--border);">
+          <table class="w-full text-xs">
+            <thead><tr style="background:var(--bg);"><th class="text-left px-3 py-2">Pattern</th><th class="text-left px-3 py-2">Game</th><th class="text-left px-3 py-2">Details</th><th class="text-center px-3 py-2">Score</th><th class="text-center px-3 py-2">Time</th></tr></thead>
+            <tbody id="patternsTable"><tr><td colspan="5" class="px-3 py-4 text-center" style="color:var(--text-dim);">Loading patterns...</td></tr></tbody>
+          </table>
+        </div>
+        <div class="rounded-lg border p-3" style="background:var(--panel);border-color:var(--border);">
+          <div id="patternDetailDrawer">
+            <h3 class="text-sm font-semibold mb-3">Evidence</h3>
+            <div class="text-xs" style="color:var(--text-dim);">Select a pattern row to inspect wager timing, matched event, PIN reference, agents, players, IPs, and reason codes.</div>
+            <div class="pt-3 mt-3 border-t text-xs" style="border-color:var(--border);color:var(--text-dim);">
+              <span id="patternHealthText">Watching movement history.</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -734,7 +804,7 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
         <h2 class="text-lg font-bold" id="playerDetailTitle">Player Detail</h2>
         <div></div>
       </div>
-      <div class="grid grid-cols-5 gap-3 mb-4">
+      <div class="grid grid-cols-6 gap-3 mb-4">
         <div class="rounded-lg p-3 border" style="background:var(--panel);border-color:var(--border);">
           <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Total Wagers</div>
           <div class="text-2xl font-bold" id="pdWagerCount">0</div>
@@ -754,6 +824,10 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
         <div class="rounded-lg p-3 border" style="background:var(--panel);border-color:var(--border);">
           <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Max Wager</div>
           <div class="text-2xl font-bold" id="pdMaxWager">$0</div>
+        </div>
+        <div class="rounded-lg p-3 border" style="background:var(--panel);border-color:var(--border);">
+          <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Projected Net</div>
+          <div class="text-2xl font-bold" id="pdProjectedNet">$0</div>
         </div>
       </div>
       <div class="grid grid-cols-2 gap-4 mb-4">
@@ -1076,12 +1150,14 @@ const CACHE_TTL = {
   webhooks: 15000,
   downline: 30000,
   exposure: 10000,
+  patterns: 15000,
 };
 const sectionCache = {
   odds: { at: 0 },
   webhooks: { at: 0 },
   downline: { at: 0 },
   exposure: { at: 0 },
+  patterns: { at: 0 },
 };
 const debouncedTasks = {};
 let currentMovementIndex = {};
@@ -1100,6 +1176,12 @@ let sportExposureData = [];
 let agentExposureData = [];
 let sportExposureSort = { col: 'total', dir: 'desc' };
 let agentExposureSort = { col: 'total', dir: 'desc' };
+let patternsData = [];
+let patternSummary = { byType: {}, bySeverity: {}, total: 0 };
+let patternCategory = 'all';
+let patternFilterChoices = { agents: [], sports: [] };
+let lastPatternRequestKey = '';
+let patternsLoading = false;
 let wsClient = new TerminalWebSocketClient();
 
 function isCacheFresh(key) {
@@ -1325,6 +1407,15 @@ document.addEventListener('DOMContentLoaded', () => {
   if (cfInput) cfInput.value = savedCf;
   if (retainedRiskInput) retainedRiskInput.value = savedRetainedRisk;
 
+  const playerSearchTable = document.getElementById('playerSearchTable');
+  if (playerSearchTable) playerSearchTable.addEventListener('click', handlePlayerSearchClick);
+
+  const buckeyeWagerTable = document.getElementById('buckeyeWagerTable');
+  if (buckeyeWagerTable) buckeyeWagerTable.addEventListener('click', handleBuckeyeWagerTableClick);
+
+  const agentDownlineTable = document.getElementById('agentDownlineTable');
+  if (agentDownlineTable) agentDownlineTable.addEventListener('click', handleAgentDownlineClick);
+
   // Load toggle states
   const autoConnectToggle = document.getElementById('autoConnectToggle');
   const toastToggle = document.getElementById('toastToggle');
@@ -1404,6 +1495,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (currentSection === 'positions') fetchExposureData();
   });
 
+  wsClient.on('pattern.detected', (msg) => {
+    sectionCache.patterns.at = 0;
+    const pattern = msg.payload || {};
+    if (pattern.severity === 'critical') {
+      showToast(`${pattern.type || 'Pattern'} detected: ${pattern.description || pattern.eventId || ''}`, 'error');
+    }
+    if (currentSection === 'patterns') loadPatterns(true);
+    updatePatternBadge();
+  });
+
   // Request data on interval
   setInterval(() => {
     if (wsClient.isAuthenticated) {
@@ -1426,7 +1527,7 @@ document.addEventListener('DOMContentLoaded', () => {
   renderSportBreakdown();
   fetchExposureData();
   renderGameBreakdown();
-  renderPatterns();
+  loadPatterns();
   renderAlerts();
 
   // Keyboard shortcuts
@@ -1741,6 +1842,10 @@ function switchSection(section, btn) {
       if (isCacheFresh('odds')) renderOddsMatrix();
       else loadOddsData();
       break;
+    case 'patterns':
+      if (isCacheFresh('patterns')) renderPatterns();
+      else loadPatterns();
+      break;
     case 'buckeye':
       renderBuckeyeWagers();
       break;
@@ -1868,7 +1973,6 @@ function renderBuckeyeWagers() {
 
     // Price / Odds
     const price = extractPrice(w.ShortDesc);
-    const priceDisplay = price ? `<span class="font-mono">${price}</span>` : '—';
 
     // Format amounts
     const wager = w.AmountWagered || w.VolumeAmount || 0;
@@ -1880,23 +1984,23 @@ function renderBuckeyeWagers() {
     if (isAlert) {
       sourceBadge = '<span class="px-1.5 py-0.5 rounded text-xs font-bold" style="background:var(--red);color:#fff;">ALERT</span>';
     } else if (disabledFeatureReason) {
-      sourceBadge = `<span class="px-1.5 py-0.5 rounded text-xs font-bold" title="${disabledFeatureReason}" style="background:var(--red);color:#fff;">ANOMALY</span>`;
+      sourceBadge = `<span class="px-1.5 py-0.5 rounded text-xs font-bold" title="${escapeHtml(disabledFeatureReason)}" style="background:var(--red);color:#fff;">ANOMALY</span>`;
     } else if (isLive) {
       sourceBadge = '<span class="px-1.5 py-0.5 rounded text-xs font-bold" style="background:var(--cyan);color:#fff;">GSLIVE</span>';
     } else {
       sourceBadge = '<span class="px-1.5 py-0.5 rounded text-xs" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);">Internet</span>';
     }
 
-    return `<tr class="${rowClass} border-b transition-colors hover:bg-opacity-50" style="border-color:var(--border);" onclick="showWagerDetail(${w.WagerNumber})" title="${fullDesc.replace(/"/g, '&quot;')}">
-      <td class="px-3 py-2 font-medium cursor-pointer hover:underline" style="color:var(--accent);" onclick="event.stopPropagation();viewPlayer('${w.Login}')">${w.Login}</td>
-      <td class="px-3 py-2 text-center"><span class="px-1.5 py-0.5 rounded text-xs font-bold" title="${rawTypeInfo.label}" style="background:${typeInfo.color}22;color:${typeInfo.color};">${typeInfo.label}</span></td>
-      <td class="px-3 py-2 cursor-pointer hover:underline" onclick="event.stopPropagation();filterTickerByAgent('${w.AgentLogin}')">${w.AgentLogin}</td>
-      <td class="px-3 py-2"><span class="px-1.5 py-0.5 rounded text-xs" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);">${sport}</span></td>
-      <td class="px-3 py-2"><span class="px-1.5 py-0.5 rounded text-xs" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);">${league || '—'}</span></td>
-      <td class="px-3 py-2" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${fullDesc.replace(/"/g, '&quot;')}">${cleanDesc}</td>
+    return `<tr class="${rowClass} border-b transition-colors hover:bg-opacity-50 cursor-pointer" data-wager-number="${Number(w.WagerNumber) || 0}" style="border-color:var(--border);" title="${escapeHtml(fullDesc)}">
+      <td class="px-3 py-2 font-medium cursor-pointer hover:underline" style="color:var(--accent);" data-action="view-player" data-player="${escapeHtml(w.Login)}">${escapeHtml(w.Login)}</td>
+      <td class="px-3 py-2 text-center"><span class="px-1.5 py-0.5 rounded text-xs font-bold" title="${escapeHtml(rawTypeInfo.label)}" style="background:${typeInfo.color}22;color:${typeInfo.color};">${escapeHtml(typeInfo.label)}</span></td>
+      <td class="px-3 py-2 cursor-pointer hover:underline" data-action="filter-agent" data-agent="${escapeHtml(w.AgentLogin)}">${escapeHtml(w.AgentLogin)}</td>
+      <td class="px-3 py-2"><span class="px-1.5 py-0.5 rounded text-xs" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);">${escapeHtml(sport)}</span></td>
+      <td class="px-3 py-2"><span class="px-1.5 py-0.5 rounded text-xs" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);">${escapeHtml(league || '—')}</span></td>
+      <td class="px-3 py-2" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(fullDesc)}">${escapeHtml(cleanDesc)}</td>
       <td class="px-3 py-2 text-right font-mono">${risk}</td>
       <td class="px-3 py-2 text-right font-mono">${win}</td>
-      <td class="px-3 py-2 text-center">${priceDisplay}</td>
+      <td class="px-3 py-2 text-center">${price ? `<span class="font-mono">${escapeHtml(price)}</span>` : '—'}</td>
       <td class="px-3 py-2 text-center">${sourceBadge}</td>
       <td class="px-3 py-2 text-center text-xs" style="color:var(--text-dim);">${timeStr}</td>
     </tr>`;
@@ -2533,7 +2637,7 @@ function updateAlertsToastButton() {
 }
 
 // ==================== PATTERNS ====================
-function renderPatterns() {
+function renderPatternsLegacy() {
   const tbody = document.getElementById('patternsTable');
   if (!tbody) return;
 
@@ -2561,8 +2665,223 @@ function renderPatterns() {
   }).join('');
 }
 
-function simulatePatterns() {
+function simulatePatternsLegacy() {
   showToast('Pattern simulation started', 'info');
+}
+
+function setPatternCategory(category) {
+  patternCategory = category || 'all';
+  document.querySelectorAll('.pattern-category-tab').forEach(btn => {
+    const active = btn.dataset.category === patternCategory;
+    btn.style.background = active ? 'var(--accent)' : 'var(--panel)';
+    btn.style.border = `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`;
+    btn.style.color = active ? '#fff' : 'var(--text)';
+  });
+  loadPatterns(true);
+}
+
+async function loadPatterns(force = false) {
+  if (!force && isCacheFresh('patterns')) {
+    renderPatterns();
+    return;
+  }
+
+  const sinceHours = document.getElementById('patternWindowFilter')?.value || '24';
+  const type = document.getElementById('patternTypeFilter')?.value || 'all';
+  const market = document.getElementById('patternMarketFilter')?.value || 'all';
+
+  try {
+    const historyUrl = new URL(`${getApiBaseUrl()}/api/patterns/history`);
+    historyUrl.searchParams.set('limit', '150');
+    historyUrl.searchParams.set('sinceHours', sinceHours);
+    if (type !== 'all') historyUrl.searchParams.set('type', type);
+    if (market !== 'all') historyUrl.searchParams.set('market', market);
+    if (patternCategory !== 'all') historyUrl.searchParams.set('category', patternCategory);
+
+    const summaryUrl = new URL(`${getApiBaseUrl()}/api/patterns/summary`);
+    summaryUrl.searchParams.set('sinceHours', sinceHours);
+
+    const [historyRes, summaryRes] = await Promise.all([
+      fetch(historyUrl.toString()),
+      fetch(summaryUrl.toString()),
+    ]);
+    if (!historyRes.ok) throw new Error(`Pattern history failed: ${historyRes.status}`);
+    if (!summaryRes.ok) throw new Error(`Pattern summary failed: ${summaryRes.status}`);
+
+    patternsData = await historyRes.json();
+    patternSummary = await summaryRes.json();
+    markCacheFresh('patterns');
+  } catch (err) {
+    console.log('[Patterns] Failed to load live patterns:', err.message);
+    patternsData = [];
+    patternSummary = { byType: {}, bySeverity: {}, total: 0 };
+  }
+
+  renderPatterns();
+  updatePatternBadge();
+}
+
+function renderPatterns() {
+  const tbody = document.getElementById('patternsTable');
+  if (!tbody) return;
+
+  syncPatternCategoryTabs();
+  updatePatternSummaryCards();
+
+  if (!patternsData.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="px-3 py-5 text-center" style="color:var(--text-dim);">No patterns found for this window. The detector starts filling once line movements are persisted.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = patternsData.map(p => {
+    const score = Number(p.score || severityToScore(p.severity));
+    const color = score > 80 ? 'var(--red)' : score > 60 ? 'var(--yellow)' : 'var(--green)';
+    const detailsJson = parsePatternDetails(p);
+    const game = [p.away_team, p.home_team].filter(Boolean).join(' vs ') || detailsJson?.correlation?.parsed?.game || p.event_id || 'Unknown game';
+    const time = p.detected_at ? timeAgo(p.detected_at) : '-';
+    const details = p.description || `${p.market} ${p.side} triggered by ${p.trigger_book || 'book move'}`;
+    const category = p.category || 'odds';
+    return `<tr class="border-b cursor-pointer" style="border-color:var(--border);" onclick="showPatternDetail('${escapeHtml(p.id)}')">
+      <td class="px-3 py-2">
+        <span class="px-1.5 py-0.5 rounded text-xs font-bold" style="background:${color}22;color:${color};">${escapeHtml(p.type)}</span>
+        <div class="text-[10px] mt-1 uppercase" style="color:var(--text-dim);">${escapeHtml(category)}</div>
+      </td>
+      <td class="px-3 py-2">
+        <div class="font-medium">${escapeHtml(game)}</div>
+        <div class="text-[10px]" style="color:var(--text-dim);">${escapeHtml([p.sport, p.league, p.market].filter(Boolean).join(' | '))}</div>
+      </td>
+      <td class="px-3 py-2 text-xs" style="color:var(--text-dim);">${escapeHtml(details)}</td>
+      <td class="px-3 py-2 text-center">
+        <div class="flex items-center justify-center gap-1">
+          <div class="w-16 h-1.5 rounded-full" style="background:var(--border);"><div class="h-full rounded-full" style="width:${score}%;background:${color};"></div></div>
+          <span class="text-xs">${score}%</span>
+        </div>
+      </td>
+      <td class="px-3 py-2 text-center text-xs" style="color:var(--text-dim);">${escapeHtml(time)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function syncPatternCategoryTabs() {
+  document.querySelectorAll('.pattern-category-tab').forEach(btn => {
+    const active = btn.dataset.category === patternCategory;
+    btn.style.background = active ? 'var(--accent)' : 'var(--panel)';
+    btn.style.border = `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`;
+    btn.style.color = active ? '#fff' : 'var(--text)';
+  });
+}
+
+function parsePatternDetails(pattern) {
+  if (!pattern) return {};
+  if (pattern.details_json && typeof pattern.details_json === 'string') {
+    try { return JSON.parse(pattern.details_json); } catch { return {}; }
+  }
+  return pattern.details_json || pattern.details || {};
+}
+
+function showPatternDetail(patternId) {
+  const pattern = patternsData.find(p => String(p.id) === String(patternId));
+  const drawer = document.getElementById('patternDetailDrawer');
+  if (!pattern || !drawer) return;
+
+  const details = parsePatternDetails(pattern);
+  const correlation = details.correlation || {};
+  const parsed = correlation.parsed || {};
+  const match = correlation.match || {};
+  const pin = correlation.pinReference || details.pinReference || null;
+  const reasonCodes = details.reasonCodes || [];
+  const score = Number(pattern.score || severityToScore(pattern.severity));
+
+  drawer.innerHTML = `
+    <div class="flex items-start justify-between gap-2 mb-3">
+      <div>
+        <h3 class="text-sm font-semibold">${escapeHtml(pattern.type)}</h3>
+        <div class="text-[10px] uppercase mt-1" style="color:var(--text-dim);">${escapeHtml(pattern.category || 'odds')} | ${escapeHtml(pattern.severity || 'info')} | ${score}%</div>
+      </div>
+      <button class="px-2 py-1 rounded text-xs" style="background:var(--bg);border:1px solid var(--border);" onclick="resetPatternDetail()">Clear</button>
+    </div>
+    <div class="text-xs mb-3" style="color:var(--text);">${escapeHtml(pattern.description || '')}</div>
+    ${patternDetailRow('Detected', pattern.detected_at ? new Date(pattern.detected_at).toLocaleString() : '-')}
+    ${patternDetailRow('Game', parsed.game || [pattern.away_team, pattern.home_team].filter(Boolean).join(' vs ') || pattern.event_id || '-')}
+    ${patternDetailRow('Market / Side', [pattern.market, pattern.side].filter(Boolean).join(' / '))}
+    ${patternDetailRow('Wager', details.wagerNumber || '-')}
+    ${patternDetailRow('Player / Agent', [details.player || details.players?.join(', '), details.agent || details.agents?.join(', ')].filter(Boolean).join(' / ') || '-')}
+    ${patternDetailRow('IP', details.ip || '-')}
+    ${patternDetailRow('Event Match', match.eventId ? `${match.eventId} (${match.confidence || 0}%)` : '-')}
+    ${patternDetailRow('PIN Reference', pin ? compactJson(pin) : '-')}
+    ${patternDetailRow('Reason Codes', reasonCodes.length ? reasonCodes.join(', ') : '-')}
+    <div class="mt-3 pt-3 border-t" style="border-color:var(--border);">
+      <div class="text-[10px] uppercase mb-1" style="color:var(--text-dim);">Raw Evidence</div>
+      <pre class="text-[10px] overflow-auto max-h-64 p-2 rounded" style="background:var(--bg);color:var(--text-dim);">${escapeHtml(JSON.stringify(details, null, 2))}</pre>
+    </div>`;
+}
+
+function resetPatternDetail() {
+  const drawer = document.getElementById('patternDetailDrawer');
+  if (!drawer) return;
+  drawer.innerHTML = `<h3 class="text-sm font-semibold mb-3">Evidence</h3>
+    <div class="text-xs" style="color:var(--text-dim);">Select a pattern row to inspect wager timing, matched event, PIN reference, agents, players, IPs, and reason codes.</div>
+    <div class="pt-3 mt-3 border-t text-xs" style="border-color:var(--border);color:var(--text-dim);">
+      <span id="patternHealthText">${patternSummary.total || 0} patterns in window | ${(patternSummary.bySeverity || {}).critical || 0} critical</span>
+    </div>`;
+}
+
+function patternDetailRow(label, value) {
+  return `<div class="flex justify-between gap-3 border-b py-1.5 text-xs" style="border-color:var(--border);">
+    <span style="color:var(--text-dim);">${escapeHtml(label)}</span>
+    <span class="text-right break-all" style="color:var(--text);">${escapeHtml(value)}</span>
+  </div>`;
+}
+
+function compactJson(value) {
+  return JSON.stringify(value, null, 0).slice(0, 220);
+}
+
+function updatePatternSummaryCards() {
+  const byType = patternSummary.byType || {};
+  setText('patternSteamCount', byType['Steam Move'] || 0);
+  setText('patternReverseCount', byType['Reverse Line'] || 0);
+  setText('patternSyndicateCount', byType['Syndicate Play'] || 0);
+  setText('patternArbCount', byType.Arbitrage || 0);
+  const health = document.getElementById('patternHealthText');
+  if (health) {
+    const critical = patternSummary.bySeverity?.critical || 0;
+    health.textContent = `${patternSummary.total || 0} patterns in window | ${critical} critical`;
+  }
+}
+
+function updatePatternBadge() {
+  const badge = document.getElementById('patternBadge');
+  if (!badge) return;
+  const count = patternSummary.bySeverity?.critical || 0;
+  if (count > 0) {
+    badge.textContent = count;
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+}
+
+function severityToScore(severity) {
+  if (severity === 'critical') return 90;
+  if (severity === 'warning') return 70;
+  return 45;
+}
+
+function timeAgo(value) {
+  const diffMs = Date.now() - new Date(value).getTime();
+  if (!Number.isFinite(diffMs) || diffMs < 0) return 'now';
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 1) return 'now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
 }
 
 // ==================== ODDS MATRIX ====================
@@ -4163,6 +4482,15 @@ function cssEscape(value) {
   return String(value).replace(/["\\]/g, '\\$&');
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function updateAgentSummary(flatAgents) {
   const totalAgents = flatAgents.length;
   const totalPlayers = flatAgents.reduce((s, a) => s + (a.player_count || 0), 0);
@@ -4190,8 +4518,12 @@ function renderAgentTree(nodes, parentElement, depth = 0, budget) {
       return;
     }
     const indent = '&nbsp;'.repeat(depth * 3);
+    const agentAttr = escapeHtml(node.agent);
+    const agentLabel = escapeHtml(node.agent);
     const expandIcon = node.children && node.children.length
-      ? (node.expanded ? '<span style="cursor:pointer;color:var(--accent);" onclick="toggleAgentExpand(\'' + node.agent + '\',event)">▼</span>' : '<span style="cursor:pointer;color:var(--accent);" onclick="toggleAgentExpand(\'' + node.agent + '\',event)">▶</span>')
+      ? (node.expanded
+        ? `<span style="cursor:pointer;color:var(--accent);" data-action="toggle-agent" data-agent="${agentAttr}">▼</span>`
+        : `<span style="cursor:pointer;color:var(--accent);" data-action="toggle-agent" data-agent="${agentAttr}">▶</span>`)
       : '<span style="color:var(--text-dim);">•</span>';
     const typeBadge = node.type === 'M'
       ? '<span class="text-[10px] px-1 py-0.5 rounded" style="background:var(--purple);color:#fff;">M</span>'
@@ -4214,7 +4546,7 @@ function renderAgentTree(nodes, parentElement, depth = 0, budget) {
       <td class="px-3 py-2">
         <div class="flex items-center gap-1.5">
           ${expandIcon}
-          <span class="font-medium">${indent}${node.agent}</span>
+          <span class="font-medium">${indent}${agentLabel}</span>
         </div>
       </td>
       <td class="px-3 py-2 text-center">${node.level}</td>
@@ -4226,7 +4558,7 @@ function renderAgentTree(nodes, parentElement, depth = 0, budget) {
       <td class="px-3 py-2 text-right font-mono" data-agent-field="risk" title="${bookPct}% of master book">${riskStr} <span style="color:var(--text-dim);font-size:10px;">${bookPct}%</span></td>
       <td class="px-3 py-2 text-center" data-agent-field="alerts">${alertBadge || '—'}</td>
       <td class="px-3 py-2 text-center">
-        <button class="px-2 py-1 rounded text-xs" style="background:var(--accent);color:#fff;" onclick="filterTickerByAgent('${node.agent}')">Wagers</button>
+        <button type="button" class="px-2 py-1 rounded text-xs" style="background:var(--accent);color:#fff;" data-action="filter-agent" data-agent="${agentAttr}">Wagers</button>
       </td>
     `;
     tbody.appendChild(row);
@@ -4255,6 +4587,19 @@ function toggleAgentExpand(agentLogin, event) {
   }
 }
 
+function handleAgentDownlineClick(event) {
+  const actionTarget = event.target.closest('[data-action]');
+  if (!actionTarget || !event.currentTarget.contains(actionTarget)) return;
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (actionTarget.dataset.action === 'toggle-agent') {
+    toggleAgentExpand(actionTarget.dataset.agent);
+  } else if (actionTarget.dataset.action === 'filter-agent') {
+    filterTickerByAgent(actionTarget.dataset.agent);
+  }
+}
+
 function searchAgentTree() {
   scheduleTask('agentSearch', runAgentTreeSearch, 100);
 }
@@ -4271,6 +4616,8 @@ function runAgentTreeSearch() {
   tbody.innerHTML = '';
   const visible = filtered.slice(0, TABLE_RENDER_LIMIT);
   visible.forEach(node => {
+    const agentAttr = escapeHtml(node.agent);
+    const agentLabel = escapeHtml(node.agent);
     const typeBadge = node.type === 'M'
       ? '<span class="text-[10px] px-1 py-0.5 rounded" style="background:var(--purple);color:#fff;">M</span>'
       : '<span class="text-[10px] px-1 py-0.5 rounded" style="background:var(--border);color:var(--text-dim);">A</span>';
@@ -4282,7 +4629,7 @@ function runAgentTreeSearch() {
     row.className = 'border-b';
     row.style.borderColor = 'var(--border)';
     row.innerHTML = `
-      <td class="px-3 py-2"><span class="font-medium">${node.agent}</span></td>
+      <td class="px-3 py-2"><span class="font-medium">${agentLabel}</span></td>
       <td class="px-3 py-2 text-center">${node.level}</td>
       <td class="px-3 py-2 text-center">${typeBadge}</td>
       <td class="px-3 py-2 text-center">${commStr}</td>
@@ -4292,7 +4639,7 @@ function runAgentTreeSearch() {
       <td class="px-3 py-2 text-right font-mono">${riskStr}</td>
       <td class="px-3 py-2 text-center">${alertBadge || '—'}</td>
       <td class="px-3 py-2 text-center">
-        <button class="px-2 py-1 rounded text-xs" style="background:var(--accent);color:#fff;" onclick="filterTickerByAgent('${node.agent}')">Wagers</button>
+        <button type="button" class="px-2 py-1 rounded text-xs" style="background:var(--accent);color:#fff;" data-action="filter-agent" data-agent="${agentAttr}">Wagers</button>
       </td>
     `;
     tbody.appendChild(row);
@@ -4753,23 +5100,22 @@ function filterTickerByAgent(agentLogin) {
     const sport = parseSport(w.ShortDesc);
     const league = parseLeague(w.ShortDesc);
     const price = extractPrice(w.ShortDesc);
-    const priceDisplay = price ? `<span class="font-mono">${price}</span>` : '—';
     const risk = w.VolumeAmount > 0 ? '$' + w.VolumeAmount.toLocaleString() : '<span style="color:var(--red)">PENDING</span>';
     const win = '$' + w.ToWinAmount.toLocaleString();
     let sourceBadge = '';
     if (isAlert) sourceBadge = '<span class="px-1.5 py-0.5 rounded text-xs font-bold" style="background:var(--red);color:#fff;">ALERT</span>';
     else if (isLive) sourceBadge = '<span class="px-1.5 py-0.5 rounded text-xs font-bold" style="background:var(--cyan);color:#fff;">GSLIVE</span>';
     else sourceBadge = '<span class="px-1.5 py-0.5 rounded text-xs" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);">Internet</span>';
-    return `<tr class="${rowClass} border-b transition-colors hover:bg-opacity-50" style="border-color:var(--border);" onclick="viewPlayer('${w.Login}')" title="${fullDesc.replace(/"/g, '&quot;')}">
-      <td class="px-3 py-2 font-medium">${w.Login}</td>
-      <td class="px-3 py-2 text-center"><span class="px-1.5 py-0.5 rounded text-xs font-bold" style="background:${typeInfo.color}22;color:${typeInfo.color};">${typeInfo.label}</span></td>
-      <td class="px-3 py-2">${w.AgentLogin}</td>
-      <td class="px-3 py-2"><span class="px-1.5 py-0.5 rounded text-xs" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);">${sport}</span></td>
-      <td class="px-3 py-2"><span class="px-1.5 py-0.5 rounded text-xs" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);">${league || '—'}</span></td>
-      <td class="px-3 py-2" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${fullDesc.replace(/"/g, '&quot;')}">${cleanDesc}</td>
+    return `<tr class="${rowClass} border-b transition-colors hover:bg-opacity-50 cursor-pointer" data-player="${escapeHtml(w.Login)}" style="border-color:var(--border);" title="${escapeHtml(fullDesc)}">
+      <td class="px-3 py-2 font-medium hover:underline" style="color:var(--accent);" data-action="view-player" data-player="${escapeHtml(w.Login)}">${escapeHtml(w.Login)}</td>
+      <td class="px-3 py-2 text-center"><span class="px-1.5 py-0.5 rounded text-xs font-bold" style="background:${typeInfo.color}22;color:${typeInfo.color};">${escapeHtml(typeInfo.label)}</span></td>
+      <td class="px-3 py-2">${escapeHtml(w.AgentLogin)}</td>
+      <td class="px-3 py-2"><span class="px-1.5 py-0.5 rounded text-xs" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);">${escapeHtml(sport)}</span></td>
+      <td class="px-3 py-2"><span class="px-1.5 py-0.5 rounded text-xs" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);">${escapeHtml(league || '—')}</span></td>
+      <td class="px-3 py-2" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(fullDesc)}">${escapeHtml(cleanDesc)}</td>
       <td class="px-3 py-2 text-right font-mono">${risk}</td>
       <td class="px-3 py-2 text-right font-mono">${win}</td>
-      <td class="px-3 py-2 text-center">${priceDisplay}</td>
+      <td class="px-3 py-2 text-center">${price ? `<span class="font-mono">${escapeHtml(price)}</span>` : '—'}</td>
       <td class="px-3 py-2 text-center">${sourceBadge}</td>
       <td class="px-3 py-2 text-center text-xs" style="color:var(--text-dim);">${timeStr}</td>
     </tr>`;
@@ -4811,16 +5157,20 @@ function renderPlayerSearch(query = '') {
   const totalPlayers = players.length;
   const visiblePlayers = players.slice(0, TABLE_RENDER_LIMIT);
 
-  tbody.innerHTML = visiblePlayers.map(p => `<tr class="border-b" style="border-color:var(--border);">
-    <td class="px-3 py-2 font-medium">${p.login}</td>
-    <td class="px-3 py-2">${p.agent_login}</td>
+  tbody.innerHTML = visiblePlayers.map(p => {
+    const playerLabel = escapeHtml(p.login);
+    const agentLabel = escapeHtml(p.agent_login);
+    return `<tr class="border-b cursor-pointer hover:bg-opacity-50" data-player="${escapeHtml(p.login)}" style="border-color:var(--border);">
+    <td class="px-3 py-2 font-medium hover:underline" style="color:var(--accent);">${playerLabel}</td>
+    <td class="px-3 py-2">${agentLabel}</td>
     <td class="px-3 py-2 text-center">${p.wager_count}</td>
     <td class="px-3 py-2 text-right font-mono">$${p.total_volume.toLocaleString()}</td>
     <td class="px-3 py-2 text-right font-mono">$${p.total_risk.toLocaleString()}</td>
     <td class="px-3 py-2 text-center">
-      <button class="px-2 py-1 rounded text-xs" style="background:var(--accent);color:#fff;" onclick="viewPlayer('${p.login}')">View</button>
+      <button type="button" class="px-2 py-1 rounded text-xs" style="background:var(--accent);color:#fff;" data-player="${escapeHtml(p.login)}">View</button>
     </td>
-  </tr>`).join('');
+  </tr>`;
+  }).join('');
 
   if (totalPlayers > TABLE_RENDER_LIMIT) {
     tbody.innerHTML += `<tr><td colspan="6" class="px-3 py-2 text-center text-xs" style="color:var(--text-dim);">Showing ${TABLE_RENDER_LIMIT.toLocaleString()} of ${totalPlayers.toLocaleString()} players. Search to narrow results.</td></tr>`;
@@ -4831,10 +5181,51 @@ function renderPlayerSearch(query = '') {
   }
 }
 
-function viewPlayer(playerLogin) {
+function viewPlayer(playerLogin, event) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  if (!playerLogin) return false;
   previousSection = currentSection;
   switchSection('playerDetail', null);
   renderPlayerDetail(playerLogin);
+  return false;
+}
+
+function handlePlayerSearchClick(event) {
+  const playerTarget = event.target.closest('[data-player]');
+  if (!playerTarget || !event.currentTarget.contains(playerTarget)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  viewPlayer(playerTarget.dataset.player);
+}
+
+function handleBuckeyeWagerTableClick(event) {
+  const actionTarget = event.target.closest('[data-action]');
+  if (actionTarget && event.currentTarget.contains(actionTarget)) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (actionTarget.dataset.action === 'view-player') {
+      viewPlayer(actionTarget.dataset.player);
+    } else if (actionTarget.dataset.action === 'filter-agent') {
+      filterTickerByAgent(actionTarget.dataset.agent);
+    }
+    return;
+  }
+
+  const playerRow = event.target.closest('tr[data-player]');
+  if (playerRow && event.currentTarget.contains(playerRow)) {
+    event.preventDefault();
+    viewPlayer(playerRow.dataset.player);
+    return;
+  }
+
+  const wagerRow = event.target.closest('tr[data-wager-number]');
+  if (wagerRow && event.currentTarget.contains(wagerRow)) {
+    const wagerNumber = Number(wagerRow.dataset.wagerNumber);
+    if (Number.isFinite(wagerNumber) && wagerNumber > 0) showWagerDetail(wagerNumber);
+  }
 }
 
 function backFromPlayerDetail() {
@@ -4862,11 +5253,15 @@ async function renderPlayerDetail(playerLogin) {
     console.log('Backend unavailable, using static data for player detail:', err?.message || err);
   }
 
-  // Fallback to static data
-  if (!details) {
-    const playerWagers = buckeyeWagers.filter(w => w.Login === playerLogin);
+  const localPlayerWagers = buckeyeWagers.filter(w => w.Login === playerLogin);
+  const hasBackendPlayerData = Number(details?.profile?.wager_count || 0) > 0;
+
+  // Fallback to static data when the backend is unavailable or has no row for a local/demo search result.
+  if (!details || (!hasBackendPlayerData && localPlayerWagers.length > 0)) {
+    const playerWagers = localPlayerWagers;
     const totalVolume = playerWagers.reduce((s, w) => s + w.AmountWagered, 0);
     const totalRisk = playerWagers.reduce((s, w) => s + getWagerExposure(w), 0);
+    const totalPotentialPayout = playerWagers.reduce((s, w) => s + (Number(w.ToWinAmount) || 0), 0);
     const avgWager = playerWagers.length > 0 ? totalVolume / playerWagers.length : 0;
     const maxWager = Math.max(...playerWagers.map(w => w.AmountWagered), 0);
     details = {
@@ -4874,6 +5269,8 @@ async function renderPlayerDetail(playerLogin) {
         wager_count: playerWagers.length,
         total_volume: totalVolume,
         total_risk: totalRisk,
+        total_potential_payout: totalPotentialPayout,
+        projected_net_exposure: totalVolume - totalPotentialPayout,
         avg_wager: avgWager,
         max_wager: maxWager,
       },
@@ -4889,6 +5286,13 @@ async function renderPlayerDetail(playerLogin) {
   document.getElementById('pdRisk').textContent = '$' + (p.total_risk || 0).toLocaleString();
   document.getElementById('pdAvgWager').textContent = '$' + Math.round(p.avg_wager || 0).toLocaleString();
   document.getElementById('pdMaxWager').textContent = '$' + (p.max_wager || 0).toLocaleString();
+  const projectedNet = Number(p.projected_net_exposure ?? ((p.total_volume || 0) - (p.total_potential_payout || 0))) || 0;
+  const projectedNetEl = document.getElementById('pdProjectedNet');
+  if (projectedNetEl) {
+    projectedNetEl.textContent = (projectedNet < 0 ? '-' : '') + '$' + Math.abs(Math.round(projectedNet)).toLocaleString();
+    projectedNetEl.style.color = projectedNet < 0 ? 'var(--red)' : projectedNet > 0 ? 'var(--green)' : 'var(--text)';
+    projectedNetEl.title = 'Projection only: wagered amount minus potential payout from loaded wagers. This is not settled lifetime P/L.';
+  }
 
   // Render P&L chart
   renderPlayerPnlChart(pnl);

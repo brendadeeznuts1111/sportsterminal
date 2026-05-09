@@ -9,6 +9,22 @@ import type { OddsProvider, EventOdds, LineMovement, BookHealth } from './types'
 import { DemoOddsProvider } from './providers/DemoOddsProvider';
 import { TheOddsProvider } from './providers/TheOddsApiProvider';
 
+type PatternSeverity = 'info' | 'warning' | 'critical';
+
+interface DetectedPattern {
+  id: string;
+  eventId: string;
+  type: string;
+  market: string;
+  side: string;
+  severity: PatternSeverity;
+  score: number;
+  triggerBook: string;
+  followedBy: Array<{ book: string; newValue: number; lagMs: number }>;
+  detectedAt: string;
+  description: string;
+}
+
 export class OddsPoller {
   private db: Database;
   private provider: OddsProvider;
@@ -78,6 +94,7 @@ export class OddsPoller {
 
       if (movements.length > 0) {
         await this.persistMovements(movements);
+        await this.detectAndPersistPatterns(movements);
         for (const m of movements) {
           this.broadcast({
             type: 'odds.movement',
@@ -161,6 +178,61 @@ export class OddsPoller {
     }
   }
 
+  private async detectAndPersistPatterns(movements: LineMovement[]): Promise<void> {
+    const eventIds = Array.from(new Set(movements.map(m => m.eventId)));
+    if (eventIds.length === 0) return;
+
+    const placeholders = eventIds.map(() => '?').join(',');
+    const cutoff = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    const recentMovements = await this.db.all(
+      `SELECT * FROM line_movements
+       WHERE event_id IN (${placeholders}) AND recorded_at >= ?
+       ORDER BY recorded_at DESC
+       LIMIT 1000`,
+      [...eventIds, cutoff]
+    );
+
+    const patterns = this.detectPatterns(recentMovements, eventIds);
+    const inserted = await this.persistPatterns(patterns);
+
+    for (const pattern of inserted) {
+      this.broadcast({
+        type: 'pattern.detected',
+        timestamp: new Date().toISOString(),
+        payload: pattern,
+      });
+    }
+  }
+
+  private async persistPatterns(patterns: DetectedPattern[]): Promise<DetectedPattern[]> {
+    const inserted: DetectedPattern[] = [];
+
+    for (const pattern of patterns) {
+      const result = await this.db.run(
+        `INSERT OR IGNORE INTO detected_patterns
+           (id, event_id, type, market, side, severity, score, category, trigger_book, details_json, description, detected_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          pattern.id,
+          pattern.eventId,
+          pattern.type,
+          pattern.market,
+          pattern.side,
+          pattern.severity,
+          pattern.score,
+          'odds',
+          pattern.triggerBook,
+          JSON.stringify({ followedBy: pattern.followedBy }),
+          pattern.description,
+          pattern.detectedAt,
+        ]
+      );
+      if (result.changes > 0) inserted.push(pattern);
+    }
+
+    return inserted;
+  }
+
   // ==================== Query Helpers ====================
 
   async getEvents(): Promise<any[]> {
@@ -194,6 +266,111 @@ export class OddsPoller {
       `SELECT * FROM line_movements ORDER BY recorded_at DESC LIMIT ?`,
       [limit]
     );
+  }
+
+  async getPatternHistory(filters: {
+    type?: string;
+    market?: string;
+    severity?: string;
+    category?: string;
+    sport?: string;
+    agent?: string;
+    eventId?: string;
+    sinceHours?: number;
+    limit?: number;
+  } = {}): Promise<any[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+
+    if (filters.type && filters.type !== 'all') {
+      where.push('p.type = ?');
+      params.push(filters.type);
+    }
+    if (filters.market && filters.market !== 'all') {
+      where.push('p.market = ?');
+      params.push(filters.market);
+    }
+    if (filters.severity && filters.severity !== 'all') {
+      where.push('p.severity = ?');
+      params.push(filters.severity);
+    }
+    if (filters.category && filters.category !== 'all') {
+      where.push('p.category = ?');
+      params.push(filters.category);
+    }
+    if (filters.sport && filters.sport !== 'all') {
+      where.push('e.sport = ?');
+      params.push(filters.sport);
+    }
+    if (filters.agent && filters.agent !== 'all') {
+      where.push('(p.details_json LIKE ? OR p.details_json LIKE ? OR p.description LIKE ?)');
+      params.push(`%"agent":"${filters.agent}"%`, `%${filters.agent}%`, `%${filters.agent}%`);
+    }
+    if (filters.eventId) {
+      where.push('p.event_id = ?');
+      params.push(filters.eventId);
+    }
+    if (filters.sinceHours && filters.sinceHours > 0) {
+      where.push('p.detected_at >= ?');
+      params.push(new Date(Date.now() - filters.sinceHours * 60 * 60 * 1000).toISOString());
+    }
+
+    const sqlWhere = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    const limit = Math.min(Math.max(filters.limit || 100, 1), 500);
+    return this.db.all(
+      `SELECT
+         p.*,
+         e.sport,
+         e.league,
+         e.home_team,
+         e.away_team,
+         e.start_time
+       FROM detected_patterns p
+       LEFT JOIN events e ON e.id = p.event_id
+       ${sqlWhere}
+       ORDER BY p.detected_at DESC
+       LIMIT ?`,
+      [...params, limit]
+    );
+  }
+
+  async getPatternSummary(sinceHours: number = 24): Promise<any> {
+    const hours = Math.min(Math.max(sinceHours, 1), 168);
+    const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+    const rows = await this.db.all(
+      `SELECT type, severity, category, COUNT(*) AS count, MAX(detected_at) AS last_detected_at
+       FROM detected_patterns
+       WHERE detected_at >= ?
+       GROUP BY type, severity, category
+       ORDER BY category, type, severity`,
+      [cutoff]
+    );
+
+    const totals: Record<string, number> = {
+      'Steam Move': 0,
+      'Reverse Line': 0,
+      'Syndicate Play': 0,
+      Arbitrage: 0,
+    };
+    const severity: Record<string, number> = { info: 0, warning: 0, critical: 0 };
+    const category: Record<string, number> = {
+      odds: 0,
+      wagers: 0,
+      agents: 0,
+      ip: 0,
+      live: 0,
+      feed: 0,
+    };
+    let total = 0;
+
+    for (const row of rows) {
+      totals[row.type] = (totals[row.type] || 0) + Number(row.count || 0);
+      severity[row.severity] = (severity[row.severity] || 0) + Number(row.count || 0);
+      category[row.category] = (category[row.category] || 0) + Number(row.count || 0);
+      total += Number(row.count || 0);
+    }
+
+    return { sinceHours: hours, total, byType: totals, bySeverity: severity, byCategory: category, rows };
   }
 
   async getBookHealth(): Promise<any[]> {
@@ -422,8 +599,8 @@ export class OddsPoller {
    * Steam Move: 3+ books move same direction on same market within 90s.
    * Reverse Line: Public books move one way, sharp books move the other.
    */
-  private detectPatterns(movements: any[], eventIds: string[]): any[] {
-    const patterns: any[] = [];
+  private detectPatterns(movements: any[], eventIds: string[]): DetectedPattern[] {
+    const patterns: DetectedPattern[] = [];
     const sharpBooks = new Set(['PIN', 'SBO', 'STK', 'NIT']);
     const publicBooks = new Set(['DK', 'FD', 'MGM', 'CZR', 'PB', 'BR', 'BS', 'BOV']);
 
@@ -463,6 +640,7 @@ export class OddsPoller {
             market,
             side,
             severity: cluster.length >= 5 ? 'critical' : cluster.length >= 4 ? 'warning' : 'info',
+            score: Math.min(100, 45 + cluster.length * 10 + Math.min(Math.abs(cluster.reduce((sum, m) => sum + Number(m.delta || 0), 0)) * 4, 25)),
             triggerBook: trigger.book,
             followedBy,
             detectedAt: new Date(trigger.recorded_at).toISOString(),
@@ -486,6 +664,7 @@ export class OddsPoller {
             market,
             side,
             severity: 'warning',
+            score: 70,
             triggerBook: lastSharp.book,
             followedBy: publicMoves.slice(-2).map((m: any) => ({
               book: m.book,
