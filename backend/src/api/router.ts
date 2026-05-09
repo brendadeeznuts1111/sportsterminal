@@ -153,19 +153,19 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
   router.get('/api/buckeye/exposure/agents', async (url, request) => {
     return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
   });Performance cache routes
-  router.get('/api/performance/:agentId', async (url, request) => {
-    return registerPerformanceRoutes(url, request, deps);
+  router.get('/api/performance/:agentId', async (url, request, params) => {
+    return registerPerformanceRoutes(url, request, deps, params);
   });
 
-  router.delete('/api/performance/:agentId', async (url, request) => {
-    return registerPerformanceRoutes(url, request, deps);
+  router.delete('/api/performance/:agentId', async (url, request, params) => {
+    return registerPerformanceRoutes(url, request, deps, params);
   });
 
   router.get('/api/performance/status', async (url, request) => {
     return registerPerformanceRoutes(url, request, deps);
   });
 
-  // 
+  //
 
   // Static files (last resort)
   router.all('/*', async (url, request) => {

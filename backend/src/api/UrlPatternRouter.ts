@@ -68,7 +68,7 @@ export class UrlPatternRouter {
   match(method: string, pathname: string): { handler: RouteHandler; params: Record<string, string | undefined> } | null {
     for (const entry of this.routes) {
       if (entry.method !== '*' && entry.method !== method) continue;
-      const result = entry.pattern.exec(pathname, 'http://localhost');
+      const result = entry.pattern.exec(pathname);
       if (result) {
         return {
           handler: entry.handler,

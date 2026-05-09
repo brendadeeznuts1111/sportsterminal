@@ -18,25 +18,18 @@ export interface PerformanceRoutesDeps {
 export async function registerPerformanceRoutes(
   url: URL,
   request: Request,
-  deps: PerformanceRoutesDeps
+  deps: PerformanceRoutesDeps,
+  params?: Record<string, string | undefined>
 ): Promise<Response | null> {
   const { performanceCache } = deps;
 
   // GET /api/performance/:agentId
-  if (request.method === 'GET' && url.pathname === '/api/performance/:agentId') {
-    const agentId = url.pathname.split('/').pop();
-    if (!agentId) {
-      return new Response(
-        JSON.stringify({ error: 'Missing agentId' }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
+  if (request.method === 'GET' && params?.agentId) {
     try {
-      const result = await performanceCache.get(agentId);
+      const result = await performanceCache.get(params.agentId);
       return new Response(
         JSON.stringify({
-          agentId,
+          agentId: params.agentId,
           source: result.source,
           cachedAt: result.data?.cachedAt || null,
           ttlMs: result.data?.ttlMs || null,
@@ -53,20 +46,12 @@ export async function registerPerformanceRoutes(
   }
 
   // DELETE /api/performance/:agentId
-  if (request.method === 'DELETE' && url.pathname === '/api/performance/:agentId') {
-    const agentId = url.pathname.split('/').pop();
-    if (!agentId) {
-      return new Response(
-        JSON.stringify({ error: 'Missing agentId' }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
+  if (request.method === 'DELETE' && params?.agentId) {
     try {
       // Invalidate cache by deleting the key
-      await performanceCache.set(agentId, null, 0);
+      await performanceCache.set(params.agentId, null, 0);
       return new Response(
-        JSON.stringify({ message: 'Cache invalidated', agentId }),
+        JSON.stringify({ message: 'Cache invalidated', agentId: params.agentId }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     } catch (error) {
