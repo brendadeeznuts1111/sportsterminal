@@ -1,0 +1,20 @@
+{
+  "name": "sportsterminal-backend",
+  "version": "0.2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --hot src/index.ts",
+    "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --target bun --outdir dist",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "sqlite": "^5.0.0",
+    "sqlite3": "^5.1.6",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "bun-types": "latest",
+    "@types/bun": "latest"
+  }
+}
