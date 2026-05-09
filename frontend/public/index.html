@@ -3674,6 +3674,22 @@ let agentTreeData = []; // nested tree from real API
 let agentTreeFlat = []; // flattened for search
 let agentStatsMap = {}; // agent_login -> stats from wager data
 let previousSection = 'floor';
+let agentDownlineRequestId = 0;
+let agentTreeStatusMessage = 'No agent hierarchy loaded yet. Refresh after connecting or use Downline data.';
+
+function setAgentTreeLoading(isLoading, message = 'Loading agent hierarchy...') {
+  agentTreeStatusMessage = message;
+  if (isLoading) {
+    const tbody = document.getElementById('agentDownlineTable');
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="10" class="px-3 py-8 text-center text-sm" style="color:var(--text-dim);">${message}</td></tr>`;
+    }
+  }
+  if (currentSection === 'agentTree') {
+    computeTreeLayout(agentTreeData);
+    if (treeLayoutNodes.length > 0) fitTreeToCanvas();
+  }
+}
 
 async function refreshAgentDownline(force = false) {
   if (!force && isCacheFresh('downline') && agentTreeData.length > 0) {
@@ -3683,17 +3699,25 @@ async function refreshAgentDownline(force = false) {
     return;
   }
 
+  const requestId = ++agentDownlineRequestId;
+  if (agentTreeData.length === 0 || force) {
+    setAgentTreeLoading(true);
+  }
+
   try {
     // Fetch real hierarchy from Buckeye
     const hierarchyRes = await fetch(`${getApiBaseUrl()}/api/agents/hierarchy`);
+    if (!hierarchyRes.ok) throw new Error(`Hierarchy request failed: ${hierarchyRes.status}`);
     const hierarchyData = await hierarchyRes.json();
     const general = Array.isArray(hierarchyData) ? hierarchyData : (hierarchyData.GENERAL || []);
 
     // Fetch wager-derived stats
     const statsRes = await fetch(`${getApiBaseUrl()}/api/agents/downline`);
+    if (!statsRes.ok) throw new Error(`Downline stats request failed: ${statsRes.status}`);
     const statsData = await statsRes.json();
+    if (requestId !== agentDownlineRequestId) return;
     agentStatsMap = {};
-    statsData.forEach(s => { agentStatsMap[s.agent_login] = s; });
+    (Array.isArray(statsData) ? statsData : []).forEach(s => { agentStatsMap[s.agent_login] = s; });
 
     if (general.length > 0) {
       // Build tree from flat GENERAL array using Level field
@@ -3708,15 +3732,19 @@ async function refreshAgentDownline(force = false) {
       markCacheFresh('downline');
     } else {
       // Fallback: derive from static buckeyeWagers
-      deriveAgentDownlineFromStatic();
+      const fallbackCount = deriveAgentDownlineFromStatic();
       if (currentSection === 'agentTree') initAgentCanvas();
-      markCacheFresh('downline');
+      if (fallbackCount > 0) markCacheFresh('downline');
     }
   } catch (err) {
     console.error('Failed to load agent hierarchy:', err?.message || err);
-    deriveAgentDownlineFromStatic();
+    const fallbackCount = deriveAgentDownlineFromStatic();
     if (currentSection === 'agentTree') initAgentCanvas();
-    markCacheFresh('downline');
+    if (fallbackCount > 0) {
+      markCacheFresh('downline');
+    } else {
+      setAgentTreeLoading(false, 'No agent hierarchy loaded. Check seeded hierarchy data or connect to Buckeye.');
+    }
   }
 }
 
@@ -3974,6 +4002,7 @@ function deriveAgentDownlineFromStatic() {
   agentTreeFlat = agentTreeData;
   renderAgentTree(agentTreeData);
   updateAgentSummary(agentTreeFlat);
+  return agentTreeFlat.length;
 }
 
 // ==================== CANVAS TREE VIEW ====================
@@ -4024,6 +4053,7 @@ function setAgentNetworkMode(mode) {
     canvasContainer.style.display = 'block';
     if (btn) btn.textContent = 'Table View';
     if (title) title.textContent = 'Agent Tree Hierarchy';
+    if (agentTreeData.length === 0) setAgentTreeLoading(true);
     initAgentCanvas();
   } else {
     canvasContainer.style.display = 'none';
@@ -4182,7 +4212,7 @@ function renderTreeLoop() {
     treeCtx.font = '13px sans-serif';
     treeCtx.textAlign = 'center';
     treeCtx.textBaseline = 'middle';
-    treeCtx.fillText('No agent hierarchy loaded yet. Refresh after connecting or use Downline data.', canvas.width / 2, canvas.height / 2);
+    treeCtx.fillText(agentTreeStatusMessage, canvas.width / 2, canvas.height / 2);
     return;
   }
 
