@@ -70,6 +70,15 @@ describe('API route registration', () => {
       ['GET', '/api/buckeye/manager-snapshot'],
       ['POST', '/api/connect'],
       ['GET', '/api/performance/status'],
+      ['GET', '/api/betting/velocity'],
+      ['GET', '/api/betting/live-vs-pre'],
+      ['GET', '/api/logs/access'],
+      ['GET', '/api/master/history'],
+      ['GET', '/api/performance/summary'],
+      ['GET', '/api/performance/details'],
+      ['GET', '/api/export/wagers'],
+      ['GET', '/api/export/access-logs'],
+      ['GET', '/api/export/performance'],
       ['GET', '/api/performance/BILLY666'],
       ['DELETE', '/api/performance/BILLY666'],
     ];
@@ -83,6 +92,8 @@ describe('API route registration', () => {
     const router = createTestRouter();
 
     expect(router.match('GET', '/api/performance/status')?.params.agentId).toBeUndefined();
+    expect(router.match('GET', '/api/performance/summary')?.params.agentId).toBeUndefined();
+    expect(router.match('GET', '/api/performance/details')?.params.agentId).toBeUndefined();
     expect(router.match('GET', '/api/performance/BILLY666')?.params.agentId).toBe('BILLY666');
   });
 });

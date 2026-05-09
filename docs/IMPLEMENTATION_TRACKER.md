@@ -18,7 +18,7 @@ Key current pillars:
 - Buckeye live wagers, access logs, performance reports, sports types, manager snapshots, and checkpoints.
 - Multi-agent OS vault with per-agent restore, token renewal, vault health, and logout.
 - Pattern detection and history across odds, wagers, agents, IP, live timing, and feed risk.
-- Odds grid with demo provider, book health, movements, best-line highlighting, and pattern hooks.
+- Odds grid with live-provider support, book health, movements, best-line highlighting, and pattern hooks. Synthetic odds are dev/test-only behind `ODDS_DEMO_MODE=true`.
 - Alert center, webhook delivery, status page, and operational health endpoints.
 - Project docs reorganized into README, Buckeye scope, implementation tracker, changelog, and project organization guide.
 
@@ -28,7 +28,7 @@ Key current pillars:
 
 | Zone | Feature Group | Tabs | Status | Verification |
 |------|---------------|------|--------|--------------|
-| 1 | Sportsbook Grid | Trading Floor | Complete with demo odds; real provider gated by `ODDS_API_KEY` | Unit tests + UI smoke |
+| 1 | Sportsbook Grid | Trading Floor | Complete live-provider path; disabled without `ODDS_API_KEY` unless `ODDS_DEMO_MODE=true` | Unit tests + UI smoke |
 | 2 | Patterns / Anomalies | Patterns, Trading Floor hooks, Agent links | Complete baseline live detection + persistence | Unit/API coverage |
 | 3 | Exchanges | Polymarket, Kalshi | Placeholder | Not started |
 | 4 | Buckeye Backend Ops | Buckeye, Positions, Downline, Player Search, Settings | Complete baseline always-on ingestion | Unit/API/build |
@@ -101,12 +101,12 @@ Follow-ups:
 
 ## Zone 1 - Sportsbook Grid
 
-Status: **Complete with demo provider**
+Status: **Complete live-provider baseline**
 
 Delivered:
 
 - 16-book odds grid with spread/total prices, best-line highlighting, movement arrows, consensus, book health, and detail drawer.
-- Demo provider for local development.
+- Synthetic provider moved to `backend/dev-tools/` for tests and explicit local development only.
 - The Odds API provider skeleton behind `ODDS_API_KEY`.
 - Line movements persisted and available through API routes.
 - Pattern hooks on game rows.
@@ -168,11 +168,13 @@ Follow-ups:
 | `README.md` | Quickstart, current architecture, UI/API map | Current |
 | `docs/BUCKEYE_BACKEND_SCOPE.md` | Buckeye endpoint and ingestion contract | Current |
 | `docs/DATA_DICTIONARY.md` | Env vars, vault keys, source fields, local columns, API names, WebSocket events | Current |
+| `docs/ENTERPRISE_TAB_GOALS.md` | Sidebar product goals and enterprise readiness standards | Current |
+| `docs/AUDIT_ANALYTICS_ENGINE.md` | Raw logging, analytics persistence, retention, and poller safety | Current |
 | `docs/IMPLEMENTATION_TRACKER.md` | Delivery status and follow-ups | Current |
 | `docs/PROJECT_ORGANIZATION.md` | Where files and future work belong | Current |
 | `docs/CHANGELOG.md` | Chronological release notes | Current |
 | `docs/CODE_QUALITY_CHECKLIST.md` | Review checks before handoff | Current |
-| `docs/DEVELOPMENT_ROADMAP.md` | Historical roadmap/audit | Historical |
+| `docs/archive/legacy/DEVELOPMENT_ROADMAP_2026-05-08.md` | Historical roadmap/audit | Archived |
 
 ---
 
@@ -197,7 +199,7 @@ Current ignored sensitive/local artifacts:
 
 - `docs/agentobject.md`
 - `docs/agentslistharz.md`
-- `docs/*.exe`
+- `docs/archive/artifacts/*.exe`
 - `backend/data/`
 - `backend/dist/`
 - `node_modules/`

@@ -21,7 +21,8 @@ This is the single reference for Sports Terminal names: environment variables, O
 | `BOOK_HEALTH_INTERVAL_MS` | `60000` | No | `OddsPoller` | Book health polling interval |
 | `RATE_LIMIT_MAX` | `100` | No | `RateLimiter` | Max HTTP requests per client window |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | No | `RateLimiter` | HTTP rate-limit window length |
-| `ODDS_API_KEY` | unset | No | `OddsPoller` | Enables The Odds API provider; demo provider is used when unset |
+| `ODDS_API_KEY` | unset | No | `OddsPoller` | Enables The Odds API provider; odds polling is disabled when unset |
+| `ODDS_DEMO_MODE` | `false` | No | `OddsPoller` | Test/development only: enables synthetic odds if no `ODDS_API_KEY`; never used for Buckeye wager data |
 | `REDIS_URL` | unset | No | `PerformanceCache` | Optional Redis cache URL for performance cache |
 | `FRONTEND_PORT` | `3001` | No | `scripts/serve-frontend.ts` | Optional static frontend-only server port |
 | `BUCKEYE_AGENT_ID` | unset | Script-only | `backend/scripts/*` probes | One-off local probe/login scripts only; do not store production credentials |
@@ -392,6 +393,47 @@ Rugby, Soccer, Tennis, Virtual Sports
 | `last_pull` | Last successful pull timestamp |
 | `metadata` | JSON metadata, such as row counts or file hashes |
 
+### `scheduler_state` / `watermarks`
+
+| Column | Meaning |
+|--------|---------|
+| `key` | Durable poller/job key, such as `last_access_log_poll` |
+| `value` | ISO timestamp or JSON state payload |
+| `updated_at` | Last state update timestamp |
+
+### `schema_migrations`
+
+| Column | Meaning |
+|--------|---------|
+| `version` | Applied migration identifier |
+| `applied_at` | Migration timestamp |
+
+### `raw_api_logs`
+
+| Column | Meaning |
+|--------|---------|
+| `id` | Local log row ID |
+| `endpoint` | API route or Buckeye source endpoint |
+| `fetched_at` | Time the response was logged |
+| `response_json` | Redacted response/error payload |
+| `agent_id` | Related agent when known |
+| `duration_ms` | Request duration |
+| `request_params` | Redacted request/query parameters |
+| `status_code` | HTTP status code or synthetic error status |
+
+### `wager_archive`
+
+| Column | Meaning |
+|--------|---------|
+| `wager_number` | Unique Buckeye ticket number |
+| `agent_id`, `customer_id`, `login`, `agent_login` | Source account identifiers |
+| `amount_wagered`, `to_win_amount`, `volume_amount` | Normalized wager amounts |
+| `insert_date_time` | Buckeye accepted/inserted timestamp |
+| `short_desc_raw` | Original `ShortDesc` text |
+| `raw_json` | Original normalized wager payload |
+| `sport`, `league`, `price` | Easy analytics columns when parsed |
+| `ingested_at` | Local archive timestamp |
+
 ### `wagers`
 
 See `getBetTicker` mapping above. Money values are normalized to dollars before storage.
@@ -403,6 +445,24 @@ See `getWebLog` mapping above.
 ### `agent_performance_snapshots`
 
 See `getAgentPerformance` mapping above.
+
+### `master_snapshots`, `weekly_figures`, `agent_performance`
+
+| Table | Key Columns | Meaning |
+|-------|-------------|---------|
+| `master_snapshots` | `timestamp`, `balance`, `available_balance`, `percent_book`, `account_info_json` | Master account time-series snapshots |
+| `weekly_figures` | `agent_id`, `week_start_date`, `sport`, `handle`, `win_loss`, `raw_json` | Weekly figure report archive |
+| `agent_performance` | `agent_id`, `recorded_at`, `performance_json` | Raw agent performance report archive |
+
+### `audit_logs`
+
+| Column | Meaning |
+|--------|---------|
+| `action` | Operator/system action |
+| `entity_type`, `entity_id` | Affected object |
+| `actor_id`, `actor_type` | Actor context when known |
+| `old_values`, `new_values` | JSON before/after payloads |
+| `timestamp`, `ip_address` | Audit context |
 
 ### `detected_patterns`
 

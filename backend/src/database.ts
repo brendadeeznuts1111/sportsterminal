@@ -171,6 +171,106 @@ export async function initDatabase(): Promise<AppDatabase> {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS raw_api_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      endpoint TEXT NOT NULL,
+      fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      response_json TEXT NOT NULL,
+      agent_id TEXT,
+      duration_ms INTEGER,
+      request_params TEXT,
+      status_code INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS wager_archive (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      wager_number INTEGER UNIQUE NOT NULL,
+      agent_id TEXT,
+      customer_id TEXT,
+      login TEXT,
+      wager_type TEXT,
+      amount_wagered REAL,
+      to_win_amount REAL,
+      insert_date_time TEXT NOT NULL,
+      ticket_writer TEXT,
+      volume_amount REAL,
+      short_desc_raw TEXT,
+      vip TEXT,
+      agent_login TEXT,
+      ingested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      raw_json TEXT NOT NULL,
+      sport TEXT,
+      league TEXT,
+      price REAL
+    );
+
+    CREATE TABLE IF NOT EXISTS master_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      balance REAL,
+      available_balance REAL,
+      percent_book REAL,
+      open_wager_count INTEGER DEFAULT 0,
+      account_info_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS weekly_figures (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL DEFAULT 'buckeye',
+      agent_id TEXT NOT NULL,
+      week INTEGER DEFAULT 0,
+      type TEXT NOT NULL DEFAULT 'A',
+      layout TEXT NOT NULL DEFAULT 'byDay',
+      week_start_date TEXT,
+      sport TEXT,
+      handle REAL,
+      win_loss REAL,
+      this_week REAL DEFAULT 0,
+      active REAL DEFAULT 0,
+      today REAL DEFAULT 0,
+      info TEXT,
+      wager_type TEXT,
+      raw_json TEXT NOT NULL DEFAULT '{}',
+      pulled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_performance (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL,
+      recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      performance_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS scheduler_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS watermarks (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      action TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT,
+      actor_id TEXT,
+      actor_type TEXT,
+      old_values TEXT,
+      new_values TEXT,
+      timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      ip_address TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS agent_performance_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       provider TEXT NOT NULL DEFAULT 'buckeye',
@@ -279,6 +379,21 @@ export async function initDatabase(): Promise<AppDatabase> {
     CREATE INDEX IF NOT EXISTS idx_players_agent_login ON players(agent_login);
     CREATE INDEX IF NOT EXISTS idx_checkpoints_provider_entity ON ingestion_checkpoints(provider, entity_type);
     CREATE INDEX IF NOT EXISTS idx_buckeye_sport_types_label ON buckeye_sport_types(label);
+    CREATE INDEX IF NOT EXISTS idx_raw_logs_endpoint_time ON raw_api_logs(endpoint, fetched_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_raw_logs_agent ON raw_api_logs(agent_id, fetched_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_raw_logs_fetched_at ON raw_api_logs(fetched_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_weekly_figures_agent ON weekly_figures(agent_id, pulled_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_master_snapshots_agent ON master_snapshots(agent_id, timestamp DESC);
+    CREATE INDEX IF NOT EXISTS idx_wager_archive_time ON wager_archive(insert_date_time);
+    CREATE INDEX IF NOT EXISTS idx_wager_archive_agent_time ON wager_archive(agent_login, insert_date_time);
+    CREATE INDEX IF NOT EXISTS idx_wager_archive_customer ON wager_archive(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_wager_archive_ingested ON wager_archive(ingested_at);
+    CREATE INDEX IF NOT EXISTS idx_master_snapshots_time ON master_snapshots(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_weekly_figures_agent_week ON weekly_figures(agent_id, week_start_date);
+    CREATE INDEX IF NOT EXISTS idx_agent_performance_agent_time ON agent_performance(agent_id, recorded_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor_id);
     CREATE INDEX IF NOT EXISTS idx_agent_perf_customer ON agent_performance_snapshots(customer_id, pulled_at DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_perf_agent ON agent_performance_snapshots(agent_id, pulled_at DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_perf_report ON agent_performance_snapshots(report_agent_id, start_date, end_date);
@@ -483,6 +598,7 @@ export async function migrateDatabase(db: any) {
       ['parsed_period', 'TEXT'],
       ['matched_event_id', 'TEXT'],
       ['pin_reference_json', 'TEXT'],
+      ['raw_json', 'TEXT'],
     ];
     for (const [name, type] of wagerAdds) {
       if (!wagerColumnNames.has(name)) {
@@ -526,6 +642,111 @@ export async function migrateDatabase(db: any) {
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS raw_api_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        endpoint TEXT NOT NULL,
+        fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        response_json TEXT NOT NULL,
+        agent_id TEXT,
+        duration_ms INTEGER,
+        request_params TEXT,
+        status_code INTEGER
+      )
+    `);
+    const rawLogColumns = await db.all(`PRAGMA table_info(raw_api_logs)`);
+    const rawLogColumnNames = new Set(rawLogColumns.map((c: any) => c.name));
+    if (!rawLogColumnNames.has('status_code')) {
+      await db.exec(`ALTER TABLE raw_api_logs ADD COLUMN status_code INTEGER`);
+      console.log('📊 Migration: added status_code to raw_api_logs');
+    }
+
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS scheduler_state (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS watermarks (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version TEXT PRIMARY KEY,
+        applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS master_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider TEXT NOT NULL DEFAULT 'buckeye',
+        agent_id TEXT NOT NULL,
+        timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        balance REAL,
+        available_balance REAL,
+        percent_book REAL,
+        open_wager_count INTEGER DEFAULT 0,
+        config_web_reports_json TEXT,
+        config_web_reports_pending_json TEXT,
+        sports_type_json TEXT,
+        authorizations_json TEXT,
+        message_json TEXT,
+        new_emails_count_json TEXT,
+        account_info_json TEXT,
+        raw_json TEXT NOT NULL DEFAULT '{}'
+      )
+    `);
+    const masterColumns = await db.all(`PRAGMA table_info(master_snapshots)`);
+    const masterColumnNames = new Set(masterColumns.map((c: any) => c.name));
+    if (!masterColumnNames.has('open_wager_count')) {
+      await db.exec(`ALTER TABLE master_snapshots ADD COLUMN open_wager_count INTEGER DEFAULT 0`);
+      console.log('📊 Migration: added open_wager_count to master_snapshots');
+    }
+    if (!masterColumnNames.has('provider')) {
+      await db.exec(`ALTER TABLE master_snapshots ADD COLUMN provider TEXT NOT NULL DEFAULT 'buckeye'`);
+      console.log('📊 Migration: added provider to master_snapshots');
+    }
+    if (!masterColumnNames.has('agent_id')) {
+      await db.exec(`ALTER TABLE master_snapshots ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''`);
+      console.log('📊 Migration: added agent_id to master_snapshots');
+    }
+    if (!masterColumnNames.has('config_web_reports_json')) {
+      await db.exec(`ALTER TABLE master_snapshots ADD COLUMN config_web_reports_json TEXT`);
+      console.log('📊 Migration: added config_web_reports_json to master_snapshots');
+    }
+    if (!masterColumnNames.has('config_web_reports_pending_json')) {
+      await db.exec(`ALTER TABLE master_snapshots ADD COLUMN config_web_reports_pending_json TEXT`);
+      console.log('📊 Migration: added config_web_reports_pending_json to master_snapshots');
+    }
+    if (!masterColumnNames.has('sports_type_json')) {
+      await db.exec(`ALTER TABLE master_snapshots ADD COLUMN sports_type_json TEXT`);
+      console.log('📊 Migration: added sports_type_json to master_snapshots');
+    }
+    if (!masterColumnNames.has('authorizations_json')) {
+      await db.exec(`ALTER TABLE master_snapshots ADD COLUMN authorizations_json TEXT`);
+      console.log('📊 Migration: added authorizations_json to master_snapshots');
+    }
+    if (!masterColumnNames.has('message_json')) {
+      await db.exec(`ALTER TABLE master_snapshots ADD COLUMN message_json TEXT`);
+      console.log('📊 Migration: added message_json to master_snapshots');
+    }
+    if (!masterColumnNames.has('new_emails_count_json')) {
+      await db.exec(`ALTER TABLE master_snapshots ADD COLUMN new_emails_count_json TEXT`);
+      console.log('📊 Migration: added new_emails_count_json to master_snapshots');
+    }
+    if (!masterColumnNames.has('raw_json')) {
+      await db.exec(`ALTER TABLE master_snapshots ADD COLUMN raw_json TEXT NOT NULL DEFAULT '{}'`);
+      console.log('📊 Migration: added raw_json to master_snapshots');
+    }
 
     await db.exec(`
       CREATE TABLE IF NOT EXISTS agent_performance_snapshots (
@@ -614,6 +835,9 @@ export async function migrateDatabase(db: any) {
       CREATE INDEX IF NOT EXISTS idx_players_agent_login ON players(agent_login);
       CREATE INDEX IF NOT EXISTS idx_checkpoints_provider_entity ON ingestion_checkpoints(provider, entity_type);
       CREATE INDEX IF NOT EXISTS idx_buckeye_sport_types_label ON buckeye_sport_types(label);
+      CREATE INDEX IF NOT EXISTS idx_raw_logs_endpoint_time ON raw_api_logs(endpoint, fetched_at);
+      CREATE INDEX IF NOT EXISTS idx_raw_logs_agent ON raw_api_logs(agent_id);
+      CREATE INDEX IF NOT EXISTS idx_raw_logs_fetched_at ON raw_api_logs(fetched_at);
       CREATE INDEX IF NOT EXISTS idx_agent_perf_customer ON agent_performance_snapshots(customer_id, pulled_at DESC);
       CREATE INDEX IF NOT EXISTS idx_agent_perf_agent ON agent_performance_snapshots(agent_id, pulled_at DESC);
       CREATE INDEX IF NOT EXISTS idx_agent_perf_report ON agent_performance_snapshots(report_agent_id, start_date, end_date);

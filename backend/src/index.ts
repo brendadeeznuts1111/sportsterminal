@@ -102,7 +102,7 @@ async function startServer() {
 
   // Initialize odds poller
   oddsPoller = new OddsPoller(db, broadcast);
-  oddsPoller.start();
+  await oddsPoller.start();
   console.log('✅ Odds poller initialized');
 
   await restoreBuckeyeFromVault();

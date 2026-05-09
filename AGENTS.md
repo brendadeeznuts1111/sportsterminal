@@ -51,8 +51,7 @@ sportsterminal/
 │   └── package.json
 ├── frontend/
 │   └── public/
-│       ├── index.html            # Single-file SPA (~110KB)
-│       └── buckeye_data.js       # Demo wager data (149 records)
+│       └── index.html            # Single-file SPA; Buckeye data loads from backend only
 ├── docs/
 │   ├── BUCKEYE_BACKEND_SCOPE.md  # API spec + architecture
 │   └── IMPLEMENTATION_TRACKER.md # Zone-based progress tracker
@@ -164,7 +163,7 @@ Every sidebar tab, its zone, and current implementation status.
 | Tab | Zone | Status | Description |
 |-----|------|--------|-------------|
 | **Trading Floor** | Zone 1 | ✅ Full | 16-book odds grid with consensus, best-line highlighting, movement arrows (▲/▼), spread/total prices, pattern icons, detail drawers |
-| **Patterns** | Zone 2 | 🔄 Partial | Demo UI with 4 hardcoded rows + severity bars + simulate button. Backend has steam-move/reverse-line detection in OddsPoller. Real pattern storage + rules engine not built. |
+| **Patterns** | Zone 2 | ✅ Full | Real detected-pattern history from odds, wagers, agents, IP, live timing, and feed risk with filters, scoring, evidence drawer, and backend persistence. |
 
 ### Positions
 
@@ -217,9 +216,9 @@ Every sidebar tab, its zone, and current implementation status.
 | Zone | Tabs | Feature | Status |
 |------|------|---------|--------|
 | 4 | Buckeye, Downline, Player Search, Player Detail, Positions, Alerts, Settings | Backend Ops (live connection, alerts, agent downline, player drill-down, sport exposure v2) | ✅ Complete |
-| 1 | Trading Floor | Odds Grid (demo data, real odds API skeleton, prices, best-line, movement detection) | ✅ Complete (demo data) |
+| 1 | Trading Floor | Odds Grid (live provider gated by `ODDS_API_KEY`; no automatic synthetic fallback), prices, best-line, movement detection | ✅ Complete |
 | 8 | Webhooks | Webhook Alerts (Discord/Slack/Telegram/Generic with retry + logging) | ✅ Complete |
-| 2 | Patterns | Pattern Detection & Auto-trading (steam move demo UI, real detector ❌) | 🔄 Partial |
+| 2 | Patterns | Pattern Detection and anomaly history from persisted live data | ✅ Complete |
 | 3 | — | Kalshi Polling & Positions | ⬜️ Not started |
 | — | — | Amount Normalization (cents→dollars, AmountWagered fallback) | ✅ Complete |
 | — | — | Prop Bet Detection (player props from ShortDesc) | ✅ Complete |

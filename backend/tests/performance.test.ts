@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { evaluateWager } from '../src/risk/AlertEngine';
-import { DemoOddsProvider } from '../src/odds/providers/DemoOddsProvider';
+import { DemoOddsProvider } from '../dev-tools/DemoOddsProvider';
 import { RateLimiter } from '../src/api/rateLimiter';
 import { PerformanceCache } from '../src/services/PerformanceCache';
 import { registerPerformanceRoutes } from '../src/api/routes/performance';

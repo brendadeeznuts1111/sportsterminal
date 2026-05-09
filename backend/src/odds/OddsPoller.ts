@@ -6,7 +6,6 @@
 
 import type { Database } from '../database';
 import type { OddsProvider, EventOdds, LineMovement, BookHealth } from './types';
-import { DemoOddsProvider } from './providers/DemoOddsProvider';
 import { TheOddsProvider } from './providers/TheOddsApiProvider';
 import { createManagedInterval, type ManagedIntervalTask } from '../services/Scheduler';
 
@@ -54,13 +53,25 @@ export class OddsPoller {
       this.provider = new TheOddsProvider(apiKey);
       console.log('[OddsPoller] Using TheOddsAPI provider');
     } else {
-      this.provider = new DemoOddsProvider();
-      console.log('[OddsPoller] Using Demo provider (set ODDS_API_KEY for live data)');
+      // Provider will be set in start() if ODDS_DEMO_MODE is enabled
+      this.provider = null as unknown as OddsProvider;
     }
   }
 
-  start(): void {
+  async start(): Promise<void> {
     if (this.pollTask?.isRunning()) return;
+
+    // Synthetic odds are opt-in only. Buckeye views never depend on this provider.
+    if (!process.env.ODDS_API_KEY && process.env.ODDS_DEMO_MODE === 'true') {
+      const { DemoOddsProvider } = await import('../../dev-tools/DemoOddsProvider');
+      this.provider = new DemoOddsProvider();
+      console.log('[OddsPoller] Using Demo provider (ODDS_DEMO_MODE=true)');
+    }
+
+    if (!this.provider) {
+      console.log('[OddsPoller] No ODDS_API_KEY configured; odds polling disabled');
+      return;
+    }
 
     this.pollTask = createManagedInterval('odds.poll', this.pollIntervalMs, () => this.poll(), {
       initialDelayMs: 0,
@@ -96,8 +107,8 @@ export class OddsPoller {
 
       // Detect movements before storing (needs previous state)
       let movements: LineMovement[] = [];
-      if (this.provider instanceof DemoOddsProvider) {
-        movements = this.provider.detectMovements(odds);
+      if (typeof (this.provider as any).detectMovements === 'function') {
+        movements = (this.provider as any).detectMovements(odds);
       }
 
       // Persist

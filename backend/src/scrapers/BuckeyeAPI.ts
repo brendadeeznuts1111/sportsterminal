@@ -16,6 +16,7 @@ export interface BuckeyeCredentials {
   password: string;
   baseUrl?: string;
   cfCookie?: string; // cf_clearance from browser DevTools
+  token?: string; // Pre-authenticated JWT token (from vault or browser)
 }
 
 export interface WagerChange {
@@ -259,6 +260,22 @@ export class BuckeyeAPI {
     this.password = credentials.password;
     this.cfCookie = credentials.cfCookie || '';
     this.debugMode = debugMode;
+
+    // If a pre-authenticated token is provided, use it directly
+    if (credentials.token) {
+      this.token = credentials.token;
+      this.loggedIn = true;
+      this.log('Using pre-authenticated token from vault');
+    }
+  }
+
+  /**
+   * Inject a live token (e.g. captured from browser session) without re-authenticating.
+   */
+  setToken(token: string): void {
+    this.token = token;
+    this.loggedIn = true;
+    this.log('Token injected via setToken()');
   }
 
   private log(...args: any[]) {

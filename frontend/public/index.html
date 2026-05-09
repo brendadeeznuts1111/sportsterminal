@@ -126,11 +126,17 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
 .agent-pattern-badge{border:0;cursor:pointer;font-weight:700;}
 .agent-pattern-pulse{animation:agentPatternPulse 3s ease-out;}
 @keyframes agentPatternPulse{0%{box-shadow:inset 0 0 0 999px rgba(255,68,68,0.18);}100%{box-shadow:inset 0 0 0 0 rgba(255,68,68,0);}}
+.pattern-badge-pulse{animation:patternBadgePulse 2s ease-out;}
+@keyframes patternBadgePulse{0%{transform:scale(1);box-shadow:0 0 0 0 rgba(255,102,0,0.5);}50%{transform:scale(1.15);box-shadow:0 0 8px 2px rgba(255,102,0,0.3);}100%{transform:scale(1);box-shadow:0 0 0 0 rgba(255,102,0,0);}}
 .sparkline-icon{cursor:pointer;font-size:12px;margin-left:4px;opacity:0.6;transition:opacity 0.15s;}
 .sparkline-icon:hover{opacity:1;}
 
 /* Movement arrow hover target */
 .movement-arrow{cursor:help;display:inline-block;min-width:14px;text-align:center;}
+.analytics-card{border:1px solid var(--border);border-radius:8px;background:var(--panel);}
+.analytics-chart{position:relative;height:240px;min-height:240px;}
+.analytics-table th{position:sticky;top:0;background:var(--bg);z-index:1;}
+.new-ip-pill{background:rgba(239,68,68,0.16);color:var(--red);border:1px solid rgba(239,68,68,0.35);}
 </style>
 </head>
 <body class="flex flex-col h-screen">
@@ -228,6 +234,15 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
         <svg class="w-4 h-4 icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-6m4 6V7m4 10v-3M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
         <span>Status</span>
         <span id="statusBadge" class="ml-auto text-xs px-1.5 py-0.5 rounded-full" style="background:var(--border);color:var(--text-dim);">...</span>
+      </button>
+      <button class="sidebar-item w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all" onclick="switchSection('performance', this)">
+        <svg class="w-4 h-4 icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3v18h18M7 15l3-3 3 2 5-7"/></svg>
+        <span>Performance</span>
+      </button>
+      <button class="sidebar-item w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all" onclick="switchSection('uptime', this)">
+        <svg class="w-4 h-4 icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+        <span>Up</span>
+        <span id="uptimeBadge" class="ml-auto text-xs px-1.5 py-0.5 rounded-full" style="background:var(--border);color:var(--text-dim);">...</span>
       </button>
       <button class="sidebar-item w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all" onclick="switchSection('settings', this)">
         <svg class="w-4 h-4 icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
@@ -357,9 +372,9 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
           </div>
         </div>
         <div class="flex items-center gap-2">
-          <button class="px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1" style="background:var(--green);color:#fff;" onclick="connectBuckeye()">
-            <div class="w-2 h-2 rounded-full bg-white pulse-dot"></div>
-            Connected
+          <button id="buckeyeStatusBadge" class="px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onclick="connectBuckeye()" title="Open Settings to connect or inspect the vaulted Buckeye session">
+            <div class="w-2 h-2 rounded-full" style="background:var(--text-dim);"></div>
+            <span>Checking</span>
           </button>
           <button class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onclick="resyncBuckeye()">Resync</button>
           <button class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onclick="showBuckeyeSettings()">Settings</button>
@@ -787,6 +802,235 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
           <div id="statusQueueList" class="space-y-2 text-xs"></div>
         </div>
       </div>
+
+      <!-- API Endpoint Status -->
+      <div class="mt-4 rounded-lg border p-4" style="background:var(--panel);border-color:var(--border);">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-semibold">API Endpoint Status</h3>
+          <span class="text-xs" id="apiEndpointSummary" style="color:var(--text-dim);">Checking...</span>
+        </div>
+        <div id="apiEndpointList" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs"></div>
+      </div>
+    </div>
+
+    <div id="performanceSection" class="section-content flex-1 overflow-y-auto p-4 hidden">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 class="text-lg font-bold">Performance</h2>
+          <p class="text-xs mt-1" style="color:var(--text-dim);">Audit archive, master health, velocity, access logs, and agent performance.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onclick="exportAnalytics('wagers')">Wagers CSV</button>
+          <button class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onclick="exportAnalytics('access-logs')">Access CSV</button>
+          <button class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onclick="exportAnalytics('performance')">Performance CSV</button>
+          <button class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--accent);color:#fff;" onclick="loadPerformancePage(true)">Refresh</button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
+        <div class="analytics-card p-3">
+          <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Master Balance</div>
+          <div class="text-2xl font-bold" id="perfMasterBalance">$0</div>
+          <div class="text-xs mt-1" id="perfMasterAge" style="color:var(--text-dim);">No snapshot</div>
+        </div>
+        <div class="analytics-card p-3">
+          <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Available</div>
+          <div class="text-2xl font-bold" id="perfAvailableBalance">$0</div>
+          <div class="text-xs mt-1" id="perfBookPercent" style="color:var(--text-dim);">Book percent --</div>
+        </div>
+        <div class="analytics-card p-3">
+          <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Open Wagers</div>
+          <div class="text-2xl font-bold" id="perfOpenWagers">0</div>
+          <div class="text-xs mt-1" id="perfLiveIndicator" style="color:var(--green);">Waiting for archive</div>
+        </div>
+        <div class="analytics-card p-3">
+          <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Archive Rows</div>
+          <div class="text-2xl font-bold" id="perfArchiveRows">0</div>
+          <div class="text-xs mt-1" id="perfLiveSplit" style="color:var(--text-dim);">Live 0 / Pregame 0</div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-4">
+        <div class="analytics-card p-4 xl:col-span-2">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold">Bet Ticker Velocity</h3>
+            <span class="text-xs" style="color:var(--text-dim);">Last 30 minutes</span>
+          </div>
+          <div class="analytics-chart"><canvas id="velocityChart"></canvas></div>
+        </div>
+        <div class="analytics-card p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold">Live vs Pregame</h3>
+            <span class="text-xs" id="liveVsPreDate" style="color:var(--text-dim);">Today</span>
+          </div>
+          <div class="analytics-chart"><canvas id="liveVsPreChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div class="analytics-card p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold">Access Log Monitor</h3>
+            <input id="accessIpFilter" type="text" placeholder="Filter IP" class="text-xs px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" oninput="loadAccessLogsForPerformance()">
+          </div>
+          <div class="max-h-[360px] overflow-auto">
+            <table class="analytics-table w-full text-xs">
+              <thead><tr><th class="text-left px-2 py-2">Login</th><th class="text-left px-2 py-2">IP</th><th class="text-left px-2 py-2">Operation</th><th class="text-right px-2 py-2">Time</th></tr></thead>
+              <tbody id="accessLogMonitorRows"><tr><td colspan="4" class="px-2 py-6 text-center" style="color:var(--text-dim);">Loading access logs...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="analytics-card p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold">Agent Performance</h3>
+            <select id="agentPerformanceSort" class="text-xs px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" onchange="renderAgentPerformanceTable()">
+              <option value="handle">Sort by handle</option>
+              <option value="win_loss">Sort by win/loss</option>
+              <option value="agent_id">Sort by agent</option>
+            </select>
+          </div>
+          <div class="max-h-[360px] overflow-auto">
+            <table class="analytics-table w-full text-xs">
+              <thead><tr><th class="text-left px-2 py-2">Agent</th><th class="text-right px-2 py-2">Rows</th><th class="text-right px-2 py-2">Handle</th><th class="text-right px-2 py-2">Net</th><th class="text-center px-2 py-2">Trend</th></tr></thead>
+              <tbody id="agentPerformanceRows"><tr><td colspan="5" class="px-2 py-6 text-center" style="color:var(--text-dim);">Loading performance...</td></tr></tbody>
+            </table>
+          </div>
+          <div id="agentPerformanceDetail" class="mt-3 text-xs rounded p-3 hidden" style="background:var(--bg);border:1px solid var(--border);"></div>
+        </div>
+      </div>
+
+      <!-- Raw API Logs -->
+      <div class="rounded-lg border p-3 mb-4" style="background:var(--panel);border-color:var(--border);">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="text-sm font-semibold">Raw API Logs</h3>
+          <span class="text-xs" style="color:var(--text-dim);" id="perfRawLogsCount">0 entries</span>
+        </div>
+        <div class="max-h-[240px] overflow-auto">
+          <table class="analytics-table w-full text-xs">
+            <thead><tr><th class="text-left px-2 py-2">Endpoint</th><th class="text-left px-2 py-2">Agent</th><th class="text-right px-2 py-2">Duration</th><th class="text-left px-2 py-2">Time</th></tr></thead>
+            <tbody id="perfRawLogsRows"><tr><td colspan="4" class="px-2 py-6 text-center" style="color:var(--text-dim);">Loading raw logs...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Weekly Figures -->
+      <div class="rounded-lg border p-3 mb-4" style="background:var(--panel);border-color:var(--border);">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="text-sm font-semibold">Weekly Figures</h3>
+          <span class="text-xs" style="color:var(--text-dim);" id="perfWeeklyFiguresCount">0 entries</span>
+        </div>
+        <div class="max-h-[240px] overflow-auto">
+          <table class="analytics-table w-full text-xs">
+            <thead><tr><th class="text-left px-2 py-2">Agent</th><th class="text-right px-2 py-2">Week</th><th class="text-right px-2 py-2">This Week</th><th class="text-right px-2 py-2">Active</th><th class="text-right px-2 py-2">Today</th><th class="text-left px-2 py-2">Pulled</th></tr></thead>
+            <tbody id="perfWeeklyFiguresRows"><tr><td colspan="6" class="px-2 py-6 text-center" style="color:var(--text-dim);">Loading weekly figures...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Master Snapshots -->
+      <div class="rounded-lg border p-3 mb-4" style="background:var(--panel);border-color:var(--border);">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="text-sm font-semibold">Master Snapshots</h3>
+          <span class="text-xs" style="color:var(--text-dim);" id="perfMasterSnapshotsCount">0 entries</span>
+        </div>
+        <div class="max-h-[240px] overflow-auto">
+          <table class="analytics-table w-full text-xs">
+            <thead><tr><th class="text-left px-2 py-2">Agent</th><th class="text-right px-2 py-2">Balance</th><th class="text-right px-2 py-2">Available</th><th class="text-right px-2 py-2">Open Wagers</th><th class="text-left px-2 py-2">Timestamp</th></tr></thead>
+            <tbody id="perfMasterSnapshotsRows"><tr><td colspan="5" class="px-2 py-6 text-center" style="color:var(--text-dim);">Loading snapshots...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION: Up (Error Tracking & Recovery) -->
+    <div id="uptimeSection" class="section-content flex-1 overflow-y-auto p-4 hidden">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 class="text-lg font-bold">Up — Error Tracking & Recovery</h2>
+          <p class="text-xs mt-1" style="color:var(--text-dim);">Real-time error monitoring, poller health, backoff states, and recovery status.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--accent);color:#fff;" onclick="loadUptimePage(true)">Refresh</button>
+        </div>
+      </div>
+
+      <!-- Summary Cards -->
+      <div class="grid grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
+        <div class="rounded-lg border p-3" style="background:var(--panel);border-color:var(--border);">
+          <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Backend Status</div>
+          <div class="text-xl font-bold" id="uptimeBackendStatus">—</div>
+          <div class="text-xs mt-1" id="uptimeBackendUptime" style="color:var(--text-dim);">—</div>
+        </div>
+        <div class="rounded-lg border p-3" style="background:var(--panel);border-color:var(--border);">
+          <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Active Agents</div>
+          <div class="text-xl font-bold" id="uptimeActiveAgents">0</div>
+          <div class="text-xs mt-1" id="uptimeAgentErrors" style="color:var(--text-dim);">0 total errors</div>
+        </div>
+        <div class="rounded-lg border p-3" style="background:var(--panel);border-color:var(--border);">
+          <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Poller Health</div>
+          <div class="text-xl font-bold" id="uptimePollerHealth">—</div>
+          <div class="text-xs mt-1" id="uptimePollerDetail" style="color:var(--text-dim);">—</div>
+        </div>
+        <div class="rounded-lg border p-3" style="background:var(--panel);border-color:var(--border);">
+          <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">API Endpoints</div>
+          <div class="text-xl font-bold" id="uptimeApiOk">0/0</div>
+          <div class="text-xs mt-1" id="uptimeApiErrors" style="color:var(--text-dim);">0 errors</div>
+        </div>
+      </div>
+
+      <!-- Agent Poller Details -->
+      <div class="rounded-lg border p-4 mb-4" style="background:var(--panel);border-color:var(--border);">
+        <h3 class="text-sm font-semibold mb-3">Agent Poller Status</h3>
+        <div id="uptimeAgentList" class="space-y-2 text-xs"></div>
+      </div>
+
+      <!-- Poller Watermarks -->
+      <div class="rounded-lg border p-4 mb-4" style="background:var(--panel);border-color:var(--border);">
+        <h3 class="text-sm font-semibold mb-3">Poller Watermarks</h3>
+        <div id="uptimeWatermarks" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 text-xs"></div>
+      </div>
+
+      <!-- Error History -->
+      <div class="rounded-lg border p-4 mb-4" style="background:var(--panel);border-color:var(--border);">
+        <h3 class="text-sm font-semibold mb-3">Error History</h3>
+        <div class="max-h-[300px] overflow-auto">
+          <table class="analytics-table w-full text-xs">
+            <thead><tr><th class="text-left px-2 py-2">Time</th><th class="text-left px-2 py-2">Agent</th><th class="text-left px-2 py-2">Error</th><th class="text-center px-2 py-2">Recovery</th></tr></thead>
+            <tbody id="uptimeErrorRows"><tr><td colspan="4" class="px-2 py-6 text-center" style="color:var(--text-dim);">Loading error history...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Recovery Matrix -->
+      <div class="rounded-lg border p-4" style="background:var(--panel);border-color:var(--border);">
+        <h3 class="text-sm font-semibold mb-3">Recovery Matrix</h3>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
+          <div class="rounded p-3" style="background:var(--bg);border:1px solid var(--border);">
+            <div class="font-semibold mb-1" style="color:var(--green);">401 Unauthorized</div>
+            <div style="color:var(--text-dim);">Buckeye token expired. Auto-renews every 15 min. If renewal fails, falls back to password re-login (max 3 attempts). After 3 failures, broadcasts <code>auth_failed</code> and stops polling.</div>
+          </div>
+          <div class="rounded p-3" style="background:var(--bg);border:1px solid var(--border);">
+            <div class="font-semibold mb-1" style="color:var(--yellow);">Network Timeout</div>
+            <div style="color:var(--text-dim);">Buckeye API unreachable. Exponential backoff: 5s → 10s → 20s → 40s → max 60s. Resets to 5s on next success. Consecutive errors tracked per agent.</div>
+          </div>
+          <div class="rounded p-3" style="background:var(--bg);border:1px solid var(--border);">
+            <div class="font-semibold mb-1" style="color:var(--yellow);">Rate Limit (429)</div>
+            <div style="color:var(--text-dim);">Server-side rate limiter: 100 req/min per IP. Returns <code>Retry-After</code> header. Client should back off. No automatic retry — user must wait.</div>
+          </div>
+          <div class="rounded p-3" style="background:var(--bg);border:1px solid var(--border);">
+            <div class="font-semibold mb-1" style="color:var(--green);">DB Constraint Violation</div>
+            <div style="color:var(--text-dim);">INSERT OR IGNORE on wager_archive prevents duplicate wager_number errors. Transactions roll back cleanly on failure. RawApiLogger catches and logs silently.</div>
+          </div>
+          <div class="rounded p-3" style="background:var(--bg);border:1px solid var(--border);">
+            <div class="font-semibold mb-1" style="color:var(--green);">WebSocket Disconnect</div>
+            <div style="color:var(--text-dim);">Client auto-reconnects (max 5 attempts, 3s delay). Server pings every 30s, closes stale connections after 45s. Auth state restored via JWT token.</div>
+          </div>
+          <div class="rounded p-3" style="background:var(--bg);border:1px solid var(--border);">
+            <div class="font-semibold mb-1" style="color:var(--green);">RawApiLogger Failure</div>
+            <div style="color:var(--text-dim);">Fire-and-forget design. Logging errors are caught and logged to console only — never propagated to the caller. Queue flushes every 250ms or 25 items.</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- SECTION: Agent Network -->
@@ -1037,27 +1281,6 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
 </div>
 
 <script>
-// Load static demo data only as fallback when backend is unavailable
-let buckeyeWagers = [];
-async function loadStaticData() {
-  try {
-    const res = await fetch('buckeye_data.js');
-    if (res.ok) {
-      const text = await res.text();
-      // Extract the array assignment from the JS file
-      const match = text.match(/buckeyeWagers\s*=\s*(\[[\s\S]*?\]);/);
-      if (match) {
-        buckeyeWagers = JSON.parse(match[1]);
-        console.log('[Static] Loaded', buckeyeWagers.length, 'demo wagers');
-      }
-    }
-  } catch {
-    console.log('[Static] buckeye_data.js not available');
-  }
-}
-loadStaticData();
-</script>
-<script>
 // ==================== WEBSOCKET CLIENT ====================
 class TerminalWebSocketClient {
   constructor() {
@@ -1069,6 +1292,10 @@ class TerminalWebSocketClient {
     this.isAuthenticated = false;
     this.agentId = localStorage.getItem('agentId') || '';
     this.messageHandlers = {};
+  }
+
+  get isConnected() {
+    return this.ws?.readyState === WebSocket.OPEN;
   }
 
   connect() {
@@ -1167,6 +1394,7 @@ class TerminalWebSocketClient {
       case 'data_response':
         if (msg.data) {
           updateFromBackend(msg.data);
+          loadPersistedWagers(true);
         }
         break;
       case 'error':
@@ -1220,6 +1448,7 @@ const CACHE_TTL = {
   downline: 30000,
   exposure: 10000,
   patterns: 15000,
+  performance: 30000,
 };
 const sectionCache = {
   odds: { at: 0 },
@@ -1227,6 +1456,7 @@ const sectionCache = {
   downline: { at: 0 },
   exposure: { at: 0 },
   patterns: { at: 0 },
+  performance: { at: 0 },
 };
 const debouncedTasks = {};
 let currentMovementIndex = {};
@@ -1251,6 +1481,19 @@ let patternCategory = 'all';
 let patternFilterChoices = { agents: [], sports: [] };
 let lastPatternRequestKey = '';
 let patternsLoading = false;
+let performanceState = {
+  velocity: [],
+  liveVsPre: null,
+  master: [],
+  accessLogs: [],
+  performanceSummary: [],
+  rawLogs: [],
+  weeklyFigures: [],
+  masterSnapshots: [],
+  selectedAgent: null,
+};
+let velocityChart = null;
+let liveVsPreChart = null;
 let wsClient = new TerminalWebSocketClient();
 
 function isCacheFresh(key) {
@@ -1496,36 +1739,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Buckeye secrets live in the backend OS vault; the browser no longer stores them.
 
-  // Load Buckeye static data if available
-  // Note: buckeye_data.js amounts are in cents (from API); convert to dollars
-  if (window.BUCKEYE_WAGERS && Array.isArray(window.BUCKEYE_WAGERS)) {
-    buckeyeWagers = window.BUCKEYE_WAGERS.map(w => ({
-      ...w,
-      AmountWagered: (w.AmountWagered || 0) / 100,
-      ToWinAmount: (w.ToWinAmount || 0) / 100,
-      VolumeAmount: (w.VolumeAmount || 0) / 100,
-      AgentLogin: (w.AgentLogin || w.AgentID || '').trim(),
-      CustomerID: (w.CustomerID || '').trim(),
-      Login: (w.Login || w.CustomerID || '').toString().trim(),
-      TicketWriter: (w.TicketWriter || '').trim(),
-      VIP: (w.VIP || '0').trim()
-    }));
-  }
-
   // Initialize WebSocket
   wsClient.connect();
 
   // Register WebSocket event handlers
   wsClient.on('wager.new', (msg) => {
     if (msg.payload) {
-      buckeyeWagers.unshift(msg.payload);
-      const disabledReason = getDisabledFeatureReason(msg.payload);
+      const wager = normalizeBackendWager(msg.payload);
+      buckeyeWagers = buckeyeWagers.filter(w => w.WagerNumber !== wager.WagerNumber);
+      buckeyeWagers.unshift(wager);
+      const disabledReason = getDisabledFeatureReason(wager);
       if (disabledReason) {
-        showToast(`Anomaly: ${disabledReason} on wager ${msg.payload.WagerNumber}`, 'error');
+        showToast(`Anomaly: ${disabledReason} on wager ${wager.WagerNumber}`, 'error');
       }
       sectionCache.downline.at = 0;
       sectionCache.exposure.at = 0;
       updateBuckeyeStats();
+      recordPerformanceWager(wager);
       scheduleRender('buckeye');
     }
   });
@@ -1590,12 +1820,65 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log('[WS] Refresh initiated for', msg.agentId);
   });
 
+  wsClient.on('rawApiLog.new', (msg) => {
+    if (currentSection === 'performance') {
+      performanceState.rawLogs.unshift(msg.payload);
+      renderRawLogsTable();
+    }
+  });
+
+  wsClient.on('weeklyFigure.new', (msg) => {
+    if (currentSection === 'performance') {
+      performanceState.weeklyFigures.unshift(msg.payload);
+      renderWeeklyFiguresTable();
+    }
+  });
+
+  wsClient.on('masterSnapshot.new', (msg) => {
+    if (currentSection === 'performance') {
+      performanceState.masterSnapshots.unshift(msg.payload);
+      renderMasterSnapshotsTable();
+    }
+  });
+
   wsClient.on('pattern.detected', (msg) => {
     sectionCache.patterns.at = 0;
     const pattern = msg.payload || {};
     if (pattern.severity === 'critical') {
       showToast(`${pattern.type || 'Pattern'} detected: ${pattern.description || pattern.eventId || ''}`, 'error');
     }
+
+    // Cache live pattern for odds grid tooltips
+    const pid = pattern.id || `ws_${pattern.eventId || pattern.event_id || 'unknown'}_${Date.now()}`;
+    pattern.id = pid;
+    livePatterns.set(pid, pattern);
+    if (livePatterns.size > 500) {
+      const firstKey = livePatterns.keys().next().value;
+      if (firstKey) livePatterns.delete(firstKey);
+    }
+
+    // Re-render odds grid if pattern relates to a visible game
+    if ((pattern.eventId || pattern.event_id) && currentSection === 'floor') {
+      renderOddsMatrix();
+    }
+
+    // Update agent pattern badges and pulse the row for affected agents
+    const affectedAgents = [
+      pattern.agent,
+      ...(Array.isArray(pattern.agents) ? pattern.agents : []),
+      pattern.details?.agent,
+      ...(Array.isArray(pattern.details?.agents) ? pattern.details.agents : [])
+    ].filter(Boolean);
+    for (const agent of affectedAgents) {
+      const info = agentPatternCounts[agent] || { agent, pattern_count: 0, critical_count: 0 };
+      info.pattern_count = (info.pattern_count || 0) + 1;
+      if (pattern.severity === 'critical') {
+        info.critical_count = (info.critical_count || 0) + 1;
+      }
+      agentPatternCounts[agent] = info;
+      pulseAgentPatternBadge(agent);
+    }
+
     if (currentSection === 'patterns') loadPatterns(true);
     updatePatternBadge();
   });
@@ -1647,12 +1930,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === '4') switchSection('buckeye', document.querySelectorAll('.sidebar-item')[3]);
     if (e.key === '5') switchSection('agentNetwork', document.querySelectorAll('.sidebar-item')[4]);
     if (e.key === '6') switchSection('playerSearch', document.querySelectorAll('.sidebar-item')[5]);
+    if (e.key === '7') switchSection('performance', document.querySelectorAll('.sidebar-item')[6]);
     if (e.key === 'Escape') { closeTradeModal(); closeAuthModal(); }
     if (e.key === '/' && e.ctrlKey) { e.preventDefault(); document.getElementById('globalSearch').focus(); }
   });
 
-  // Initial data load for demo
-  loadSampleData();
+  // Buckeye screens use only live/persisted backend data.
+  loadPersistedWagers(true).then(() => {
+    scheduleRender('all');
+    updateBuckeyeStats();
+  });
 });
 
 // ==================== BACKEND INTEGRATION ====================
@@ -1676,19 +1963,40 @@ function updateWSStatus(connected) {
   updateTopBarStatus();
 }
 
+function updateBuckeyeStatusBadge(state, label) {
+  const badge = document.getElementById('buckeyeStatusBadge');
+  if (!badge) return;
+  const styles = {
+    connected: { text: label || 'Live Polling', bg: 'var(--green)', border: 'rgba(16,185,129,0.35)', color: '#fff', dot: '#fff', pulse: true },
+    connecting: { text: label || 'Connecting', bg: 'rgba(245,158,11,0.14)', border: 'rgba(245,158,11,0.35)', color: 'var(--yellow)', dot: 'var(--yellow)', pulse: true },
+    ready: { text: label || 'Vault Ready', bg: 'rgba(59,130,246,0.12)', border: 'rgba(59,130,246,0.35)', color: 'var(--blue)', dot: 'var(--blue)', pulse: false },
+    archive: { text: label || 'Archive Loaded', bg: 'rgba(34,211,238,0.10)', border: 'rgba(34,211,238,0.35)', color: 'var(--cyan)', dot: 'var(--cyan)', pulse: false },
+    warning: { text: label || 'Vault Needs Login', bg: 'rgba(245,158,11,0.10)', border: 'rgba(245,158,11,0.30)', color: 'var(--yellow)', dot: 'var(--yellow)', pulse: false },
+    disconnected: { text: label || 'Not Connected', bg: 'var(--panel)', border: 'var(--border)', color: 'var(--text-dim)', dot: 'var(--text-dim)', pulse: false },
+  };
+  const s = styles[state] || styles.disconnected;
+  badge.style.background = s.bg;
+  badge.style.border = `1px solid ${s.border}`;
+  badge.style.color = s.color;
+  badge.innerHTML = `<div class="w-2 h-2 rounded-full ${s.pulse ? 'pulse-dot' : ''}" style="background:${s.dot};"></div><span>${escapeHtml(s.text)}</span>`;
+}
+
 function updateTopBarStatus() {
   const session = document.getElementById('topSessionStatus');
   const live = document.getElementById('topLiveWagers');
   const toast = document.getElementById('topToastToggle');
   const agent = localStorage.getItem('agentId') || '';
   if (session) {
+    const liveAgents = Number(window.backendLiveAgents || 0);
     const authText = wsClient?.isAuthenticated
       ? `Session: ${agent || 'agent'} confirmed`
+      : liveAgents > 0
+        ? `Backend: ${liveAgents} agent${liveAgents === 1 ? '' : 's'} ingesting`
       : wsClient?.ws?.readyState === WebSocket.OPEN
         ? 'Session: socket open'
         : 'Session: not connected';
     session.textContent = authText;
-    session.style.color = wsClient?.isAuthenticated ? 'var(--green)' : 'var(--text-dim)';
+    session.style.color = (wsClient?.isAuthenticated || liveAgents > 0) ? 'var(--green)' : 'var(--text-dim)';
   }
   if (live) {
     const liveCount = buckeyeWagers.filter(w => w.TicketWriter === 'GSLIVE').length;
@@ -1702,27 +2010,77 @@ function updateTopBarStatus() {
   }
 }
 
+function normalizeBackendWager(row) {
+  const raw = row || {};
+  const amount = raw.amount_wagered ?? raw.AmountWagered ?? 0;
+  const toWin = raw.to_win_amount ?? raw.ToWinAmount ?? 0;
+  const volume = raw.volume_amount ?? raw.VolumeAmount ?? amount;
+  const agent = (raw.agent_login ?? raw.AgentLogin ?? raw.agent_id ?? raw.AgentID ?? '').toString().trim();
+  const customer = (raw.customer_id ?? raw.CustomerID ?? raw.login ?? raw.Login ?? '').toString().trim();
+  return {
+    ...raw,
+    WagerNumber: raw.wager_number ?? raw.WagerNumber,
+    AgentID: (raw.agent_id ?? raw.AgentID ?? agent).toString().trim(),
+    CustomerID: customer,
+    Login: (raw.login ?? raw.Login ?? customer).toString().trim(),
+    WagerType: (raw.wager_type ?? raw.WagerType ?? '').toString().trim(),
+    AmountWagered: Number(amount) || 0,
+    ToWinAmount: Number(toWin) || 0,
+    VolumeAmount: Number(volume) || 0,
+    InsertDateTime: raw.insert_datetime ?? raw.insert_date_time ?? raw.InsertDateTime ?? raw.scraped_at ?? new Date().toISOString(),
+    TicketWriter: (raw.ticket_writer ?? raw.TicketWriter ?? '').toString().trim(),
+    ShortDesc: raw.short_desc ?? raw.short_desc_raw ?? raw.ShortDesc ?? '',
+    VIP: (raw.vip ?? raw.VIP ?? '0').toString().trim(),
+    AgentLogin: agent,
+    Sport: (raw.sport ?? raw.Sport ?? '').toString().trim(),
+  };
+}
+
+function mergeWagers(rows) {
+  const normalized = rows.map(normalizeBackendWager).filter(w => w.WagerNumber !== undefined && w.WagerNumber !== null);
+  if (!normalized.length) return 0;
+  const existing = new Map();
+  for (const wager of buckeyeWagers) {
+    existing.set(String(wager.WagerNumber), wager);
+  }
+  for (const wager of normalized) {
+    existing.set(String(wager.WagerNumber), wager);
+  }
+  buckeyeWagers = Array.from(existing.values()).sort((a, b) => new Date(b.InsertDateTime) - new Date(a.InsertDateTime));
+  sectionCache.downline.at = 0;
+  sectionCache.exposure.at = 0;
+  updateBuckeyeStats();
+  scheduleRender('all');
+  return normalized.length;
+}
+
+async function loadPersistedWagers(force = false) {
+  if (!force && window.backendWagersLoaded) return buckeyeWagers.length > 0;
+  try {
+    const res = await fetch(`${getApiBaseUrl()}/api/wagers?limit=500`);
+    if (!res.ok) throw new Error(`Wager archive unavailable: ${res.status}`);
+    const payload = await res.json();
+    const rows = Array.isArray(payload) ? payload : (payload.wagers || payload.data || []);
+    if (!rows.length) return false;
+    window.backendWagersLoaded = true;
+    const merged = mergeWagers(rows);
+    updateBuckeyeStatusBadge('archive', `${buckeyeWagers.length.toLocaleString()} Archived`);
+    refreshVaultStatus();
+    console.log('[Backend] Loaded persisted wagers:', merged);
+    return true;
+  } catch (err) {
+    console.warn('[Backend] Persisted wager load failed:', err.message);
+    return false;
+  }
+}
+
 function updateFromBackend(data) {
   console.log('[Backend] Received data:', data);
 
   // Merge wagers from backend into frontend state
   if (data.wagers && Array.isArray(data.wagers)) {
-    const existingIds = new Set(buckeyeWagers.map(w => w.WagerNumber));
-    let added = 0;
-    for (const w of data.wagers) {
-      if (!existingIds.has(w.WagerNumber)) {
-        buckeyeWagers.push(w);
-        added++;
-      }
-    }
-    if (added > 0) {
-      buckeyeWagers.sort((a, b) => new Date(b.InsertDateTime) - new Date(a.InsertDateTime));
-      sectionCache.downline.at = 0;
-      sectionCache.exposure.at = 0;
-      updateBuckeyeStats();
-      scheduleRender('all');
-    }
-    console.log('[Backend] Wagers merged:', added, 'new');
+    const added = mergeWagers(data.wagers);
+    console.log('[Backend] Wagers merged:', added, 'rows');
   }
 
   // Update alerts
@@ -1738,61 +2096,6 @@ async function refreshLiveStats() {
   await fetchExposureData(true);
   updateBuckeyeStats();
   scheduleRender('all');
-}
-
-function loadSampleData() {
-  // Only load sample data if no real data is present (e.g., buckeye_data.js failed to load)
-  if (buckeyeWagers.length > 0) return;
-
-  buckeyeWagers = [
-    {
-      WagerNumber: 1001,
-      AgentID: 'AGN001',
-      AgentLogin: 'BILLY666',
-      CustomerID: 'CUST001',
-      Login: 'PLAYER1',
-      TicketWriter: 'Internet',
-      ShortDesc: '76ers vs Knicks - 76ers ML',
-      AmountWagered: 5000,
-      ToWinAmount: 3000,
-      VolumeAmount: 5000,
-      WagerType: 'M',
-      VIP: '0',
-      InsertDateTime: new Date().toISOString().replace('T', ' ').substring(0, 23)
-    },
-    {
-      WagerNumber: 1002,
-      AgentID: 'AGN002',
-      AgentLogin: 'AGENT999',
-      CustomerID: 'CUST002',
-      Login: 'PLAYER2',
-      TicketWriter: 'ALERT',
-      ShortDesc: 'Braves vs Dodgers - Braves Spread',
-      AmountWagered: 15000,
-      ToWinAmount: 10000,
-      VolumeAmount: 15000,
-      WagerType: 'S',
-      VIP: '1',
-      InsertDateTime: new Date().toISOString().replace('T', ' ').substring(0, 23)
-    },
-    {
-      WagerNumber: 1003,
-      AgentID: 'AGN001',
-      AgentLogin: 'BILLY666',
-      CustomerID: 'CUST003',
-      Login: 'PLAYER3',
-      TicketWriter: 'GSLIVE',
-      ShortDesc: 'Spurs vs Timberwolves - Parlay',
-      AmountWagered: 3500,
-      ToWinAmount: 2000,
-      VolumeAmount: 3500,
-      WagerType: 'P',
-      VIP: '0',
-      InsertDateTime: new Date().toISOString().replace('T', ' ').substring(0, 23)
-    }
-  ];
-  scheduleRender('buckeye');
-  updateBuckeyeStats();
 }
 
 // ==================== EXPOSURE FETCH ====================
@@ -1981,6 +2284,13 @@ function switchSection(section, btn) {
       break;
     case 'status':
       loadStatusPage();
+      break;
+    case 'performance':
+      if (isCacheFresh('performance')) renderPerformanceDashboard();
+      else loadPerformancePage();
+      break;
+    case 'uptime':
+      loadUptimePage();
       break;
   }
 }
@@ -2206,6 +2516,8 @@ function updateBuckeyeStats() {
   document.getElementById('buckeyeAlertWagers').textContent = alerts;
   document.getElementById('buckeyeLiveWagers').textContent = live;
   document.getElementById('buckeyeMaxWager').textContent = '$' + (maxWager / 1000).toFixed(1) + 'K';
+  const posCount = document.getElementById('posCount');
+  if (posCount) posCount.textContent = total.toLocaleString();
   updateMasterAccountDisplay();
   updateTopBarStatus();
 }
@@ -2633,28 +2945,9 @@ function toggleIncomingPanel() {
   }
 }
 
-// WebSocket will push new bets; this is for demo simulation if not connected
-function simulateIncomingBet() {
-  if (!wsClient.isAuthenticated || buckeyeWagers.length === 0) return;
-
-  const randomWager = buckeyeWagers[Math.floor(Math.random() * buckeyeWagers.length)];
-  const newWager = {
-    ...randomWager,
-    WagerNumber: randomWager.WagerNumber + Math.floor(Math.random() * 1000),
-    InsertDateTime: new Date().toISOString().replace('T', ' ').substring(0, 23),
-    AmountWagered: Math.floor(Math.random() * 10000) + 500,
-    TicketWriter: Math.random() > 0.7 ? 'ALERT' : Math.random() > 0.5 ? 'GSLIVE' : 'Internet'
-  };
-
-  incomingBets.unshift(newWager);
-  if (incomingBets.length > 20) incomingBets.pop();
-
+function refreshIncomingBetsFromArchive() {
+  incomingBets = buckeyeWagers.slice(0, 20);
   renderIncomingBets();
-
-  if (newWager.TicketWriter === 'ALERT') {
-    showToast(`ALERT: ${newWager.Login} wagered $${newWager.AmountWagered.toLocaleString()}`, 'error');
-  }
-
   updateIncomingBadges();
 }
 
@@ -3346,24 +3639,27 @@ function buildMovementTooltip(movement) {
 }
 
 function buildPatternTooltip(patternId) {
-  const pattern = currentMatrixData.patterns?.find(p => p.id === patternId);
+  let pattern = currentMatrixData.patterns?.find(p => p.id === patternId);
+  if (!pattern) pattern = livePatterns.get(patternId);
   if (!pattern) return '';
-  const t = new Date(pattern.detectedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
-  let html = `<div class="tooltip-header">${pattern.type}</div>`;
+  const t = new Date(pattern.detectedAt || pattern.detected_at || Date.now()).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+  let html = `<div class="tooltip-header">${escapeHtml(pattern.type || 'Pattern')}</div>`;
   html += `<div class="tooltip-row"><span class="tooltip-label">Detected</span><span class="tooltip-value">${t}</span></div>`;
-  html += `<div class="tooltip-row"><span class="tooltip-label">Trigger</span><span class="tooltip-value">${pattern.triggerBook}</span></div>`;
-  html += `<div class="tooltip-row"><span class="tooltip-label">Severity</span><span class="tooltip-value" style="color:${pattern.severity === 'critical' ? 'var(--red)' : pattern.severity === 'warning' ? 'var(--yellow)' : 'var(--green)'}">${pattern.severity}</span></div>`;
+  html += `<div class="tooltip-row"><span class="tooltip-label">Trigger</span><span class="tooltip-value">${escapeHtml(pattern.triggerBook || pattern.trigger_book || '—')}</span></div>`;
+  html += `<div class="tooltip-row"><span class="tooltip-label">Severity</span><span class="tooltip-value" style="color:${pattern.severity === 'critical' ? 'var(--red)' : pattern.severity === 'warning' ? 'var(--yellow)' : 'var(--green)'}">${escapeHtml(pattern.severity || 'info')}</span></div>`;
 
-  if (pattern.followedBy && pattern.followedBy.length > 0) {
+  const followedBy = pattern.followedBy || pattern.followed_by || [];
+  if (followedBy.length > 0) {
     html += `<div class="tooltip-section"><div class="tooltip-section-title">Followed By</div>`;
-    for (const fb of pattern.followedBy) {
-      const lag = fb.lagMs > 60000 ? `${(fb.lagMs / 60000).toFixed(1)}m` : `${(fb.lagMs / 1000).toFixed(0)}s`;
-      html += `<div class="tooltip-move-row"><span class="tooltip-move-time">${fb.book}</span><span class="tooltip-move-val">${formatOddsValue(fb.newValue, pattern.market)} (+${lag} lag)</span></div>`;
+    for (const fb of followedBy) {
+      const lagMs = fb.lagMs || fb.lag_ms || 0;
+      const lag = lagMs > 60000 ? `${(lagMs / 60000).toFixed(1)}m` : `${(lagMs / 1000).toFixed(0)}s`;
+      html += `<div class="tooltip-move-row"><span class="tooltip-move-time">${escapeHtml(fb.book || '—')}</span><span class="tooltip-move-val">${formatOddsValue(fb.newValue || fb.new_value, pattern.market || 'moneyline')} (+${lag} lag)</span></div>`;
     }
     html += `</div>`;
   }
 
-  html += `<div class="tooltip-section" style="font-size:10px;color:var(--text-dim);">${pattern.description}</div>`;
+  html += `<div class="tooltip-section" style="font-size:10px;color:var(--text-dim);">${escapeHtml(pattern.description || '')}</div>`;
   return html;
 }
 
@@ -3416,7 +3712,12 @@ function buildTimelineTooltip(gameId) {
 }
 
 function getGamePatterns(gameId) {
-  return currentMatrixData.patterns?.filter(p => p.eventId === gameId) || [];
+  const apiPatterns = currentMatrixData.patterns?.filter(p => p.eventId === gameId) || [];
+  const wsPatterns = [];
+  livePatterns.forEach(p => {
+    if (p.eventId === gameId || p.event_id === gameId) wsPatterns.push(p);
+  });
+  return [...apiPatterns, ...wsPatterns];
 }
 
 function renderOddsMatrix() {
@@ -3752,6 +4053,14 @@ setInterval(() => {
 }, 30000);
 
 // ==================== POSITIONS ====================
+function updatePositionStats(wagers = [], sportRows = [], agentRows = {}) {
+  setText('posTotalWagers', String(wagers.length || 0));
+  setText('posTotalExposure', '$0');
+  setText('posActiveAgents', String(Array.isArray(agentRows) ? agentRows.length : Object.keys(agentRows || {}).length));
+  setText('posAvgWager', '$0');
+  setText('posTopSport', sportRows[0]?.sport || '—');
+}
+
 function renderPositions() {
   const tbody = document.getElementById('positionsTable');
   if (!tbody) return;
@@ -4060,6 +4369,7 @@ function refreshData() {
   loadOddsData(true);
   scheduleRender('all');
   fetchExposureData(true);
+  if (currentSection === 'performance') loadPerformancePage(true);
 }
 
 function exportWagers() {
@@ -4156,17 +4466,29 @@ async function refreshVaultStatus() {
     if (!status.available) {
       el.textContent = 'OS vault unavailable';
       el.style.color = 'var(--yellow)';
+      updateBuckeyeStatusBadge('warning', 'Vault Unavailable');
       return;
     }
     const agents = Array.isArray(status.agents) ? status.agents : (status.agentId ? [status] : []);
     if (!agents.length) {
       el.textContent = 'No Buckeye secrets stored';
       el.style.color = 'var(--text-dim)';
+      updateBuckeyeStatusBadge(buckeyeWagers.length ? 'archive' : 'disconnected', buckeyeWagers.length ? `${buckeyeWagers.length.toLocaleString()} Archived` : 'No Vault');
       return;
     }
     const activeCount = agents.filter(agent => agent.active).length;
+    const readyCount = agents.filter(agent => agent.hasToken || (agent.hasPassword && agent.hasCfCookie)).length;
+    window.backendLiveAgents = activeCount;
+    window.backendVaultReadyAgents = readyCount;
     el.textContent = `${agents.length} vaulted agent${agents.length === 1 ? '' : 's'} | ${activeCount} ingesting`;
     el.style.color = activeCount ? 'var(--green)' : 'var(--yellow)';
+    if (activeCount) {
+      updateBuckeyeStatusBadge('connected', `${activeCount} Agent${activeCount === 1 ? '' : 's'} Live`);
+    } else if (readyCount) {
+      updateBuckeyeStatusBadge('ready', `${readyCount} Vault Ready`);
+    } else {
+      updateBuckeyeStatusBadge('warning', 'Vault Needs Cookie');
+    }
     if (listEl) {
       listEl.innerHTML = agents.map(agent => {
         const flags = [
@@ -4305,6 +4627,13 @@ function updateConnectionStatus(state) {
   const s = styles[state] || styles.disconnected;
   el.textContent = s.text;
   el.style.color = s.color;
+  const liveAgents = Number(window.backendLiveAgents || 0);
+  if (state === 'disconnected' && liveAgents > 0) {
+    updateBuckeyeStatusBadge('connected', `${liveAgents} Agent${liveAgents === 1 ? '' : 's'} Live`);
+  } else {
+    updateBuckeyeStatusBadge(state, s.text.replace('● ', ''));
+  }
+  updateTopBarStatus();
 }
 
 // ==================== WEBHOOKS ====================
@@ -4475,6 +4804,9 @@ async function loadStatusPage(force = false) {
         : [statusKeyValue('Per-agent queues', 'empty')]),
     ].join('');
 
+    // Check API endpoint health
+    checkApiEndpoints();
+
     updateStatusBadge(statusOk, activeAgents, criticalPatterns);
   } catch (error) {
     summary.innerHTML = statusCard('Backend', 'Offline', error instanceof Error ? error.message : 'Status unavailable', 'var(--red)');
@@ -4568,6 +4900,585 @@ function updateStatusBadge(ok, activeAgents, criticalPatterns) {
   badge.style.color = activeAgents > 0 ? 'var(--green)' : 'var(--text-dim)';
 }
 
+// ==================== API ENDPOINT STATUS ====================
+const API_ENDPOINTS = [
+  { path: '/health', label: 'Health', group: 'System' },
+  { path: '/api/stats', label: 'Stats', group: 'System' },
+  { path: '/api/wagers?limit=1', label: 'Wagers', group: 'Data' },
+  { path: '/api/wagers/alerts', label: 'Alerts', group: 'Data' },
+  { path: '/api/wagers/live', label: 'Live Wagers', group: 'Data' },
+  { path: '/api/agents', label: 'Agents', group: 'Data' },
+  { path: '/api/agents/downline', label: 'Downline', group: 'Data' },
+  { path: '/api/agents/access-logs', label: 'Agent Access', group: 'Data' },
+  { path: '/api/risk/alerts', label: 'Risk Alerts', group: 'Risk' },
+  { path: '/api/exposure/sports', label: 'Sport Exposure', group: 'Risk' },
+  { path: '/api/exposure/agents', label: 'Agent Exposure', group: 'Risk' },
+  { path: '/api/odds/live', label: 'Odds Live', group: 'Odds' },
+  { path: '/api/odds/events', label: 'Odds Events', group: 'Odds' },
+  { path: '/api/odds/snapshots', label: 'Odds Snapshots', group: 'Odds' },
+  { path: '/api/odds/movements', label: 'Odds Movements', group: 'Odds' },
+  { path: '/api/books/status', label: 'Books Status', group: 'Odds' },
+  { path: '/api/patterns/summary', label: 'Patterns', group: 'Odds' },
+  { path: '/api/buckeye/vault-status', label: 'Vault Status', group: 'Buckeye' },
+  { path: '/api/buckeye/ui-config', label: 'UI Config', group: 'Buckeye' },
+  { path: '/api/buckeye/account-info', label: 'Account Info', group: 'Buckeye' },
+  { path: '/api/buckeye/weekly-figures', label: 'Weekly Figures', group: 'Buckeye' },
+  { path: '/api/buckeye/agent-performance', label: 'Agent Perf', group: 'Buckeye' },
+  { path: '/api/buckeye/sports-types', label: 'Sports Types', group: 'Buckeye' },
+  { path: '/api/buckeye/manager-snapshot', label: 'Manager Snapshot', group: 'Buckeye' },
+  { path: '/api/webhooks', label: 'Webhooks', group: 'System' },
+  { path: '/api/performance/status', label: 'Perf Cache', group: 'System' },
+  { path: '/api/betting/velocity?minutes=5', label: 'Bet Velocity', group: 'Analytics' },
+  { path: '/api/betting/live-vs-pre', label: 'Live vs Pre', group: 'Analytics' },
+  { path: '/api/logs/access?limit=1', label: 'Access Logs', group: 'Analytics' },
+  { path: '/api/master/history?limit=1', label: 'Master History', group: 'Analytics' },
+  { path: '/api/performance/summary', label: 'Perf Summary', group: 'Analytics' },
+  { path: '/api/performance/details?agent=BILLY666&weeks=1', label: 'Perf Details', group: 'Analytics' },
+];
+
+async function checkApiEndpoints() {
+  const container = document.getElementById('apiEndpointList');
+  const summary = document.getElementById('apiEndpointSummary');
+  if (!container) return;
+
+  container.innerHTML = '<div class="col-span-full" style="color:var(--text-dim);">Checking endpoints...</div>';
+
+  const results = await Promise.allSettled(
+    API_ENDPOINTS.map(async (ep) => {
+      const start = performance.now();
+      const res = await fetch(`${getApiBaseUrl()}${ep.path}`);
+      const ms = Math.round(performance.now() - start);
+      return { ...ep, status: res.status, ms };
+    })
+  );
+
+  const entries = results.map((r) =>
+    r.status === 'fulfilled' ? r.value : { ...API_ENDPOINTS[results.indexOf(r)], status: 0, ms: 0 }
+  );
+
+  const ok = entries.filter((e) => e.status >= 200 && e.status < 400).length;
+  const total = entries.length;
+  summary.textContent = `${ok}/${total} endpoints OK`;
+
+  // Group by group
+  const groups = {};
+  for (const ep of entries) {
+    if (!groups[ep.group]) groups[ep.group] = [];
+    groups[ep.group].push(ep);
+  }
+
+  container.innerHTML = Object.entries(groups).map(([groupName, eps]) => `
+    <div class="col-span-full">
+      <div class="text-[10px] uppercase tracking-wider font-semibold mb-1 mt-1" style="color:var(--text-dim);">${groupName}</div>
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5">
+        ${eps.map((ep) => {
+          const isOk = ep.status >= 200 && ep.status < 400;
+          const color = isOk ? 'var(--green)' : ep.status === 0 ? 'var(--red)' : 'var(--yellow)';
+          return `<div class="flex items-center gap-1.5 px-2 py-1.5 rounded" style="background:var(--bg);border:1px solid var(--border);" title="${ep.path} — ${ep.status} in ${ep.ms}ms">
+            <div class="w-1.5 h-1.5 rounded-full shrink-0" style="background:${color};"></div>
+            <span class="truncate">${ep.label}</span>
+            <span class="ml-auto text-[10px] shrink-0" style="color:var(--text-dim);">${ep.status}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+  `).join('');
+}
+
+// ==================== UP TAB (ERROR TRACKING & RECOVERY) ====================
+async function loadUptimePage(force = false) {
+  const backendEl = document.getElementById('uptimeBackendStatus');
+  const agentsEl = document.getElementById('uptimeAgentList');
+  const watermarksEl = document.getElementById('uptimeWatermarks');
+  const errorsEl = document.getElementById('uptimeErrorRows');
+  if (!backendEl) return;
+
+  try {
+    // Fetch health + watermarks + error history in parallel
+    const [healthRes, watermarksRes] = await Promise.all([
+      fetch(`${getApiBaseUrl()}/health`),
+      fetch(`${getApiBaseUrl()}/api/buckeye/vault-status`),
+    ]);
+
+    const health = healthRes.ok ? await healthRes.json() : null;
+    const vault = watermarksRes.ok ? await watermarksRes.json() : { agents: [] };
+
+    // Backend status
+    const isOk = health?.status === 'ok';
+    backendEl.textContent = isOk ? 'Online' : 'Offline';
+    backendEl.style.color = isOk ? 'var(--green)' : 'var(--red)';
+    document.getElementById('uptimeBackendUptime').textContent = health ? formatUptime(health.uptime) : 'Unknown';
+
+    // Active agents
+    const activeAgents = health?.scrapers?.activeAgents || 0;
+    const agents = health?.scrapers?.agents || [];
+    const totalErrors = health?.scrapers?.counters?.errors_total || 0;
+    document.getElementById('uptimeActiveAgents').textContent = String(activeAgents);
+    document.getElementById('uptimeAgentErrors').textContent = `${totalErrors} total errors`;
+
+    // Poller health
+    const pollerOk = agents.every(a => a.errorCount === 0);
+    document.getElementById('uptimePollerHealth').textContent = pollerOk ? 'All Healthy' : `${agents.filter(a => a.errorCount > 0).length} Degraded`;
+    document.getElementById('uptimePollerHealth').style.color = pollerOk ? 'var(--green)' : 'var(--yellow)';
+    document.getElementById('uptimePollerDetail').textContent = `${agents.length} agents, ${agents.filter(a => a.authenticated).length} authenticated`;
+
+    // API endpoints
+    const apiResults = await Promise.allSettled(
+      API_ENDPOINTS.slice(0, 10).map(async (ep) => {
+        const res = await fetch(`${getApiBaseUrl()}${ep.path}`);
+        return res.status;
+      })
+    );
+    const apiOk = apiResults.filter(r => r.status === 'fulfilled' && r.value >= 200 && r.value < 400).length;
+    const apiTotal = apiResults.length;
+    document.getElementById('uptimeApiOk').textContent = `${apiOk}/${apiTotal}`;
+    document.getElementById('uptimeApiOk').style.color = apiOk === apiTotal ? 'var(--green)' : apiOk > 0 ? 'var(--yellow)' : 'var(--red)';
+    document.getElementById('uptimeApiErrors').textContent = `${apiTotal - apiOk} non-200 responses`;
+
+    // Agent poller details
+    if (agentsEl) {
+      if (agents.length === 0) {
+        agentsEl.innerHTML = '<div style="color:var(--text-dim);">No active agents. Connect from Settings.</div>';
+      } else {
+        agentsEl.innerHTML = agents.map(a => {
+          const statusColor = a.errorCount === 0 ? 'var(--green)' : a.errorCount > 5 ? 'var(--red)' : 'var(--yellow)';
+          const lastPollAgo = a.lastPoll ? Math.round((Date.now() - a.lastPoll) / 1000) + 's ago' : 'never';
+          return `<div class="flex items-center justify-between py-2 border-b" style="border-color:var(--border);">
+            <div class="flex items-center gap-2">
+              <div class="w-2 h-2 rounded-full" style="background:${statusColor};"></div>
+              <span class="font-mono font-semibold">${escapeHtml(a.agentId)}</span>
+              <span class="px-1.5 py-0.5 rounded text-[10px]" style="background:${a.authenticated ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'};color:${a.authenticated ? 'var(--green)' : 'var(--red)'};">${a.authenticated ? 'auth' : 'no-auth'}</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <span style="color:var(--text-dim);">errors: ${a.errorCount}</span>
+              <span style="color:var(--text-dim);">last: ${lastPollAgo}</span>
+            </div>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    // Watermarks
+    if (watermarksEl) {
+      try {
+        const wmRes = await fetch(`${getApiBaseUrl()}/api/buckeye/vault-status`);
+        const wmData = wmRes.ok ? await wmRes.json() : {};
+        const vaultedAgents = Array.isArray(wmData.agents) ? wmData.agents : [];
+        if (vaultedAgents.length === 0) {
+          watermarksEl.innerHTML = '<div style="color:var(--text-dim);">No vaulted agents — watermarks will appear after first poll cycle.</div>';
+        } else {
+          watermarksEl.innerHTML = vaultedAgents.map(a => {
+            const agentId = a.agentId || 'unknown';
+            return `<div class="rounded p-2" style="background:var(--bg);border:1px solid var(--border);">
+              <div class="font-semibold mb-1">${escapeHtml(agentId)}</div>
+              <div style="color:var(--text-dim);">bets: ${a.wagerCount || 0}</div>
+              <div style="color:var(--text-dim);">status: ${a.status || 'active'}</div>
+            </div>`;
+          }).join('');
+        }
+      } catch {
+        watermarksEl.innerHTML = '<div style="color:var(--text-dim);">Watermarks unavailable.</div>';
+      }
+    }
+
+    // Error history from audit_logs
+    if (errorsEl) {
+      try {
+        const auditRes = await fetch(`${getApiBaseUrl()}/api/logs/access?limit=20`);
+        const auditData = auditRes.ok ? await auditRes.json() : { logs: [] };
+        const logs = auditData.logs || [];
+        if (logs.length === 0) {
+          errorsEl.innerHTML = '<tr><td colspan="4" class="px-2 py-6 text-center" style="color:var(--text-dim);">No errors recorded. All systems nominal.</td></tr>';
+        } else {
+          errorsEl.innerHTML = logs.slice(0, 20).map(log => {
+            const isError = log.result === 'fail' || log.operation === 'ERROR';
+            return `<tr class="border-b" style="border-color:var(--border);${isError ? 'background:rgba(239,68,68,0.05);' : ''}">
+              <td class="px-2 py-2" style="color:var(--text-dim);">${log.access_datetime ? timeAgo(log.access_datetime) : '—'}</td>
+              <td class="px-2 py-2 font-mono">${escapeHtml(log.agent_id || log.login_id || '—')}</td>
+              <td class="px-2 py-2">${escapeHtml(log.operation || log.log_type || 'access')}</td>
+              <td class="px-2 py-2 text-center">
+                <span class="px-1.5 py-0.5 rounded text-[10px]" style="background:${isError ? 'rgba(239,68,68,0.15)' : 'rgba(16,185,129,0.15)'};color:${isError ? 'var(--red)' : 'var(--green)'};">${isError ? 'auto' : 'ok'}</span>
+              </td>
+            </tr>`;
+          }).join('');
+        }
+      } catch {
+        errorsEl.innerHTML = '<tr><td colspan="4" class="px-2 py-6 text-center" style="color:var(--red);">Error history unavailable.</td></tr>';
+      }
+    }
+
+    // Update badge
+    const badge = document.getElementById('uptimeBadge');
+    if (badge) {
+      if (!isOk) { badge.textContent = 'Down'; badge.style.background = 'var(--red)'; badge.style.color = '#fff'; }
+      else if (totalErrors > 0) { badge.textContent = String(totalErrors); badge.style.background = 'var(--yellow)'; badge.style.color = '#000'; }
+      else { badge.textContent = 'OK'; badge.style.background = 'rgba(16,185,129,0.18)'; badge.style.color = 'var(--green)'; }
+    }
+  } catch (error) {
+    backendEl.textContent = 'Offline';
+    backendEl.style.color = 'var(--red)';
+    document.getElementById('uptimeBackendUptime').textContent = error instanceof Error ? error.message : 'Unreachable';
+    if (agentsEl) agentsEl.innerHTML = '<div style="color:var(--red);">Backend unreachable. Is the server running?</div>';
+  }
+}
+
+// ==================== PERFORMANCE ANALYTICS ====================
+async function loadPerformancePage(force = false) {
+  if (!force && isCacheFresh('performance')) {
+    renderPerformanceDashboard();
+    return;
+  }
+
+  setText('perfLiveIndicator', 'Loading archive...');
+  setText('agentPerformanceRows', '');
+  const today = new Date().toISOString().split('T')[0];
+
+  try {
+    const [velocityRes, liveRes, masterRes, performanceRes, rawLogsRes, weeklyRes, snapshotsRes] = await Promise.all([
+      fetch(`${getApiBaseUrl()}/api/betting/velocity?minutes=30`),
+      fetch(`${getApiBaseUrl()}/api/betting/live-vs-pre?date=${today}`),
+      fetch(`${getApiBaseUrl()}/api/master/history?limit=40`),
+      fetch(`${getApiBaseUrl()}/api/performance/summary`),
+      fetch(`${getApiBaseUrl()}/api/analytics/raw-logs?limit=50`),
+      fetch(`${getApiBaseUrl()}/api/analytics/weekly-figures?limit=20`),
+      fetch(`${getApiBaseUrl()}/api/analytics/master-snapshots?limit=20`),
+    ]);
+
+    performanceState.velocity = velocityRes.ok ? (await velocityRes.json()).velocity || [] : [];
+    performanceState.liveVsPre = liveRes.ok ? await liveRes.json() : null;
+    performanceState.master = masterRes.ok ? (await masterRes.json()).snapshots || [] : [];
+    performanceState.performanceSummary = performanceRes.ok ? (await performanceRes.json()).summary || [] : [];
+    performanceState.rawLogs = rawLogsRes.ok ? (await rawLogsRes.json()).logs || [] : [];
+    performanceState.weeklyFigures = weeklyRes.ok ? (await weeklyRes.json()).figures || [] : [];
+    performanceState.masterSnapshots = snapshotsRes.ok ? (await snapshotsRes.json()).snapshots || [] : [];
+    await loadAccessLogsForPerformance(false);
+    markCacheFresh('performance');
+    renderPerformanceDashboard();
+  } catch (error) {
+    showToast('Performance analytics unavailable', 'warning');
+    renderPerformanceError(error);
+  }
+}
+
+async function loadAccessLogsForPerformance(render = true) {
+  const ip = document.getElementById('accessIpFilter')?.value?.trim() || '';
+  const url = new URL(`${getApiBaseUrl()}/api/logs/access`);
+  url.searchParams.set('limit', '120');
+  if (ip) url.searchParams.set('ip', ip);
+  try {
+    const res = await fetch(url.toString());
+    performanceState.accessLogs = res.ok ? (await res.json()).logs || [] : [];
+    if (render) renderAccessLogMonitor();
+  } catch {
+    performanceState.accessLogs = [];
+    if (render) renderAccessLogMonitor();
+  }
+}
+
+function renderPerformanceDashboard() {
+  renderMasterHealth();
+  renderVelocityChart();
+  renderLiveVsPreChart();
+  renderAccessLogMonitor();
+  renderAgentPerformanceTable();
+  renderRawLogsTable();
+  renderWeeklyFiguresTable();
+  renderMasterSnapshotsTable();
+}
+
+function renderPerformanceError(error) {
+  setText('perfMasterAge', error instanceof Error ? error.message : 'Unable to load');
+  const rows = document.getElementById('agentPerformanceRows');
+  if (rows) rows.innerHTML = '<tr><td colspan="5" class="px-2 py-6 text-center" style="color:var(--red);">Performance endpoints are not available.</td></tr>';
+  const access = document.getElementById('accessLogMonitorRows');
+  if (access) access.innerHTML = '<tr><td colspan="4" class="px-2 py-6 text-center" style="color:var(--red);">Access logs unavailable.</td></tr>';
+}
+
+function renderMasterHealth() {
+  const latest = performanceState.master[0] || {};
+  const live = performanceState.liveVsPre || { live: { count: 0, volume: 0 }, pregame: { count: 0, volume: 0 } };
+  const liveCount = Number(live.live?.count || 0);
+  const preCount = Number(live.pregame?.count || 0);
+  const liveVolume = Number(live.live?.volume || 0);
+  const preVolume = Number(live.pregame?.volume || 0);
+  const archiveRows = liveCount + preCount;
+
+  setText('perfMasterBalance', money(latest.balance));
+  setText('perfAvailableBalance', money(latest.available_balance));
+  setText('perfOpenWagers', String(Number(latest.open_wager_count || 0)));
+  setText('perfArchiveRows', String(archiveRows));
+  setText('perfLiveSplit', `Live ${liveCount} (${money(liveVolume)}) / Pregame ${preCount} (${money(preVolume)})`);
+  setText('perfBookPercent', `Book percent ${latest.percent_book ?? '--'}`);
+  setText('perfMasterAge', latest.timestamp ? `Last snapshot ${timeAgo(latest.timestamp)}` : 'No snapshot');
+  setText('perfLiveIndicator', archiveRows > 0 ? 'Archive live' : 'Waiting for wagers');
+}
+
+function renderVelocityChart() {
+  const canvas = document.getElementById('velocityChart');
+  if (!canvas || !window.Chart) return;
+  const labels = performanceState.velocity.map(row => row.timestamp || '');
+  const counts = performanceState.velocity.map(row => Number(row.wagerCount || 0));
+  const handle = performanceState.velocity.map(row => Number(row.totalHandle || 0));
+
+  const data = {
+    labels,
+    datasets: [
+      { type: 'bar', label: 'Wagers', data: counts, backgroundColor: 'rgba(255,102,0,0.45)', yAxisID: 'y' },
+      { type: 'line', label: 'Handle', data: handle, borderColor: '#06b6d4', backgroundColor: 'rgba(6,182,212,0.12)', tension: 0.25, yAxisID: 'y1' },
+    ],
+  };
+  const options = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { labels: { color: '#e5e7eb', boxWidth: 10 } } },
+    scales: {
+      x: { ticks: { color: '#6b7280', maxRotation: 0, autoSkip: true }, grid: { color: '#1f2937' } },
+      y: { ticks: { color: '#6b7280' }, grid: { color: '#1f2937' } },
+      y1: { position: 'right', ticks: { color: '#6b7280', callback: value => `$${Number(value).toLocaleString()}` }, grid: { drawOnChartArea: false } },
+    },
+  };
+  if (velocityChart) {
+    velocityChart.data = data;
+    velocityChart.options = options;
+    velocityChart.update();
+    return;
+  }
+  velocityChart = new Chart(canvas, { type: 'bar', data, options });
+}
+
+function renderLiveVsPreChart() {
+  const canvas = document.getElementById('liveVsPreChart');
+  if (!canvas || !window.Chart) return;
+  const live = performanceState.liveVsPre || { date: new Date().toISOString().split('T')[0], live: {}, pregame: {} };
+  setText('liveVsPreDate', live.date || 'Today');
+  const data = {
+    labels: ['Live', 'Pregame'],
+    datasets: [{
+      data: [Number(live.live?.volume || 0), Number(live.pregame?.volume || 0)],
+      backgroundColor: ['rgba(6,182,212,0.75)', 'rgba(59,130,246,0.65)'],
+      borderColor: ['#06b6d4', '#3b82f6'],
+      borderWidth: 1,
+    }],
+  };
+  const options = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { labels: { color: '#e5e7eb' } } },
+    onClick: (_, elements) => {
+      if (!elements.length) return;
+      const label = data.labels[elements[0].index];
+      showToast(`${label} position filter selected`, 'info');
+      switchSection('positions', document.querySelector('button[onclick*="positions"]'));
+    },
+  };
+  if (liveVsPreChart) {
+    liveVsPreChart.data = data;
+    liveVsPreChart.options = options;
+    liveVsPreChart.update();
+    return;
+  }
+  liveVsPreChart = new Chart(canvas, { type: 'doughnut', data, options });
+}
+
+function renderAccessLogMonitor() {
+  const tbody = document.getElementById('accessLogMonitorRows');
+  if (!tbody) return;
+  const rows = performanceState.accessLogs || [];
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="px-2 py-6 text-center" style="color:var(--text-dim);">No access logs in the archive yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.slice(0, 120).map(row => {
+    const isNew = Boolean(row.is_new_ip);
+    return `<tr class="border-b" style="border-color:var(--border);">
+      <td class="px-2 py-2 font-mono">${escapeHtml(row.login_id || row.customer_id || row.agent_id || '—')}</td>
+      <td class="px-2 py-2">
+        <button class="font-mono hover:underline" style="color:${isNew ? 'var(--red)' : 'var(--text)'};" onclick="filterAccessIp('${escapeHtml(row.ip_address || '')}')">${escapeHtml(row.ip_address || '—')}</button>
+        ${isNew ? `<span class="new-ip-pill ml-1 px-1 py-0.5 rounded text-[10px]" title="First seen ${escapeHtml(row.first_seen || '')}">NEW</span>` : ''}
+      </td>
+      <td class="px-2 py-2">${escapeHtml(row.operation || row.log_type || 'access')}</td>
+      <td class="px-2 py-2 text-right" style="color:var(--text-dim);">${row.access_datetime ? timeAgo(row.access_datetime) : '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function filterAccessIp(ip) {
+  const input = document.getElementById('accessIpFilter');
+  if (!input || !ip) return;
+  input.value = ip;
+  loadAccessLogsForPerformance();
+}
+
+function renderAgentPerformanceTable() {
+  const tbody = document.getElementById('agentPerformanceRows');
+  if (!tbody) return;
+  const sortKey = document.getElementById('agentPerformanceSort')?.value || 'handle';
+  const rows = [...(performanceState.performanceSummary || [])].sort((a, b) => {
+    if (sortKey === 'agent_id') return String(a.agent_id || '').localeCompare(String(b.agent_id || ''));
+    return Number(b[sortKey] || 0) - Number(a[sortKey] || 0);
+  });
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="px-2 py-6 text-center" style="color:var(--text-dim);">No archived performance rows yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.slice(0, 500).map(row => {
+    const net = Number(row.win_loss || 0);
+    return `<tr class="border-b hover:bg-opacity-50" style="border-color:var(--border);">
+      <td class="px-2 py-2 font-mono">${escapeHtml(row.agent_id || 'Unknown')}</td>
+      <td class="px-2 py-2 text-right">${Number(row.row_count || 0)}</td>
+      <td class="px-2 py-2 text-right">${money(row.handle)}</td>
+      <td class="px-2 py-2 text-right" style="color:${net >= 0 ? 'var(--green)' : 'var(--red)'};">${money(net)}</td>
+      <td class="px-2 py-2 text-center"><button class="px-2 py-1 rounded text-xs" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" onclick="loadAgentPerformanceDetail('${escapeHtml(row.agent_id || '')}')">Open</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function renderRawLogsTable() {
+  const tbody = document.getElementById('perfRawLogsRows');
+  const countEl = document.getElementById('perfRawLogsCount');
+  if (!tbody) return;
+  const rows = performanceState.rawLogs || [];
+  if (countEl) countEl.textContent = `${rows.length} entries`;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="px-2 py-6 text-center" style="color:var(--text-dim);">No raw API logs yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.slice(0, 100).map(row => `
+    <tr class="border-b hover:bg-opacity-5" style="border-color:var(--border);">
+      <td class="px-2 py-1.5 font-mono">${escapeHtml(row.endpoint || '')}</td>
+      <td class="px-2 py-1.5">${escapeHtml(row.agent_id || '')}</td>
+      <td class="px-2 py-1.5 text-right">${row.duration_ms != null ? row.duration_ms + 'ms' : '-'}</td>
+      <td class="px-2 py-1.5">${timeAgo(row.fetched_at)}</td>
+    </tr>
+  `).join('');
+}
+
+function renderWeeklyFiguresTable() {
+  const tbody = document.getElementById('perfWeeklyFiguresRows');
+  const countEl = document.getElementById('perfWeeklyFiguresCount');
+  if (!tbody) return;
+  const rows = performanceState.weeklyFigures || [];
+  if (countEl) countEl.textContent = `${rows.length} entries`;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="px-2 py-6 text-center" style="color:var(--text-dim);">No weekly figures yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.slice(0, 100).map(row => `
+    <tr class="border-b hover:bg-opacity-5" style="border-color:var(--border);">
+      <td class="px-2 py-1.5">${escapeHtml(row.agent_id || '')}</td>
+      <td class="px-2 py-1.5 text-right">${row.week ?? '-'}</td>
+      <td class="px-2 py-1.5 text-right">${money(row.this_week || 0)}</td>
+      <td class="px-2 py-1.5 text-right">${money(row.active || 0)}</td>
+      <td class="px-2 py-1.5 text-right">${money(row.today || 0)}</td>
+      <td class="px-2 py-1.5">${timeAgo(row.pulled_at)}</td>
+    </tr>
+  `).join('');
+}
+
+function renderMasterSnapshotsTable() {
+  const tbody = document.getElementById('perfMasterSnapshotsRows');
+  const countEl = document.getElementById('perfMasterSnapshotsCount');
+  if (!tbody) return;
+  const rows = performanceState.masterSnapshots || [];
+  if (countEl) countEl.textContent = `${rows.length} entries`;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="px-2 py-6 text-center" style="color:var(--text-dim);">No master snapshots yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.slice(0, 100).map(row => `
+    <tr class="border-b hover:bg-opacity-5" style="border-color:var(--border);">
+      <td class="px-2 py-1.5">${escapeHtml(row.agent_id || '')}</td>
+      <td class="px-2 py-1.5 text-right">${money(row.balance || 0)}</td>
+      <td class="px-2 py-1.5 text-right">${money(row.available_balance || 0)}</td>
+      <td class="px-2 py-1.5 text-right">${row.open_wager_count ?? 0}</td>
+      <td class="px-2 py-1.5">${timeAgo(row.timestamp)}</td>
+    </tr>
+  `).join('');
+}
+
+async function loadAgentPerformanceDetail(agentId) {
+  if (!agentId) return;
+  performanceState.selectedAgent = agentId;
+  const detail = document.getElementById('agentPerformanceDetail');
+  if (detail) {
+    detail.classList.remove('hidden');
+    detail.innerHTML = '<span style="color:var(--text-dim);">Loading detail...</span>';
+  }
+  try {
+    const res = await fetch(`${getApiBaseUrl()}/api/performance/details?agent=${encodeURIComponent(agentId)}&weeks=8`);
+    const payload = res.ok ? await res.json() : { weeklyTrend: [], sportBreakdown: [] };
+    renderAgentPerformanceDetail(payload);
+  } catch {
+    if (detail) detail.innerHTML = '<span style="color:var(--red);">Unable to load agent detail.</span>';
+  }
+}
+
+function renderAgentPerformanceDetail(payload) {
+  const detail = document.getElementById('agentPerformanceDetail');
+  if (!detail) return;
+  const trend = payload.weeklyTrend || [];
+  const sports = payload.sportBreakdown || [];
+  detail.classList.remove('hidden');
+  detail.innerHTML = `
+    <div class="flex items-center justify-between mb-2">
+      <span class="font-semibold">${escapeHtml(payload.agentId || performanceState.selectedAgent || 'Agent')}</span>
+      <span style="color:var(--text-dim);">${trend.length} trend rows</span>
+    </div>
+    <div class="grid grid-cols-2 gap-3">
+      <div>
+        <div class="text-[10px] uppercase mb-1" style="color:var(--text-dim);">Weekly Trend</div>
+        ${trend.slice(0, 8).map(row => `<div class="flex justify-between gap-2 py-1 border-b" style="border-color:var(--border);"><span>${escapeHtml(row.week_start_date || '—')}</span><span>${money(row.handle)} / ${money(row.win_loss)}</span></div>`).join('') || '<div style="color:var(--text-dim);">No trend rows.</div>'}
+      </div>
+      <div>
+        <div class="text-[10px] uppercase mb-1" style="color:var(--text-dim);">Sport Breakdown</div>
+        ${sports.slice(0, 8).map(row => `<div class="flex justify-between gap-2 py-1 border-b" style="border-color:var(--border);"><span>${escapeHtml(row.sport || 'Unknown')}</span><span>${money(row.handle)} / ${money(row.win_loss)}</span></div>`).join('') || '<div style="color:var(--text-dim);">No sport rows.</div>'}
+      </div>
+    </div>`;
+}
+
+function recordPerformanceWager(wager) {
+  if (!wager) return;
+  const ts = new Date(wager.InsertDateTime || wager.insert_date_time || Date.now());
+  if (!Number.isFinite(ts.getTime())) return;
+  const bucket = ts.toISOString().slice(0, 16).replace('T', ' ');
+  const velocity = performanceState.velocity || [];
+  let row = velocity.find(item => item.timestamp === bucket);
+  if (!row) {
+    row = { timestamp: bucket, wagerCount: 0, totalHandle: 0 };
+    velocity.push(row);
+    velocity.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+    if (velocity.length > 40) velocity.shift();
+  }
+  row.wagerCount = Number(row.wagerCount || 0) + 1;
+  row.totalHandle = Number(row.totalHandle || 0) + Number(wager.AmountWagered || wager.amount_wagered || 0);
+  performanceState.velocity = velocity;
+  if (currentSection === 'performance') renderVelocityChart();
+}
+
+async function exportAnalytics(kind) {
+  const labels = { wagers: 'wagers', 'access-logs': 'access logs', performance: 'performance' };
+  try {
+    showToast(`Preparing ${labels[kind] || kind} export...`, 'info');
+    const res = await fetch(`${getApiBaseUrl()}/api/export/${kind}`);
+    if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${kind}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast(`Export ready (${Math.round(blob.size / 1024)} KB)`, 'success');
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : 'Export failed', 'error');
+  }
+}
+
+function money(value) {
+  const amount = Number(value || 0);
+  return amount.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+}
+
 async function editWebhook(id) {
   try {
     const res = await fetch(`${getApiBaseUrl()}/api/webhooks/${id}`);
@@ -4611,7 +5522,7 @@ function showFallbackBanner(show, message) {
   const banner = document.getElementById('fallbackBanner');
   if (!banner) return;
   if (show) {
-    banner.textContent = '⚠️ ' + (message || 'Live feed disconnected - showing demo data');
+    banner.textContent = '⚠️ ' + (message || 'Live feed disconnected - showing latest persisted Buckeye data');
     banner.classList.remove('hidden');
   } else {
     banner.classList.add('hidden');
@@ -4706,6 +5617,7 @@ let agentTreeData = []; // nested tree from real API
 let agentTreeFlat = []; // flattened for search
 let agentStatsMap = {}; // agent_login -> stats from wager data
 let agentPatternCounts = {};
+let livePatterns = new Map(); // WebSocket patterns for odds grid tooltips
 let agentPatternSortEnabled = false;
 let previousSection = 'floor';
 let agentDownlineRequestId = 0;
@@ -4767,7 +5679,7 @@ async function refreshAgentDownline(force = false) {
       if (currentSection === 'agentTree') initAgentCanvas();
       markCacheFresh('downline');
     } else {
-      // Fallback: derive from static buckeyeWagers
+      // Fallback: derive from loaded Buckeye archive wagers.
       const fallbackCount = deriveAgentDownlineFromStatic();
       if (currentSection === 'agentTree') initAgentCanvas();
       if (fallbackCount > 0) markCacheFresh('downline');
@@ -4948,6 +5860,7 @@ function updateAgentRow(agent) {
   const volumeCell = row.querySelector('[data-agent-field="volume"]');
   const riskCell = row.querySelector('[data-agent-field="risk"]');
   const alertsCell = row.querySelector('[data-agent-field="alerts"]');
+  const patternsCell = row.querySelector('[data-agent-field="patterns"]');
   if (playersCell) playersCell.textContent = displayPlayers;
   if (wagersCell) wagersCell.textContent = displayWagers;
   if (volumeCell) volumeCell.textContent = displayVolume > 0 ? '$' + Math.round(displayVolume).toLocaleString() : '—';
@@ -4956,6 +5869,14 @@ function updateAgentRow(agent) {
     riskCell.title = `${bookPct}% of master book`;
   }
   if (alertsCell) alertsCell.innerHTML = alertBadge;
+  if (patternsCell) {
+    const patternInfo = agentPatternCounts[agent.agent] || {};
+    const patternCount = Number(patternInfo.pattern_count || 0);
+    const criticalPatternCount = Number(patternInfo.critical_count || 0);
+    patternsCell.innerHTML = patternCount > 0
+      ? `<button type="button" class="agent-pattern-badge text-[10px] px-1.5 py-0.5 rounded-full" style="background:${criticalPatternCount > 0 ? 'var(--red)' : 'var(--yellow)'};color:${criticalPatternCount > 0 ? '#fff' : '#111'};" data-action="filter-agent-patterns" data-agent="${escapeHtml(agent.agent)}" title="${criticalPatternCount} critical">${patternIconForAgent(patternInfo)} ${patternCount}</button>`
+      : '—';
+  }
   row.classList.add('flash-green');
   setTimeout(() => row.classList.remove('flash-green'), 900);
 }
@@ -5060,7 +5981,7 @@ function renderAgentTree(nodes, parentElement, depth = 0, budget) {
   });
 
   if (depth === 0 && nodes.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="11" class="px-3 py-8 text-center text-sm" style="color:var(--text-dim);">No agents found. Connect to backend or load demo data.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="px-3 py-8 text-center text-sm" style="color:var(--text-dim);">No agents found. Connect to backend or wait for Buckeye archive data.</td></tr>';
   } else if (depth === 0 && budget.truncated) {
     const row = document.createElement('tr');
     row.innerHTML = `<td colspan="11" class="px-3 py-2 text-center text-xs" style="color:var(--text-dim);">Showing ${TABLE_RENDER_LIMIT.toLocaleString()} agents. Search to narrow the downline.</td>`;
@@ -5086,6 +6007,19 @@ function toggleAgentPatternSort() {
 function pulseAgentPatternRow(agent) {
   const row = document.querySelector(`tr.agent-row[data-agent="${cssEscape(agent)}"]`);
   if (!row) return;
+  row.classList.add('agent-pattern-pulse');
+  setTimeout(() => row.classList.remove('agent-pattern-pulse'), 3000);
+}
+
+function pulseAgentPatternBadge(agent) {
+  const row = document.querySelector(`tr.agent-row[data-agent="${cssEscape(agent)}"]`);
+  if (!row) return;
+  const badge = row.querySelector('[data-agent-field="patterns"] .agent-pattern-badge');
+  if (badge) {
+    badge.classList.add('pattern-badge-pulse');
+    setTimeout(() => badge.classList.remove('pattern-badge-pulse'), 2000);
+  }
+  // Also pulse the row for visibility
   row.classList.add('agent-pattern-pulse');
   setTimeout(() => row.classList.remove('agent-pattern-pulse'), 3000);
 }
@@ -5763,7 +6697,7 @@ function backFromPlayerDetail() {
 async function renderPlayerDetail(playerLogin) {
   document.getElementById('playerDetailTitle').textContent = 'Player: ' + playerLogin;
 
-  // Try backend first, fallback to static data
+  // Try backend first, then fall back to the already-loaded wager archive for this player.
   let details = null;
   let wagers = [];
   let pnl = [];
@@ -5778,13 +6712,13 @@ async function renderPlayerDetail(playerLogin) {
     if (wRes.ok) wagers = await wRes.json();
     if (pRes.ok) pnl = await pRes.json();
   } catch (err) {
-    console.log('Backend unavailable, using static data for player detail:', err?.message || err);
+    console.log('Backend player detail unavailable, using loaded Buckeye archive:', err?.message || err);
   }
 
   const localPlayerWagers = buckeyeWagers.filter(w => w.Login === playerLogin);
   const hasBackendPlayerData = Number(details?.profile?.wager_count || 0) > 0;
 
-  // Fallback to static data when the backend is unavailable or has no row for a local/demo search result.
+  // Fall back to loaded Buckeye archive rows when the player endpoint has no row yet.
   if (!details || (!hasBackendPlayerData && localPlayerWagers.length > 0)) {
     const playerWagers = localPlayerWagers;
     const totalVolume = playerWagers.reduce((s, w) => s + w.AmountWagered, 0);

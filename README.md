@@ -14,7 +14,7 @@ Implemented:
 - Bun SQL backed SQLite persistence through the app database wrapper.
 - Managed scheduler loops based on `Bun.sleep`; `Bun.scheduler` is not available in the current Bun 1.3.13 runtime.
 - Pattern detection and history for odds, wagers, agents, IP, live timing, and feed risk.
-- Demo odds grid with 16 books, consensus, best-line highlighting, movements, and book health.
+- Odds grid with 16 books, consensus, best-line highlighting, movements, and book health when a live odds provider is configured.
 - Buckeye wager feed, agent downline, hierarchy/player export parsing, player search/detail, sport and agent exposure.
 - Alert rules, alert history, toast toggle, webhook CRUD, retry, and delivery logging.
 - System Status sidebar page for backend, vault, book, and pattern health.
@@ -22,7 +22,7 @@ Implemented:
 
 Partial or planned:
 
-- Real odds require `ODDS_API_KEY`; otherwise the demo provider is used.
+- Real odds require `ODDS_API_KEY`; without it, odds polling is disabled. Synthetic odds require explicit `ODDS_DEMO_MODE=true` and are not used by Buckeye views.
 - Polymarket, Kalshi, Ace Per Head, Metallic, heatmap, candlestick, and bet builder remain placeholders.
 - The local raw Buckeye exports are intentionally ignored and should be treated as sensitive source material, not app source.
 
@@ -219,7 +219,7 @@ backend/
       Scheduler.ts            Managed recurring jobs using Bun.sleep
       WebhookService.ts       Webhook CRUD, payload formatting, retry, delivery logging
     odds/
-      OddsPoller.ts           Demo/live odds polling, persistence, movements, matrix views
+      OddsPoller.ts           Live odds polling, persistence, movements, matrix views
     patterns/
       PatternService.ts       Pattern persistence, scoring, summary, and agent links
     risk/
@@ -305,6 +305,8 @@ Ignored local data/tools:
 - `docs/IMPLEMENTATION_TRACKER.md`: current delivery status and verification notes.
 - `docs/BUCKEYE_BACKEND_SCOPE.md`: Buckeye endpoint, schema, and ingestion contract.
 - `docs/DATA_DICTIONARY.md`: env vars, vault keys, source fields, table columns, API names, and WebSocket events.
+- `docs/ENTERPRISE_TAB_GOALS.md`: enterprise goals, workflows, and readiness standards for each sidebar tab.
+- `docs/AUDIT_ANALYTICS_ENGINE.md`: audit logging, analytics schema, retention, and polling safety contract.
 - `docs/PROJECT_ORGANIZATION.md`: where new code, docs, raw exports, and runtime files belong.
 - `docs/CHANGELOG.md`: chronological change notes.
 - `docs/CODE_QUALITY_CHECKLIST.md`: quick review checks before handoff.

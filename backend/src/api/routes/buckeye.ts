@@ -363,6 +363,14 @@ export function registerBuckeyeRoutes(
       }
       // Try one getBetTicker to confirm data access
       const wagers = await api.getBetTicker();
+      if (secretVault) {
+        await secretVault.saveBuckeyeSecrets({
+          agentId: body.agentId,
+          password: body.password || undefined,
+          cfCookie: api.getCookie() || body.cfCookie || undefined,
+          token: api.getToken(),
+        });
+      }
       return {
         success: true,
         message: 'Login successful',

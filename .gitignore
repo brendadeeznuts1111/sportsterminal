@@ -30,6 +30,7 @@ logs/
 docs/agentslistharz.md
 docs/agentobject.md
 docs/*.exe
+docs/archive/artifacts/*.exe
 
 # OS files
 .DS_Store

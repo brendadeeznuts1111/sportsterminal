@@ -1,9 +1,8 @@
 /**
  * Logger Utility
- * Structured logging with Bun's built-in logger.
+ * Small structured logger wrapper. Bun does not expose a stable logger object
+ * across all supported versions, so keep this on top of console methods.
  */
-
-import { logger as bunLogger } from 'bun';
 
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
 
@@ -11,12 +10,30 @@ export interface LogMeta {
   [key: string]: any;
 }
 
+function writeLog(level: LogLevel, message: string, meta?: LogMeta): void {
+  if (level === 'debug' && process.env.DEBUG !== 'true') return;
+  const payload = {
+    level,
+    message,
+    timestamp: new Date().toISOString(),
+    ...(meta || {}),
+  };
+  const line = JSON.stringify(payload);
+  if (level === 'error') {
+    console.error(line);
+  } else if (level === 'warn') {
+    console.warn(line);
+  } else {
+    console.log(line);
+  }
+}
+
 /**
  * Log an info message.
  */
 export function logInfo(message: string, meta?: LogMeta): void {
   const logMeta: LogMeta = { ...meta };
-  bunLogger.info(message, logMeta);
+  writeLog('info', message, logMeta);
 }
 
 /**
@@ -24,7 +41,7 @@ export function logInfo(message: string, meta?: LogMeta): void {
  */
 export function logWarn(message: string, meta?: LogMeta): void {
   const logMeta: LogMeta = { ...meta };
-  bunLogger.warn(message, logMeta);
+  writeLog('warn', message, logMeta);
 }
 
 /**
@@ -32,7 +49,7 @@ export function logWarn(message: string, meta?: LogMeta): void {
  */
 export function logError(message: string, meta?: LogMeta): void {
   const logMeta: LogMeta = { ...meta };
-  bunLogger.error(message, logMeta);
+  writeLog('error', message, logMeta);
 }
 
 /**
@@ -40,7 +57,7 @@ export function logError(message: string, meta?: LogMeta): void {
  */
 export function logDebug(message: string, meta?: LogMeta): void {
   const logMeta: LogMeta = { ...meta };
-  bunLogger.debug(message, logMeta);
+  writeLog('debug', message, logMeta);
 }
 
 /**
@@ -61,7 +78,7 @@ export function logRequest(
     duration,
     ...meta,
   };
-  bunLogger.info('HTTP request', logMeta);
+  writeLog('info', 'HTTP request', logMeta);
 }
 
 /**
@@ -74,7 +91,7 @@ export function logQuery(sql: string, params?: any[]): void {
       query: sql,
       params,
     };
-    bunLogger.debug('Database query', logMeta);
+    writeLog('debug', 'Database query', logMeta);
   }
 }
 
@@ -96,7 +113,7 @@ export function logWebhook(
     responseStatus,
     ...meta,
   };
-  bunLogger.info('Webhook dispatched', logMeta);
+  writeLog('info', 'Webhook dispatched', logMeta);
 }
 
 /**
@@ -113,7 +130,7 @@ export function logPattern(
     severity,
     ...details,
   };
-  bunLogger.info('Pattern detected', logMeta);
+  writeLog('info', 'Pattern detected', logMeta);
 }
 
 /**
@@ -133,9 +150,9 @@ export function logScraper(
     ...meta,
   };
   if (error) {
-    bunLogger.error('Scraper error', logMeta);
+    writeLog('error', 'Scraper error', logMeta);
   } else {
-    bunLogger.info('Scraper operation', logMeta);
+    writeLog('info', 'Scraper operation', logMeta);
   }
 }
 
@@ -153,5 +170,5 @@ export function logCache(
     key,
     ...meta,
   };
-  bunLogger.debug('Cache operation', logMeta);
+  writeLog('debug', 'Cache operation', logMeta);
 }

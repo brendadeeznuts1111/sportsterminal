@@ -36,11 +36,13 @@ import { registerOddsRoutes } from './routes/odds';
 import { registerBuckeyeRoutes } from './routes/buckeye';
 import { registerStaticRoutes } from './routes/static';
 import { registerPerformanceRoutes } from './routes/performance';
+import { registerAnalyticsRoutes } from './routes/analytics';
 import { UrlPatternRouter } from './UrlPatternRouter';
 import type { BuckeyeScraperManager } from '../scrapers/ScraperManager';
 import type { OddsPoller } from '../odds/OddsPoller';
 import type { BunSecretVault } from '../services/BunSecretVault';
 import type { PerformanceCache } from '../services/PerformanceCache';
+import { wrapRouterWithLogging } from './middleware/apiLogger';
 
 export interface RouterDeps {
   scraperManager: BuckeyeScraperManager;
@@ -252,6 +254,64 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
     return registerPerformanceRoutes(url, request, deps);
   });
 
+  // Analytics routes
+  router.get('/api/betting/velocity', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/betting/live-vs-pre', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/logs/access', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/master/history', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/performance/summary', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/performance/details', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/export/wagers', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/export/access-logs', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/export/performance', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  // New analytics routes for Performance tab
+  router.get('/api/analytics/raw-logs', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/analytics/weekly-figures', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/analytics/master-snapshots', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/analytics/performance-trends', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/analytics/wager-velocity', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
   router.get('/api/performance/:agentId', async (url, request, params) => {
     return registerPerformanceRoutes(url, request, deps, params);
   });
@@ -298,5 +358,10 @@ export async function routeRequest(
     }
   }
 
-  return router.dispatch(request);
+  const loggedDispatch = wrapRouterWithLogging((url, request) => router.dispatch(request), {
+    db: deps.scraperManager?.getDatabase?.(),
+    enabled: true,
+  });
+
+  return loggedDispatch(url, request);
 }

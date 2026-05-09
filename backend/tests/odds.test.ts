@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { DemoOddsProvider } from '../src/odds/providers/DemoOddsProvider';
+import { DemoOddsProvider } from '../dev-tools/DemoOddsProvider';
 
 describe('DemoOddsProvider', () => {
   test('fetches odds for all games', async () => {

@@ -20,6 +20,8 @@
 - Bun install security scanner configuration through `bunfig.toml`.
 - Project organization guide.
 - Data dictionary covering env vars, vault keys, Buckeye fields, local tables, API routes, and WebSocket events.
+- Enterprise tab goals covering sidebar workflows, readiness standards, data contracts, and operational UX principles.
+- Audit analytics engine contract covering raw logs, archive tables, poller state, retention, and test expectations.
 - Complete URLPattern route registration for existing route modules.
 
 ### Changed

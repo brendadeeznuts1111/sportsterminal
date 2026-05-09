@@ -21,6 +21,7 @@ export async function restoreBuckeyeAgentsFromVault(
       password: saved.password || '',
       baseUrl,
       cfCookie: saved.cfCookie,
+      token: saved.token,
     };
 
     try {
