@@ -486,7 +486,7 @@ export async function initDatabase(): Promise<AppDatabase> {
       agent_id TEXT NOT NULL,
       customer_id TEXT NOT NULL,
       login TEXT NOT NULL,
-      wager_type TEXT CHECK(wager_type IN ('L','M','S','P','E','T','C')),
+      wager_type TEXT,
       amount_wagered INTEGER NOT NULL,
       to_win_amount INTEGER NOT NULL,
       volume_amount INTEGER NOT NULL,

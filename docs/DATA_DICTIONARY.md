@@ -234,7 +234,7 @@ Response fields:
 | `AgentID` | `agent_id` | text | Agent ID from upstream row |
 | `CustomerID` | `customer_id` | text | Customer/player ID, often padded |
 | `Login` | `login` | text | Player login |
-| `WagerType` | `wager_type` | text | `L`, `M`, `S`, `P`, `E`, `T`, `C` |
+| `WagerType` | `wager_type` | text | Buckeye wager type code; do not hard-code to a fixed enum because the Pending UI includes straight, parlay, if bet, teaser, racebook, manual play, contest, and other upstream-defined types. |
 | `AmountWagered` | `amount_wagered` | integer/dollars | Upstream cents normalized to dollars |
 | `ToWinAmount` | `to_win_amount` | integer/dollars | Upstream cents normalized to dollars |
 | `VolumeAmount` | `volume_amount` | integer/dollars | Upstream cents normalized to dollars |
