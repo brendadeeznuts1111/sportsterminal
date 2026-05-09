@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 
 import { AppDatabase, type Database } from '../src/database';
-import { buildWebLogBody, validateWebLogRange } from '../src/scrapers/BuckeyeAPI';
+import { buildManagerOperationBody, buildWebLogBody, validateWebLogRange } from '../src/scrapers/BuckeyeAPI';
 import { PatternService } from '../src/patterns/PatternService';
 import { parseWagerDescription } from '../src/patterns/wagerParser';
 import type { EnrichedWager } from '../src/risk/AlertEngine';
@@ -156,6 +156,28 @@ describe('Buckeye getWebLog helpers', () => {
   test('enforces users-by-IP 7 day limit', () => {
     expect(() => validateWebLogRange({ start: '2026-05-01', end: '2026-05-09', type: 'I' })).toThrow();
     expect(() => validateWebLogRange({ start: '2026-05-01', end: '2026-05-09', type: 'A' })).not.toThrow();
+  });
+});
+
+describe('Buckeye manager operation helpers', () => {
+  test('builds manager bootstrap request body', () => {
+    const body = buildManagerOperationBody('AGENT1', 'getSportsType');
+
+    expect(body.get('agentID')).toBe('AGENT1');
+    expect(body.get('operation')).toBe('getSportsType');
+    expect(body.get('agentOwner')).toBe('AGENT1');
+    expect(body.get('agentSite')).toBe('1');
+    expect(body.get('RRO')).toBe('1');
+  });
+
+  test('adds account parameters for message-style operations', () => {
+    const body = buildManagerOperationBody('AGENT1', 'getMessage', {
+      acc: 'AGENT1',
+      type: '0',
+    });
+
+    expect(body.get('acc')).toBe('AGENT1');
+    expect(body.get('type')).toBe('0');
   });
 });
 

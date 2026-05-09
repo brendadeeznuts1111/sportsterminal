@@ -55,9 +55,9 @@ export class OddsPoller {
     this.intervalId = setInterval(() => this.poll(), this.pollIntervalMs);
     this.healthIntervalId = setInterval(() => this.checkHealth(), this.healthIntervalMs);
 
-    // Immediate first poll
-    setImmediate(() => this.poll());
-    setImmediate(() => this.checkHealth());
+    // Immediate first poll (use setTimeout to avoid microtask cascade)
+    setTimeout(() => this.poll(), 0);
+    setTimeout(() => this.checkHealth(), 100);
 
     console.log(`[OddsPoller] Started polling every ${this.pollIntervalMs}ms`);
   }
@@ -78,7 +78,12 @@ export class OddsPoller {
     return this.lastOdds;
   }
 
+  private isPolling = false;
+
   private async poll(): Promise<void> {
+    if (this.isPolling) return;
+    this.isPolling = true;
+
     try {
       const odds = await this.provider.fetchOdds();
       this.lastOdds = odds;
@@ -112,6 +117,8 @@ export class OddsPoller {
       });
     } catch (error) {
       console.error('[OddsPoller] Poll error:', error);
+    } finally {
+      this.isPolling = false;
     }
   }
 

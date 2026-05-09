@@ -2453,7 +2453,7 @@ function parseDescription(desc) {
   // Remove wager type prefix: M., P., L:, T., C., S., E.
   let clean = desc.replace(/^[A-Z][.:]\s*/, '');
 
-  // Remove GSLIVE game ID: G123456 - 
+  // Remove GSLIVE game ID: G123456 -
   clean = clean.replace(/^G\d+\s*-\s*/, '');
 
   // Remove sport prefix if present (e.g., "Tennis - " or "FOOTBALL - ")

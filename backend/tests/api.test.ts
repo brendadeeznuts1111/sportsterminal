@@ -440,6 +440,49 @@ describe('BuckeyeScraperManager weekly figures', () => {
   });
 });
 
+describe('BuckeyeScraperManager manager snapshot', () => {
+  test('returns unauthenticated response without an active Buckeye agent', async () => {
+    const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
+    const manager = new BuckeyeScraperManager({} as any, () => {}, false);
+
+    const result = await manager.getBuckeyeManagerSnapshot();
+
+    expect(result.data).toBeNull();
+    expect(result.message).toContain('Not authenticated');
+  });
+
+  test('uses requested active agent for manager snapshot lookups', async () => {
+    const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
+    const manager = new BuckeyeScraperManager({} as any, () => {}, false);
+    const calls: string[] = [];
+
+    (manager as any).agents.set('A1', {
+      api: {
+        isAuthenticated: () => true,
+        getManagerSnapshot: async () => {
+          calls.push('A1');
+          return { agentId: 'A1', sportsType: [] };
+        },
+      },
+    });
+    (manager as any).agents.set('A2', {
+      api: {
+        isAuthenticated: () => true,
+        getManagerSnapshot: async () => {
+          calls.push('A2');
+          return { agentId: 'A2', sportsType: [{ Sport: 'Baseball' }] };
+        },
+      },
+    });
+
+    const result = await manager.getBuckeyeManagerSnapshot('A2');
+
+    expect(calls).toEqual(['A2']);
+    expect(result.agentId).toBe('A2');
+    expect(result.sportsType[0].Sport).toBe('Baseball');
+  });
+});
+
 describe('BuckeyeScraperManager player details', () => {
   test('returns projected net exposure from the player detail endpoint data', async () => {
     const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');

@@ -131,6 +131,40 @@ export function registerBuckeyeRoutes(
     }
   }
 
+  // Buckeye manager bootstrap/report payloads (config reports, sports, auth flags, messages)
+  if (url.pathname === '/api/buckeye/manager-snapshot') {
+    if (request.method === 'GET') {
+      const agentId = url.searchParams.get('agentId') || undefined;
+      return handleAsync(async () => scraperManager.getBuckeyeManagerSnapshot(agentId), corsHeaders);
+    }
+    if (request.method === 'POST') {
+      return handleAsync(async () => {
+        const body = await readJsonBody(request);
+        const api = new BuckeyeAPI(
+          {
+            agentId: body.agentId,
+            password: body.password || '',
+            baseUrl: body.baseUrl,
+            cfCookie: body.cfCookie,
+          },
+          false
+        );
+
+        if (body.token) {
+          (api as any).token = body.token;
+          (api as any).loggedIn = true;
+        } else {
+          const ok = await api.login();
+          if (!ok) {
+            throw new Error('Login failed — invalid credentials or site unreachable');
+          }
+        }
+
+        return api.getManagerSnapshot();
+      }, corsHeaders);
+    }
+  }
+
   if (url.pathname === '/api/buckeye/access-logs') {
     if (request.method === 'GET') {
       const limit = clampInt(url.searchParams.get('limit'), 200, 1, 500);

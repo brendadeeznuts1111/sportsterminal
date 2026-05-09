@@ -5,7 +5,12 @@
  */
 
 import type { Database } from '../database';
-import { BuckeyeAPI, BuckeyeCredentials, type BuckeyeWeeklyFigureOptions } from './BuckeyeAPI';
+import {
+  BuckeyeAPI,
+  BuckeyeCredentials,
+  type BuckeyeManagerSnapshotResult,
+  type BuckeyeWeeklyFigureOptions,
+} from './BuckeyeAPI';
 import { LiveAgentTree } from './LiveAgentTree';
 import { evaluateWager, Alert } from '../risk/AlertEngine';
 import { WebhookService } from '../services/WebhookService';
@@ -24,6 +29,7 @@ interface AgentInstance {
   currentPollMs: number;
   reloginAttempts: number;
   liveTree?: LiveAgentTree;
+  isPolling: boolean; // guard against concurrent polls
 }
 
 export class BuckeyeScraperManager {
@@ -78,6 +84,7 @@ export class BuckeyeScraperManager {
       consecutiveErrors: 0,
       currentPollMs: this.pollIntervalMs,
       reloginAttempts: 0,
+      isPolling: false,
     };
 
     this.agents.set(agentId, instance);
@@ -85,8 +92,9 @@ export class BuckeyeScraperManager {
     this.startAccessLogPolling(agentId, instance);
     console.log(`[Manager] Started polling for ${agentId} every ${this.pollIntervalMs}ms`);
 
-    setImmediate(() => this.pollAgent(agentId));
-    setImmediate(() => this.refreshAccessLogs(agentId).catch(err => console.warn(`[Manager] Access log refresh failed for ${agentId}:`, err.message)));
+    // Fire first poll immediately (not via setImmediate to avoid microtask cascade)
+    setTimeout(() => this.pollAgent(agentId), 0);
+    setTimeout(() => this.refreshAccessLogs(agentId).catch(err => console.warn(`[Manager] Access log refresh failed for ${agentId}:`, err.message)), 1000);
   }
 
   /**
@@ -121,6 +129,7 @@ export class BuckeyeScraperManager {
       consecutiveErrors: 0,
       currentPollMs: this.pollIntervalMs,
       reloginAttempts: 0,
+      isPolling: false,
     };
 
     this.agents.set(agentId, instance);
@@ -128,8 +137,9 @@ export class BuckeyeScraperManager {
     this.startAccessLogPolling(agentId, instance);
     console.log(`[Manager] Resumed session for ${agentId}`);
 
-    setImmediate(() => this.pollAgent(agentId));
-    setImmediate(() => this.refreshAccessLogs(agentId).catch(err => console.warn(`[Manager] Access log refresh failed for ${agentId}:`, err.message)));
+    // Fire first poll immediately
+    setTimeout(() => this.pollAgent(agentId), 0);
+    setTimeout(() => this.refreshAccessLogs(agentId).catch(err => console.warn(`[Manager] Access log refresh failed for ${agentId}:`, err.message)), 1000);
     return true;
   }
 
@@ -377,6 +387,24 @@ export class BuckeyeScraperManager {
       return await instance.api.getWeeklyFigureByAgentLite(options);
     } catch (err: any) {
       console.error('[ScraperManager] getWeeklyFigureByAgentLite error:', err.message);
+      return { data: null, error: err.message };
+    }
+  }
+
+  /**
+   * Fetch Buckeye manager bootstrap/report payloads discovered from manager.html.
+   */
+  async getBuckeyeManagerSnapshot(agentId?: string): Promise<BuckeyeManagerSnapshotResult | any> {
+    const instance = this.resolveAgentInstance(agentId);
+
+    if (!instance || !instance.api.isAuthenticated()) {
+      return { data: null, message: 'Not authenticated to Buckeye' };
+    }
+
+    try {
+      return await instance.api.getManagerSnapshot();
+    } catch (err: any) {
+      console.error('[ScraperManager] getBuckeyeManagerSnapshot error:', err.message);
       return { data: null, error: err.message };
     }
   }
@@ -737,6 +765,12 @@ export class BuckeyeScraperManager {
     };
   }
 
+  private resolveAgentInstance(agentId?: string): AgentInstance | undefined {
+    return agentId
+      ? this.agents.get(agentId)
+      : Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
+  }
+
   private async initializeLiveAgentTree(agentId: string, instance: AgentInstance): Promise<void> {
     try {
       const hierarchy = await instance.api.getAgentHierarchy();
@@ -763,6 +797,13 @@ export class BuckeyeScraperManager {
   private async pollAgent(agentId: string): Promise<void> {
     const instance = this.agents.get(agentId);
     if (!instance) return;
+
+    // Guard against concurrent polls (e.g., if a poll takes longer than the interval)
+    if (instance.isPolling) {
+      console.warn(`[Manager] Skipping poll for ${agentId} — previous poll still running`);
+      return;
+    }
+    instance.isPolling = true;
 
     try {
       const wagers = await instance.api.getBetTicker();
@@ -861,6 +902,8 @@ export class BuckeyeScraperManager {
           this.stopAgent(agentId);
         }
       }
+    } finally {
+      instance.isPolling = false;
     }
   }
 

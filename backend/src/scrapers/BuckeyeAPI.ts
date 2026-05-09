@@ -72,6 +72,31 @@ export interface BuckeyeWeeklyFigureResult {
   data: unknown;
 }
 
+export type BuckeyeManagerOperation =
+  | 'getConfigWebReports'
+  | 'getConfigWebReportsPending'
+  | 'getSportsType'
+  | 'getAuthorizations'
+  | 'getMessage'
+  | 'getNewEmailsCount';
+
+export interface BuckeyeManagerSnapshotResult {
+  fetchedAt: string;
+  agentId: string;
+  configWebReports: unknown;
+  configWebReportsPending: unknown;
+  sportsType: unknown;
+  authorizations: unknown;
+  message: unknown;
+  newEmailsCount: unknown;
+}
+
+export interface BuckeyeLogWriteResult {
+  fetchedAt: string;
+  agentId: string;
+  data: unknown;
+}
+
 export type BuckeyeWebLogType = 'A' | 'B' | 'C' | 'I';
 
 export interface BuckeyeWebLogOptions {
@@ -522,6 +547,85 @@ export class BuckeyeAPI {
     };
   }
 
+  async getConfigWebReports(): Promise<unknown> {
+    return this.postManagerOperation('getConfigWebReports');
+  }
+
+  async getConfigWebReportsPending(): Promise<unknown> {
+    return this.postManagerOperation('getConfigWebReportsPending');
+  }
+
+  async getSportsType(): Promise<unknown> {
+    return this.postManagerOperation('getSportsType');
+  }
+
+  async getAuthorizations(): Promise<unknown> {
+    return this.postManagerOperation('getAuthorizations');
+  }
+
+  async getMessage(type: string = '0'): Promise<unknown> {
+    return this.postManagerOperation('getMessage', { acc: this.agentId, type });
+  }
+
+  async getNewEmailsCount(): Promise<unknown> {
+    return this.postManagerOperation('getNewEmailsCount', { acc: this.agentId });
+  }
+
+  async getManagerSnapshot(): Promise<BuckeyeManagerSnapshotResult> {
+    if (!this.loggedIn) {
+      throw new Error('Not authenticated. Call login() first.');
+    }
+
+    const [
+      configWebReports,
+      configWebReportsPending,
+      sportsType,
+      authorizations,
+      message,
+      newEmailsCount,
+    ] = await Promise.all([
+      this.getConfigWebReports(),
+      this.getConfigWebReportsPending(),
+      this.getSportsType(),
+      this.getAuthorizations(),
+      this.getMessage(),
+      this.getNewEmailsCount(),
+    ]);
+
+    return {
+      fetchedAt: new Date().toISOString(),
+      agentId: this.agentId,
+      configWebReports,
+      configWebReportsPending,
+      sportsType,
+      authorizations,
+      message,
+      newEmailsCount,
+    };
+  }
+
+  async writeLog(description: string, additional: string = ''): Promise<BuckeyeLogWriteResult> {
+    if (!this.loggedIn) {
+      throw new Error('Not authenticated. Call login() first.');
+    }
+
+    const body = new URLSearchParams({
+      customerID: `${this.agentId}  `,
+      description,
+      additional,
+      operation: 'write',
+      agentID: this.agentId,
+      agentOwner: this.agentId,
+      agentSite: '1',
+    });
+
+    return {
+      fetchedAt: new Date().toISOString(),
+      agentId: this.agentId,
+      data: await this.postForm(`${this.baseUrl}/cloud/api/Log/write`, body, 'writeLog'),
+    };
+  }
+
   /**
    * Fetch Buckeye language/theme UI config and extract useful sportsbook labels.
    */
@@ -662,6 +766,50 @@ export class BuckeyeAPI {
     }
 
     throw new Error(`getWebLog failed: ${lastError || 'all endpoints failed'}`);
+  }
+
+  private async postManagerOperation(
+    operation: BuckeyeManagerOperation,
+    extra: Record<string, string> = {}
+  ): Promise<unknown> {
+    if (!this.loggedIn) {
+      throw new Error('Not authenticated. Call login() first.');
+    }
+
+    const body = buildManagerOperationBody(this.agentId, operation, extra);
+    return this.postForm(`${this.baseUrl}/cloud/api/Manager/${operation}`, body, operation);
+  }
+
+  private async postForm(endpoint: string, body: URLSearchParams, label: string): Promise<unknown> {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Authorization': `Bearer ${this.token}`,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Origin': this.baseUrl,
+        'Referer': `${this.baseUrl}/manager.html`,
+        ...(this.cfCookie ? { 'Cookie': this.cfCookie } : {}),
+      },
+      body,
+    });
+
+    const text = await response.text().catch(() => '');
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        this.loggedIn = false;
+      }
+      throw new Error(`${label} failed: ${response.status} ${response.statusText} - ${text.substring(0, 200)}`);
+    }
+
+    if (!text.trim()) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
   }
 
   private normalizeWager(raw: any): EnrichedWager {
@@ -961,6 +1109,21 @@ export function buildWebLogBody(agentId: string, options: BuckeyeWebLogOptions):
     ip: options.ip || '',
     operation: 'getWebLog',
     RRO: '1',
+  });
+}
+
+export function buildManagerOperationBody(
+  agentId: string,
+  operation: BuckeyeManagerOperation,
+  extra: Record<string, string> = {}
+): URLSearchParams {
+  return new URLSearchParams({
+    agentID: agentId,
+    operation,
+    RRO: '1',
+    agentOwner: agentId,
+    agentSite: '1',
+    ...extra,
   });
 }
 
