@@ -33,6 +33,7 @@ describe('API route registration', () => {
       ['GET', '/api/players/CF346/details'],
       ['GET', '/api/players/CF346/wagers'],
       ['GET', '/api/players/CF346/pnl'],
+      ['GET', '/api/freeplay/analysis'],
       ['GET', '/api/risk/alerts'],
       ['GET', '/api/exposure/sports'],
       ['GET', '/api/exposure/agents'],
@@ -108,6 +109,7 @@ describe('API route registration', () => {
     expect(router.match('POST', '/api/v1/agents/refresh')).not.toBeNull();
     expect(router.match('GET', '/api/v1/agents/hierarchy')).not.toBeNull();
     expect(router.match('GET', '/api/v1/agents/BILLY666/players')).not.toBeNull();
+    expect(router.match('GET', '/api/v1/freeplay/analysis')).not.toBeNull();
     expect(router.match('GET', '/api/v1/logs/access')).not.toBeNull();
     expect(router.match('POST', '/api/v1/players/A17566/flags')).not.toBeNull();
   });

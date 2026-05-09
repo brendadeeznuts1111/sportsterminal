@@ -191,6 +191,10 @@ export type BuckeyeTransactionCategory =
   | 'debit'
   | 'hold'
   | 'adjustment'
+  | 'freeplay_issued'
+  | 'freeplay_redeemed'
+  | 'freeplay_expired'
+  | 'freeplay_adjustment'
   | 'other';
 
 export interface BuckeyeTransactionRow {
@@ -2052,7 +2056,8 @@ function normalizeTransactionRow(row: Record<string, unknown>, context: {
   const amount = normalizeTransactionAmount(firstNumber(row, ['Amount', 'amount', 'TransactionAmount', 'transactionAmount', 'Credit', 'credit', 'Debit', 'debit']));
   const balance = normalizeTransactionAmount(firstNumber(row, ['Balance', 'balance']));
   const holdAmount = normalizeTransactionAmount(firstNumber(row, ['HoldAmount', 'holdAmount']));
-  const category = classifyTransaction({ tranCode, tranType, description, amount });
+  const rawText = JSON.stringify(row);
+  const category = classifyTransaction({ tranCode, tranType, description, amount, rawText });
   const raw = { ...row, sourceOperation: context.operation };
 
   return {
@@ -2102,8 +2107,16 @@ function classifyTransaction(input: {
   tranType: string;
   description: string;
   amount: number;
+  rawText?: string;
 }): BuckeyeTransactionCategory {
-  const text = `${input.tranCode} ${input.tranType} ${input.description}`.toLowerCase();
+  const text = `${input.tranCode} ${input.tranType} ${input.description} ${input.rawText || ''}`.toLowerCase();
+  const hasFreePlaySignal = /\bfree[\s_-]*play\b|freeplay|\bfp\b|bonus\s+play|promo|credit\s*pct/.test(text);
+  if (hasFreePlaySignal) {
+    if (/expir|forfeit|void/.test(text)) return 'freeplay_expired';
+    if (/redeem|redemption|used|wager(ed)?\s+free|free[\s_-]*play\s+used|fp\s+used/.test(text)) return 'freeplay_redeemed';
+    if (/adjust|correction|manual|credit\s*pct|percentage/.test(text)) return 'freeplay_adjustment';
+    return 'freeplay_issued';
+  }
   if (/wager\s+won|bet\s+won/.test(text)) return 'wager_win';
   if (/wager\s+loss|bet\s+loss/.test(text)) return 'wager_loss';
   if (/deposit|cash\s*in|fund|payment|wire|ach|card|crypto|bitcoin|btc|zelle|venmo|paypal/.test(text)) return 'deposit';

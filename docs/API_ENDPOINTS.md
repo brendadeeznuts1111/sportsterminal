@@ -262,6 +262,22 @@ All wagers for a specific player (last 200).
 
 Daily P&L history over N days (default 7).
 
+### `GET /api/v1/players/:playerId/profile`
+
+Player 360 profile from local archive tables. The response includes `agent`, `allAgents`, `agentContext`, and `freePlaySummary` when those records are available.
+
+### `GET /api/v1/players/:playerId/transactions?category=freeplay`
+
+Player transaction ledger filtered to free-play categories when `category=freeplay` is provided.
+
+### `GET /api/v1/freeplay/analysis`
+
+Aggregates free-play rows from `player_transactions`.
+
+Query params: `playerId`, `agentId`, `from`, `to`, `groupBy=player|agent|day`.
+
+Response totals include `issued`, `redeemed`, `expired`, `adjustments`, `outstandingEstimate`, `transactionCount`, and `sourceConfidence`. Groups use the same totals contract.
+
 ---
 
 ## 5. Risk & Exposure

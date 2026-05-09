@@ -11,7 +11,7 @@ Player 360 uses a hybrid hotset model. `getBetTicker` remains real-time and chea
 | `wager_archive` | `getBetTicker` | `live` | 0 | `realtime` | Always-on wager ingestion. |
 | `access_logs` | `getWebLog` | `hotset` | 30 minutes | `cheap` | Agent poll plus profile-open refresh when missing/stale. |
 | `agent_performance_snapshots` | `getPerformancePlayer` | `hotset` | 1 hour | `heavy` | Hot players in background; cold players on profile open only. |
-| `player_transactions` | `getTransactionList` / `getTransactionHistory` | `on_open` | 6 hours | `heavy` | Profile open or hotset queue when missing/stale. |
+| `player_transactions` | `getTransactionList` / `getTransactionHistory` | `on_open` | 6 hours | `heavy` | Profile open or hotset queue when missing/stale. Free-play categories are classified conservatively from ledger text. |
 | `deleted_transactions` | `getReportDeletedTransactions` | `on_open` | 6 hours | `heavy` | Profile open or hotset queue when missing/stale; persisted into `player_transactions` with `sourceOperation`. |
 | `deposits` | Classified from transaction ledger endpoints | `on_open` | 6 hours | `heavy` | Follows transaction-ledger refresh. |
 | `customer_snapshots` | `getInfoPlayer` plus account candidates | `on_open` | 24 hours | `heavy` | Profile open or hotset queue when missing/stale. |
@@ -29,7 +29,8 @@ Hot players are players with a wager in the last 24 hours, an opened profile, an
 | Profile | `/api/v1/players/:playerId/profile` | `wager_archive`, `access_logs`, `agent_performance_snapshots` from `getPerformancePlayer`, `player_transactions` from `getTransactionList` / `getTransactionHistory` / `getReportDeletedTransactions`, `deposits`, `customer_snapshots`, `player_links`, `player_flags`, `player_notes` |
 | Intelligence map | `/api/v1/players/:playerId/intelligence-map` | Source freshness, watermarks, raw API probe history |
 | Deposits | `/api/v1/players/:playerId/deposits` | `deposits` plus login-IP match against `access_logs` |
-| Transaction ledger | `/api/v1/players/:playerId/transactions` | Combined `getTransactionList` / `getTransactionHistory` / `getReportDeletedTransactions` ledger: wager wins/losses, credits/debits, deleted rows, balances, document numbers |
+| Transaction ledger | `/api/v1/players/:playerId/transactions` | Combined `getTransactionList` / `getTransactionHistory` / `getReportDeletedTransactions` ledger: wager wins/losses, credits/debits, deleted rows, balances, document numbers. Pass `category=freeplay` to return only free-play rows. |
+| Free-play analysis | `/api/v1/freeplay/analysis?playerId=&agentId=&from=&to=&groupBy=player\|agent\|day` | Aggregates `player_transactions` categories `freeplay_issued`, `freeplay_redeemed`, `freeplay_expired`, and `freeplay_adjustment` into totals and grouped rows with `sourceConfidence`. |
 | Account | `/api/v1/players/:playerId/account-snapshots` | `customer_snapshots` |
 | Links | `/api/v1/players/:playerId/links` and `/links/check` | `player_links`, derived from access-log overlap |
 | Notes and flags | `/api/v1/players/:playerId/notes`, `/flags` | Manual operator tables |
@@ -61,7 +62,7 @@ The intelligence map tracks these explicitly instead of rendering fake values: d
 | Buckeye Operation | URL | Payload Notes | Player 360 Use |
 |---|---|---|---|
 | `getPerformancePlayer` | `/cloud/api/Manager/getPerformancePlayer` | `acc=<player/account>&period=0&operation=getPerformancePlayer&RRO=1&agentID=<manager>&agentOwner=<manager>&agentSite=1` | Player-specific performance enrichment into `agent_performance_snapshots`. |
-| `getTransactionList` | `/cloud/api/Manager/getTransactionList` | `acc=<player/account>&start=&operation=getTransactionList&RRO=1&agentID=<manager>&agentOwner=<manager>&agentSite=1` | Full account ledger into `player_transactions`; rows are classified as `wager_win`, `wager_loss`, `deposit`, `withdrawal`, `credit`, `debit`, `hold`, `adjustment`, or `other`. |
+| `getTransactionList` | `/cloud/api/Manager/getTransactionList` | `acc=<player/account>&start=&operation=getTransactionList&RRO=1&agentID=<manager>&agentOwner=<manager>&agentSite=1` | Full account ledger into `player_transactions`; rows are classified as `wager_win`, `wager_loss`, `deposit`, `withdrawal`, `credit`, `debit`, `hold`, `adjustment`, free-play categories, or `other`. |
 | `getTransactionHistory` | `/cloud/api/Manager/getTransactionHistory` | `customerID=<player/account>&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD&deposits=checked&withdrawals=checked&adjustments=checked&transfers=checked&fess=checked&promotional=checked&balances=checked&distribution=unchecked&freeFlag=player&operation=getTransactionHistory&RRO=1&agentID=<manager>&agentOwner=<manager>&agentSite=1` | Date-windowed transaction history into `player_transactions`; merged with `getTransactionList` and de-duped by document/time/amount/category. |
 | `getReportDeletedTransactions` | `/cloud/api/Manager/getReportDeletedTransactions` | `customerID=<manager/root>&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD&operation=getReportDeletedTransactions&RRO=1&agentID=<manager>&agentOwner=<manager>&agentSite=1` | Deleted deposits, withdrawals, transfers, and adjustments into `player_transactions` with `sourceOperation=getReportDeletedTransactions`, `DeletedBy`, and Telegram Bot AID evidence in raw JSON; Player 360 filters returned rows back to the selected account. |
 | `getInfoPlayer` | `/cloud/api/Manager/getInfoPlayer` | `acc=<player/account>` plus standard manager fields | Account/profile snapshot candidate for `customer_snapshots`. |
@@ -91,3 +92,5 @@ Observed rows include:
 | `EnteredBy` | `entered_by` | Often `Internet` for player-originated rows. |
 
 `getTransactionHistory` and `getReportDeletedTransactions` use the same local contract. The parser also accepts common aliases such as `TransactionDateTime`, `TransactionDate`, `TransactionType`, `TransactionCode`, `Customer`, `Credit`, `Debit`, `AgentId`, `MasterAgentID`, and `DeletedBy` so field-name drift in Buckeye payloads does not blank the Player 360 ledger. Deleted report rows use `deleted-<DocumentNumber>` as the local row ID so they do not overwrite active ledger documents.
+
+Free-play classification is intentionally conservative until exact Buckeye `TranType` examples are proven. Rows are promoted only when description/raw text includes terms such as `free play`, `freeplay`, `fp`, `bonus play`, `promo`, `redeem`, `expired`, or `credit pct`; ambiguous `F`/`H` rows without those terms remain normal credit/debit/other categories.

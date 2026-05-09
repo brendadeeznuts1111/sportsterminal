@@ -56,6 +56,7 @@ import { registerBuckeyeRoutes } from './routes/buckeye';
 import { registerStaticRoutes } from './routes/static';
 import { registerPerformanceRoutes } from './routes/performance';
 import { registerAnalyticsRoutes } from './routes/analytics';
+import { registerFreePlayAnalysisRoutes } from './routes/freeplay';
 import { UrlPatternRouter } from './UrlPatternRouter';
 import type { BuckeyeScraperManager } from '../scrapers/ScraperManager';
 import type { OddsPoller } from '../odds/OddsPoller';
@@ -225,6 +226,10 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
 
   router.get('/api/players/:playerId/pnl', async (url, request) => {
     return registerPlayerPnlRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/freeplay/analysis', async (url, request) => {
+    return registerFreePlayAnalysisRoutes(url, request, deps.scraperManager);
   });
 
   router.get('/api/risk/alerts', async (url, request) => {

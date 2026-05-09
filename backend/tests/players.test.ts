@@ -16,6 +16,7 @@ import {
   registerPlayerSearchRoutes,
   registerPlayerTransactionsRoutes,
 } from '../src/api/routes/players';
+import { registerFreePlayAnalysisRoutes } from '../src/api/routes/freeplay';
 
 let db: Database;
 let scraperManager: { getDatabase: () => Database };
@@ -218,6 +219,10 @@ beforeEach(async () => {
     `INSERT INTO player_transactions
       (id, customer_id, login, agent_id, agent_login, document_number, tran_code, tran_type, amount, balance, hold_amount, grade_num, description, entered_by, category, transaction_time, raw_json)
      VALUES
+      ('fp-issued', 'PLAYER1', 'PLAYER1', 'A1', 'AGENT1', 'FP-1', 'C', 'F', 100, 100, 0, NULL, 'Free Play issued', 'PromoDesk', 'freeplay_issued', '2026-05-01 08:00:00', '{"Description":"Free Play issued"}'),
+      ('fp-redeemed', 'PLAYER1', 'PLAYER1', 'A1', 'AGENT1', 'FP-2', 'D', 'H', 40, 60, 0, NULL, 'Freeplay redeemed', 'Internet', 'freeplay_redeemed', '2026-05-01 09:00:00', '{"Description":"Freeplay redeemed"}'),
+      ('fp-expired', 'PLAYER1', 'PLAYER1', 'A1', 'AGENT1', 'FP-3', 'D', 'F', 10, 50, 0, NULL, 'Free play expired', 'System', 'freeplay_expired', '2026-05-01 10:00:00', '{"Description":"Free play expired"}'),
+      ('fp-agent2', 'PLAYER2', 'PLAYER2', 'A2', 'AGENT2', 'FP-4', 'C', 'F', 25, 25, 0, NULL, 'Bonus play issued', 'PromoDesk', 'freeplay_issued', '2026-05-03 08:00:00', '{"Description":"Bonus play issued"}'),
       ('618181248', 'PLAYER1', 'PLAYER1', 'A1', 'AGENT1', '618181248', 'C', 'W', 4500, 4500, 0, '525520121', 'Wager Won', 'Internet', 'wager_win', '2026-05-02 08:30:00', '{}')`
   );
 
@@ -372,6 +377,10 @@ describe('player archive routes', () => {
     expect(body.deposits[0].ip_matched_login).toBe(1);
     expect(body.transactions[0].description).toBe('Wager Won');
     expect(body.transactions[0].amount).toBe(4500);
+    expect(body.freePlaySummary.issued).toBe(100);
+    expect(body.freePlaySummary.redeemed).toBe(40);
+    expect(body.freePlaySummary.expired).toBe(10);
+    expect(body.freePlaySummary.outstandingEstimate).toBe(50);
     expect(body.stats.avgStake).toBe(1000);
     expect(body.stats.staleLineHits).toBeGreaterThan(0);
     expect(body.stats.pastPostingRate).toBeGreaterThan(0);
@@ -403,6 +412,76 @@ describe('player archive routes', () => {
       expect(Array.isArray(body[key])).toBe(true);
       expect(body[key].length).toBeGreaterThan(0);
     }
+  });
+
+  test('transaction freeplay filter returns only free-play rows', async () => {
+    const res = await registerPlayerTransactionsRoutes(
+      new URL('http://localhost/api/players/PLAYER1/transactions?category=freeplay'),
+      new Request('http://localhost/api/players/PLAYER1/transactions?category=freeplay'),
+      scraperManager as any
+    );
+    expect(res?.status).toBe(200);
+    const body = await res!.json();
+    expect(body.category).toBe('freeplay');
+    expect(body.transactions).toHaveLength(3);
+    expect(body.transactions.every((row: any) => String(row.category).startsWith('freeplay_'))).toBe(true);
+    expect(body.transactions.every((row: any) => row.sourceConfidence === 'confirmed')).toBe(true);
+  });
+
+  test('free-play analysis aggregates by player, agent, and day', async () => {
+    const playerRes = await registerFreePlayAnalysisRoutes(
+      new URL('http://localhost/api/freeplay/analysis?playerId=PLAYER1'),
+      new Request('http://localhost/api/freeplay/analysis?playerId=PLAYER1'),
+      scraperManager as any
+    );
+    const playerBody = await playerRes!.json();
+    expect(playerBody.totals).toMatchObject({
+      issued: 100,
+      redeemed: 40,
+      expired: 10,
+      adjustments: 0,
+      outstandingEstimate: 50,
+      transactionCount: 3,
+      sourceConfidence: 'confirmed',
+    });
+
+    const agentRes = await registerFreePlayAnalysisRoutes(
+      new URL('http://localhost/api/freeplay/analysis?groupBy=agent'),
+      new Request('http://localhost/api/freeplay/analysis?groupBy=agent'),
+      scraperManager as any
+    );
+    const agentBody = await agentRes!.json();
+    expect(agentBody.groups.find((row: any) => row.key === 'AGENT1').totals.issued).toBe(100);
+    expect(agentBody.groups.find((row: any) => row.key === 'AGENT2').totals.issued).toBe(25);
+
+    const dayRes = await registerFreePlayAnalysisRoutes(
+      new URL('http://localhost/api/freeplay/analysis?playerId=PLAYER1&groupBy=day'),
+      new Request('http://localhost/api/freeplay/analysis?playerId=PLAYER1&groupBy=day'),
+      scraperManager as any
+    );
+    const dayBody = await dayRes!.json();
+    expect(dayBody.groups[0].key).toBe('2026-05-01');
+    expect(dayBody.groups[0].totals.transactionCount).toBe(3);
+  });
+
+  test('free-play analysis returns zero totals when no rows match', async () => {
+    const res = await registerFreePlayAnalysisRoutes(
+      new URL('http://localhost/api/freeplay/analysis?playerId=NOFREEPLAY'),
+      new Request('http://localhost/api/freeplay/analysis?playerId=NOFREEPLAY'),
+      scraperManager as any
+    );
+    expect(res?.status).toBe(200);
+    const body = await res!.json();
+    expect(body.totals).toMatchObject({
+      issued: 0,
+      redeemed: 0,
+      expired: 0,
+      adjustments: 0,
+      outstandingEstimate: 0,
+      transactionCount: 0,
+    });
+    expect(body.groups).toHaveLength(0);
+    expect(body.transactions).toHaveLength(0);
   });
 
   test('player intelligence map reports source coverage, freshness, and gaps', async () => {

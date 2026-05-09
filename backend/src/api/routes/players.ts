@@ -10,6 +10,12 @@ import {
   getPlayer360SourcePolicy,
   nextRefreshAt,
 } from '../../player360/policies';
+import {
+  FREEPLAY_CATEGORIES,
+  buildFreePlayWhere,
+  freePlaySourceConfidence,
+  summarizeFreePlay,
+} from './freeplay';
 
 const PLAYER_SORTS: Record<string, string> = {
   volume: 'totalVolume DESC',
@@ -252,10 +258,11 @@ export const registerPlayerDepositsRoutes = createParamRouteHandler(
 export const registerPlayerTransactionsRoutes = createParamRouteHandler(
   '/api/players/:playerId/transactions',
   'playerId',
-  async (_url, _req, scraperManager, params) => {
+  async (url, _req, scraperManager, params) => {
     const playerId = decodeURIComponent(params.playerId);
+    const category = (url.searchParams.get('category') || '').trim();
     logRequest('GET', `/api/players/${playerId}/transactions`);
-    return { playerId, transactions: await getPlayerTransactions(scraperManager, playerId) };
+    return { playerId, category: category || 'all', transactions: await getPlayerTransactions(scraperManager, playerId, category) };
   }
 );
 
@@ -475,13 +482,14 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
     [playerId, playerId]
   );
 
-  const [deposits, transactions, accountSnapshots, links, flags, notes] = await Promise.all([
+  const [deposits, transactions, accountSnapshots, links, flags, notes, freePlaySummary] = await Promise.all([
     getPlayerDeposits(scraperManager, playerId),
     getPlayerTransactions(scraperManager, playerId),
     getPlayerAccountSnapshots(scraperManager, playerId),
     getPlayerLinks(scraperManager, playerId),
     getPlayerFlags(scraperManager, playerId),
     getPlayerNotes(scraperManager, playerId),
+    getPlayerFreePlaySummary(db, playerId),
   ]);
 
   const accessLogs = await db.all(
@@ -575,6 +583,7 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
     agent: agentContext.assigned,
     allAgents: agentContext.lineage,
     agentContext,
+    freePlaySummary,
   };
 }
 
@@ -1170,8 +1179,17 @@ async function getPlayerDeposits(scraperManager: BuckeyeScraperManager, playerId
   return rows.map(normalizeNumbers);
 }
 
-async function getPlayerTransactions(scraperManager: BuckeyeScraperManager, playerId: string): Promise<any[]> {
+async function getPlayerTransactions(scraperManager: BuckeyeScraperManager, playerId: string, category = ''): Promise<any[]> {
   const db = scraperManager.getDatabase();
+  const where = ['(customer_id = ? OR login = ?)'];
+  const params: unknown[] = [playerId, playerId];
+  if (category === 'freeplay') {
+    where.push(`category IN (${FREEPLAY_CATEGORIES.map(() => '?').join(',')})`);
+    params.push(...FREEPLAY_CATEGORIES);
+  } else if (category) {
+    where.push('category = ?');
+    params.push(category);
+  }
   const rows = await db.all(
     `SELECT
       id,
@@ -1191,14 +1209,45 @@ async function getPlayerTransactions(scraperManager: BuckeyeScraperManager, play
       entered_by,
       category,
       transaction_time,
-      pulled_at
+      pulled_at,
+      raw_json
      FROM player_transactions
-     WHERE customer_id = ? OR login = ?
+     WHERE ${where.join(' AND ')}
      ORDER BY transaction_time DESC
      LIMIT 250`,
-    [playerId, playerId]
+    params
   );
-  return rows.map(normalizeNumbers);
+  return rows.map((row: any) => normalizeNumbers({
+    ...row,
+    sourceConfidence: String(row.category || '').startsWith('freeplay_') ? freePlaySourceConfidence(row) : undefined,
+  }));
+}
+
+async function getPlayerFreePlaySummary(db: any, playerId: string): Promise<any> {
+  const { where, params } = buildFreePlayWhere({ playerId });
+  const rows = await db.all(
+    `SELECT
+      id,
+      customer_id AS customerId,
+      login,
+      agent_id AS agentId,
+      agent_login AS agentLogin,
+      tran_type AS tranType,
+      amount,
+      description,
+      category,
+      transaction_time AS transactionTime,
+      raw_json AS rawJson
+     FROM player_transactions
+     WHERE ${where.join(' AND ')}`,
+    params
+  );
+  const normalized = rows.map((row: any) => ({
+    ...row,
+    amount: Number(row.amount || 0),
+    sourceConfidence: freePlaySourceConfidence(row),
+  }));
+  return summarizeFreePlay(normalized);
 }
 
 async function getPlayerAccountSnapshots(scraperManager: BuckeyeScraperManager, playerId: string): Promise<any[]> {

@@ -37,6 +37,7 @@ FactoryWager.state.playerProfile = FactoryWager.state.playerProfile || {
   statusMap: null,
   statusEndpointChecks: [],
   tab: 'overview',
+  transactionTab: 'all',
   wagerPage: 1,
   wagerPageSize: 25,
   charts: {},
@@ -5944,6 +5945,7 @@ async function openPlayerProfileModal(playerId) {
   playerProfileState.statusMap = null;
   playerProfileState.statusEndpointChecks = [];
   playerProfileState.tab = 'overview';
+  playerProfileState.transactionTab = 'all';
   playerProfileState.wagerPage = 1;
   modal.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
@@ -7201,6 +7203,7 @@ function renderPlayerProfileTransactions(profile) {
   const txResult = live.transactions || {};
   const archived = profile.transactions || [];
   const isLive = Boolean(txResult.rows?.length || txResult.data?.LIST?.length);
+  const activeTab = playerProfileState.transactionTab || 'all';
 
   let sourceRows = [];
   let sourceLabel = 'Archived';
@@ -7224,47 +7227,57 @@ function renderPlayerProfileTransactions(profile) {
       TranDateTime: r.transaction_time,
       AgentID: r.agent_id,
       Login: r.login,
+      Category: r.category,
+      SourceConfidence: r.sourceConfidence,
     }));
   }
 
-  // Summary stats
   let creditTotal = 0;
   let debitTotal = 0;
   let creditCount = 0;
   let debitCount = 0;
-  sourceRows.forEach(r => {
-    const code = r.TranCode || r.tran_code || r.Code || r.code || '';
-    const amt = Number(r.Amount || r.amount || r.TransactionAmount || r.transactionAmount || 0) / 100;
+  const displayRows = sourceRows.map(normalizeTransactionDisplayRow);
+  displayRows.forEach(r => {
+    const code = r.code || '';
+    const amt = Number(r.amount || 0);
     if (code === 'C' || code === 'c') { creditTotal += amt; creditCount++; }
     else if (code === 'D' || code === 'd') { debitTotal += amt; debitCount++; }
   });
+  const freePlayRows = displayRows.filter(row => isFreePlayCategory(row.category));
 
-  // Build table rows
-  const tableRows = sourceRows.map(r => {
-    const doc = r.DocumentNumber || r.documentNumber || r.document_number || r.DocNo || r.id || '-';
-    const code = r.TranCode || r.tran_code || r.Code || r.code || '-';
-    const type = r.TranType || r.tran_type || r.Type || r.type || '-';
-    const desc = r.ShortDesc || r.shortDesc || r.Description || r.description || r.Details || r.details || '-';
-    const amt = Number(r.Amount || r.amount || r.TransactionAmount || r.transactionAmount || 0) / 100;
-    const balance = Number(r.Balance || r.balance || 0) / 100;
-    const entered = r.EnteredBy || r.enteredBy || r.entered_by || '-';
-    const date = r.TranDateTime || r.tranDateTime || r.TransactionTime || r.transactionTime || r.Date || r.date || r.transaction_time || '';
-    const isCredit = code === 'C' || code === 'c';
-    const amountClass = isCredit ? 'color:var(--green);' : (code === 'D' || code === 'd') ? 'color:var(--red);' : '';
-    const amountPrefix = isCredit ? '+' : '';
-    return `<tr>
-      <td style="color:var(--text-dim);font-size:11px;">${escapeHtml(String(date).split(' ')[0] || '-')}</td>
-      <td class="font-mono" style="font-size:11px;">${escapeHtml(String(doc))}</td>
-      <td><span class="profile-status-chip" style="${amountClass}font-size:10px;padding:1px 6px;">${escapeHtml(code)}</span></td>
-      <td style="font-size:11px;">${escapeHtml(type)}</td>
-      <td style="font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(desc)}">${escapeHtml(desc)}</td>
-      <td class="text-right font-mono" style="font-size:11px;${amountClass}">${amountPrefix}$${Math.abs(amt).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-      <td class="text-right font-mono" style="font-size:11px;color:var(--text-dim);">$${balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-      <td style="font-size:11px;color:var(--text-dim);">${escapeHtml(entered).trim() || '-'}</td>
-    </tr>`;
-  }).join('');
+  if (activeTab === 'freeplay') {
+    const summary = profile.freePlaySummary || computeFreePlaySummary(freePlayRows);
+    el.innerHTML = `${renderTransactionSubtabs(activeTab)}
+      <div class="profile-chart-card mb-3">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm font-semibold mb-0">Free-Play Transactions</h3>
+          <span class="text-xs" style="color:var(--text-dim);">${freePlayRows.length.toLocaleString()} captured row${freePlayRows.length === 1 ? '' : 's'}</span>
+        </div>
+        <div class="text-xs mt-1" style="color:var(--text-dim);">Only rows classified as free-play issued, redeemed, expired, or adjustment are shown here. Candidate mappings stay visibly marked.</div>
+      </div>
+      <div class="grid grid-cols-4 gap-3 mb-3">
+        ${profileStatCard('Issued', formatMoney(summary.issued))}
+        ${profileStatCard('Redeemed', formatMoney(summary.redeemed))}
+        ${profileStatCard('Expired', formatMoney(summary.expired))}
+        ${profileStatCard('Outstanding', formatMoney(summary.outstandingEstimate))}
+      </div>
+      ${freePlayRows.length ? `<div class="profile-chart-card mb-3"><canvas id="playerFreePlayChart" height="90"></canvas></div>` : ''}
+      <div class="rounded-lg border overflow-auto" style="border-color:var(--border);">
+        <table class="profile-table">
+          <thead><tr>
+            <th>Date</th><th>Document</th><th>Category</th><th>Confidence</th><th>Description</th><th class="text-right">Amount</th><th class="text-right">Balance</th><th>Entered By</th>
+          </tr></thead>
+          <tbody>${freePlayRows.map(freePlayTransactionRow).join('') || profileEmptyRow('No free-play transactions captured for this player.', 8)}</tbody>
+        </table>
+      </div>`;
+    renderPlayerFreePlayChart(freePlayRows);
+    return;
+  }
 
-  el.innerHTML = `<div class="profile-chart-card mb-3">
+  const tableRows = displayRows.map(transactionLedgerRow).join('');
+
+  el.innerHTML = `${renderTransactionSubtabs(activeTab)}
+  <div class="profile-chart-card mb-3">
     <div class="flex items-center justify-between">
       <h3 class="text-sm font-semibold mb-0">${sourceLabel} Transaction Ledger</h3>
       ${txResult.fetchedAt ? `<span class="text-xs" style="color:var(--text-dim);">Fetched ${formatShortDateTime(txResult.fetchedAt)}</span>` : ''}
@@ -7290,6 +7303,120 @@ function renderPlayerProfileTransactions(profile) {
       <tbody>${tableRows || profileEmptyRow('No transaction ledger rows available for this player.', 8)}</tbody>
     </table>
   </div>`;
+}
+
+function setPlayerTransactionTab(tab) {
+  playerProfileState.transactionTab = tab === 'freeplay' ? 'freeplay' : 'all';
+  if (playerProfileState.tab === 'transactions' && playerProfileState.profile) renderPlayerProfileTransactions(playerProfileState.profile);
+}
+
+function renderTransactionSubtabs(activeTab) {
+  return `<div class="profile-action-row mb-3" role="tablist" aria-label="Transaction views">
+    <button type="button" class="profile-action-button ${activeTab === 'all' ? 'active' : ''}" role="tab" aria-selected="${activeTab === 'all'}" onclick="setPlayerTransactionTab('all')">All</button>
+    <button type="button" class="profile-action-button ${activeTab === 'freeplay' ? 'active' : ''}" role="tab" aria-selected="${activeTab === 'freeplay'}" onclick="setPlayerTransactionTab('freeplay')">Free-Play</button>
+  </div>`;
+}
+
+function normalizeTransactionDisplayRow(r) {
+  const amountRaw = Number(r.Amount ?? r.amount ?? r.TransactionAmount ?? r.transactionAmount ?? 0);
+  const balanceRaw = Number(r.Balance ?? r.balance ?? 0);
+  const amount = (r.Amount !== undefined || r.TransactionAmount !== undefined) ? amountRaw / 100 : amountRaw;
+  const balance = (r.Balance !== undefined) ? balanceRaw / 100 : balanceRaw;
+  return {
+    doc: r.DocumentNumber || r.documentNumber || r.document_number || r.DocNo || r.id || '-',
+    code: r.TranCode || r.tran_code || r.Code || r.code || '-',
+    type: r.TranType || r.tran_type || r.Type || r.type || '-',
+    desc: r.ShortDesc || r.shortDesc || r.Description || r.description || r.Details || r.details || '-',
+    amount,
+    balance,
+    entered: r.EnteredBy || r.enteredBy || r.entered_by || '-',
+    date: r.TranDateTime || r.tranDateTime || r.TransactionTime || r.transactionTime || r.Date || r.date || r.transaction_time || '',
+    category: r.Category || r.category || '',
+    sourceConfidence: r.SourceConfidence || r.sourceConfidence || '',
+  };
+}
+
+function transactionLedgerRow(row) {
+  const isCredit = row.code === 'C' || row.code === 'c';
+  const amountClass = isCredit ? 'color:var(--green);' : (row.code === 'D' || row.code === 'd') ? 'color:var(--red);' : '';
+  const amountPrefix = isCredit ? '+' : '';
+  return `<tr>
+    <td style="color:var(--text-dim);font-size:11px;">${escapeHtml(String(row.date).split(' ')[0] || '-')}</td>
+    <td class="font-mono" style="font-size:11px;">${escapeHtml(String(row.doc))}</td>
+    <td><span class="profile-status-chip" style="${amountClass}font-size:10px;padding:1px 6px;">${escapeHtml(row.code)}</span></td>
+    <td style="font-size:11px;">${escapeHtml(row.type)}</td>
+    <td style="font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(row.desc)}">${escapeHtml(row.desc)}</td>
+    <td class="text-right font-mono" style="font-size:11px;${amountClass}">${amountPrefix}${formatMoney(Math.abs(row.amount))}</td>
+    <td class="text-right font-mono" style="font-size:11px;color:var(--text-dim);">${formatMoney(row.balance)}</td>
+    <td style="font-size:11px;color:var(--text-dim);">${escapeHtml(String(row.entered)).trim() || '-'}</td>
+  </tr>`;
+}
+
+function freePlayTransactionRow(row) {
+  const amountClass = row.category === 'freeplay_issued' ? 'color:var(--green);' : 'color:var(--red);';
+  return `<tr>
+    <td style="color:var(--text-dim);font-size:11px;">${escapeHtml(String(row.date).split(' ')[0] || '-')}</td>
+    <td class="font-mono" style="font-size:11px;">${escapeHtml(String(row.doc))}</td>
+    <td>${profileStatusChip(row.category || 'freeplay')}</td>
+    <td>${profileStatusChip(row.sourceConfidence || 'candidate')}</td>
+    <td style="font-size:11px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(row.desc)}">${escapeHtml(row.desc)}</td>
+    <td class="text-right font-mono" style="font-size:11px;${amountClass}">${formatMoney(Math.abs(row.amount))}</td>
+    <td class="text-right font-mono" style="font-size:11px;color:var(--text-dim);">${formatMoney(row.balance)}</td>
+    <td style="font-size:11px;color:var(--text-dim);">${escapeHtml(String(row.entered)).trim() || '-'}</td>
+  </tr>`;
+}
+
+function isFreePlayCategory(category) {
+  return ['freeplay_issued', 'freeplay_redeemed', 'freeplay_expired', 'freeplay_adjustment'].includes(category || '');
+}
+
+function formatMoney(value) {
+  const amount = Number(value || 0);
+  const sign = amount < 0 ? '-' : '';
+  return `${sign}$${Math.abs(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function computeFreePlaySummary(rows) {
+  return rows.reduce((acc, row) => {
+    const amount = Math.abs(Number(row.amount || 0));
+    if (row.category === 'freeplay_issued') acc.issued += amount;
+    if (row.category === 'freeplay_redeemed') acc.redeemed += amount;
+    if (row.category === 'freeplay_expired') acc.expired += amount;
+    if (row.category === 'freeplay_adjustment') acc.adjustments += Number(row.amount || 0);
+    acc.transactionCount += 1;
+    acc.outstandingEstimate = acc.issued + acc.adjustments - acc.redeemed - acc.expired;
+    return acc;
+  }, { issued: 0, redeemed: 0, expired: 0, adjustments: 0, outstandingEstimate: 0, transactionCount: 0 });
+}
+
+function renderPlayerFreePlayChart(rows) {
+  const canvas = document.getElementById('playerFreePlayChart');
+  if (!canvas || !window.Chart) return;
+  destroyPlayerProfileChart('freePlay');
+  const byDay = new Map();
+  rows.forEach(row => {
+    const day = String(row.date || '').slice(0, 10) || 'Unknown';
+    const entry = byDay.get(day) || { issued: 0, redeemed: 0 };
+    if (row.category === 'freeplay_issued') entry.issued += Math.abs(Number(row.amount || 0));
+    if (row.category === 'freeplay_redeemed') entry.redeemed += Math.abs(Number(row.amount || 0));
+    byDay.set(day, entry);
+  });
+  const labels = [...byDay.keys()].sort();
+  requestAnimationFrame(() => {
+    if (!document.getElementById('playerFreePlayChart')) return;
+    destroyPlayerProfileChart('freePlay');
+    playerProfileState.charts.freePlay = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Issued', data: labels.map(day => byDay.get(day).issued), backgroundColor: 'rgba(16,185,129,.7)' },
+          { label: 'Redeemed', data: labels.map(day => byDay.get(day).redeemed), backgroundColor: 'rgba(239,68,68,.7)' },
+        ],
+      },
+      options: { responsive: true, plugins: { legend: { labels: { color: '#9ca3af' } } }, scales: { x: { ticks: { color: '#9ca3af' } }, y: { ticks: { color: '#9ca3af' } } } },
+    });
+  });
 }
 
 function renderPlayerProfileAccount(profile) {
@@ -8506,6 +8633,7 @@ Object.assign(window, {
   openSidebarStatusForPlayer,
   setPlayerAgentFilter,
   setPlayerProfileTab,
+  setPlayerTransactionTab,
   setPlayerWagerPage,
   setAgentNetworkMode,
   setAgentTreeLoading,

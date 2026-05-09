@@ -678,6 +678,35 @@ describe('BuckeyeAPI transaction list parser', () => {
     });
     expect(rows[0].raw.sourceOperation).toBe('getReportDeletedTransactions');
   });
+
+  test('classifies free-play rows only when text supports the mapping', () => {
+    const rows = parseTransactionList(
+      {
+        LIST: [
+          { DocumentNumber: 'W-1', TranCode: 'C', TranType: 'W', Amount: 5000, Description: 'Wager Won', TranDateTime: '2026-05-09 10:00:00' },
+          { DocumentNumber: 'D-1', TranCode: 'C', TranType: 'E', Amount: 10000, Description: 'Customer deposit', TranDateTime: '2026-05-09 10:01:00' },
+          { DocumentNumber: 'D-2', TranCode: 'C', TranType: 'E', Amount: 2500, Description: 'Free Play credit promo', TranDateTime: '2026-05-09 10:02:00' },
+          { DocumentNumber: 'F-1', TranCode: 'C', TranType: 'F', Amount: 5000, Description: 'Free Play issued', TranDateTime: '2026-05-09 10:03:00' },
+          { DocumentNumber: 'H-1', TranCode: 'D', TranType: 'H', Amount: 2000, Description: 'Freeplay redeemed', TranDateTime: '2026-05-09 10:04:00' },
+          { DocumentNumber: 'F-2', TranCode: 'D', TranType: 'F', Amount: 1000, Description: 'Free play expired', TranDateTime: '2026-05-09 10:05:00' },
+          { DocumentNumber: 'H-2', TranCode: 'C', TranType: 'H', Amount: 750, Description: 'Manual credit pct adjustment', TranDateTime: '2026-05-09 10:06:00' },
+          { DocumentNumber: 'F-3', TranCode: 'D', TranType: 'F', Amount: 1200, Description: 'Ledger row', TranDateTime: '2026-05-09 10:07:00' },
+          { DocumentNumber: 'M-1', TranCode: 'X', TranType: 'M', Amount: 500, Description: 'Misc row', TranDateTime: '2026-05-09 10:08:00' },
+        ],
+      },
+      { customerId: 'BB1152', agentId: 'BILLY666' }
+    );
+
+    expect(rows.find(row => row.id === 'W-1')?.category).toBe('wager_win');
+    expect(rows.find(row => row.id === 'D-1')?.category).toBe('deposit');
+    expect(rows.find(row => row.id === 'D-2')?.category).toBe('freeplay_issued');
+    expect(rows.find(row => row.id === 'F-1')?.category).toBe('freeplay_issued');
+    expect(rows.find(row => row.id === 'H-1')?.category).toBe('freeplay_redeemed');
+    expect(rows.find(row => row.id === 'F-2')?.category).toBe('freeplay_expired');
+    expect(rows.find(row => row.id === 'H-2')?.category).toBe('freeplay_adjustment');
+    expect(rows.find(row => row.id === 'F-3')?.category).toBe('debit');
+    expect(rows.find(row => row.id === 'M-1')?.category).toBe('other');
+  });
 });
 
 describe('Player 360 refresh policy classification', () => {
