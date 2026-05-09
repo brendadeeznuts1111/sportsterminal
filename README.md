@@ -1,27 +1,30 @@
-# Sports Terminal v5.2
+# Sports Terminal v5.3
 
-Sports Terminal is a Bun-powered betting operations terminal for Buckeye PPH live wager monitoring, 16-book odds comparison, exposure tracking, player drill-downs, alerts, and webhook delivery.
+Sports Terminal is a Bun-powered betting operations terminal for Buckeye PPH live wager ingestion, agent/player intelligence, pattern detection, odds comparison, exposure tracking, alerts, webhooks, and backend health monitoring.
 
-The app is intentionally simple to run locally: one Bun backend serves both the API/WebSocket layer and the single-file frontend at `http://localhost:3000/`.
+The app runs as one Bun backend that serves the API, WebSocket, always-on ingestion loops, and the single-file frontend at `http://localhost:3000/`.
 
 ## Current Status
 
 Implemented:
 
-- Buckeye live wager API client for `fantasy402.com`
-- WebSocket auth/session flow with token resume
-- Cloudflare `cf_clearance` cookie support from the Settings UI
-- Bun native SQLite via `bun:sqlite`
-- Demo odds grid with 16 books, consensus, best-line highlighting, movements, and book health
-- Buckeye wager feed, agent downline, player search/detail, sport and agent exposure
-- Alert rules, alert history, toast toggle, webhook CRUD, retries, and delivery log
-- Static SPA served by the backend
+- Always-on Buckeye ingestion for every vaulted agent while the backend process is running.
+- OS vault credential storage through `Bun.secrets`, with per-agent logout and a vault status endpoint.
+- Buckeye live wager polling, token renewal, access-log ingestion, performance snapshots, sports type seeding, checkpoints, and startup restore.
+- Bun SQL backed SQLite persistence through the app database wrapper.
+- Managed scheduler loops based on `Bun.sleep`; `Bun.scheduler` is not available in the current Bun 1.3.13 runtime.
+- Pattern detection and history for odds, wagers, agents, IP, live timing, and feed risk.
+- Demo odds grid with 16 books, consensus, best-line highlighting, movements, and book health.
+- Buckeye wager feed, agent downline, hierarchy/player export parsing, player search/detail, sport and agent exposure.
+- Alert rules, alert history, toast toggle, webhook CRUD, retry, and delivery logging.
+- System Status sidebar page for backend, vault, book, and pattern health.
+- Bun install security scanner configured with `@bun-security-scanner/osv`.
 
 Partial or planned:
 
-- Patterns tab has demo UI plus backend steam/reverse-line detection plumbing, but no persistent pattern history or rules engine yet.
-- Polymarket, Kalshi, Ace Per Head, Metallic, heatmap, candlestick, and bet builder are placeholders.
-- Live odds require `ODDS_API_KEY`; otherwise the demo provider is used.
+- Real odds require `ODDS_API_KEY`; otherwise the demo provider is used.
+- Polymarket, Kalshi, Ace Per Head, Metallic, heatmap, candlestick, and bet builder remain placeholders.
+- The local raw Buckeye exports are intentionally ignored and should be treated as sensitive source material, not app source.
 
 ## Requirements
 
@@ -29,7 +32,7 @@ Partial or planned:
 - Windows PowerShell or another shell that can run Bun
 - Buckeye credentials and a fresh `cf_clearance` cookie for live Buckeye polling
 
-No Node install, Python, Chrome, Puppeteer, or external SQLite package is required for normal local development.
+No Node install, Puppeteer, Chrome automation, or external SQLite package is required for normal local development.
 
 ## Quick Start
 
@@ -52,7 +55,7 @@ The backend serves:
 - Frontend: `GET /`
 - Health: `GET /health`
 - API routes: `GET /api/...`
-- WebSocket: same host, upgraded automatically by the frontend
+- WebSocket: `/ws`
 
 ## Environment
 
@@ -65,30 +68,36 @@ Copy-Item backend\.env.example backend\.env
 Common values:
 
 ```env
-PORT=3002
+PORT=3000
 HOST=0.0.0.0
 DEBUG=false
-NODE_ENV=development          # Set to 'production' to enable JWT + rate limiting
+NODE_ENV=development
 BUCKEYE_BASE_URL=https://fantasy402.com
 POLL_INTERVAL_MS=5000
+ACCESS_LOG_INTERVAL_MS=600000
+AGENT_PERFORMANCE_INTERVAL_MS=900000
 TOKEN_RENEWAL_MINUTES=15
 JWT_SECRET=change-me-in-production-min-32-chars
 DATABASE_URL=sqlite:./data/terminal.db
-RATE_LIMIT_MAX=100            # Max HTTP requests per window per IP
-RATE_LIMIT_WINDOW_MS=60000    # Rate limit window in ms
-IDLE_TIMEOUT_MS=300000        # Stop scrapers after 5 min with zero WS clients (0 to disable)
+RATE_LIMIT_MAX=100
+RATE_LIMIT_WINDOW_MS=60000
 ```
 
-`DATABASE_URL` can be either `sqlite:./data/terminal.db` or `./data/terminal.db`; the backend normalizes both for Bun SQLite.
+`DATABASE_URL` can be a SQLite URL or path. Examples:
 
-Credentials can be entered in the Settings UI. The backend does not require Buckeye credentials to boot; it starts with demo odds and empty live wager data until a Buckeye connection is made.
+- `sqlite:./data/terminal.db`
+- `sqlite://./data/terminal.db`
+- `./data/terminal.db`
+- `:memory:` for tests
+
+Credentials can be entered in Settings. On successful auth, the backend stores Buckeye secrets in the OS vault and restores them on the next backend start. The frontend should not be the source of truth for long-lived Buckeye credentials.
 
 ## Scripts
 
 Run from `C:\Users\bobby\sportsterminal`:
 
 ```powershell
-bun run dev          # Hot-reload backend + frontend at http://localhost:3000/
+bun run dev          # Hot-reload backend + frontend
 bun run start        # Production-style backend start
 bun test             # All backend tests
 bun run build        # Bundle backend to backend/dist/
@@ -107,6 +116,7 @@ bun run db:migrate   # Run SQLite migrations
 bun test
 bun run build
 Invoke-RestMethod http://localhost:3000/health
+Invoke-RestMethod http://localhost:3000/api/buckeye/vault-status
 ```
 
 Expected health shape:
@@ -128,20 +138,24 @@ Expected health shape:
 }
 ```
 
-### Security
+## Security
 
-- **JWT enforcement**: WebSocket connections require a valid HS256 JWT in production mode (`NODE_ENV=production`). Tokens are issued on successful Buckeye auth.
-- **Rate limiting**: All HTTP endpoints are rate-limited to 100 req/min per IP (configurable via `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS`).
-- **Idle shutdown**: Scrapers and odds poller stop after 5 minutes with zero WebSocket clients (configurable via `IDLE_TIMEOUT_MS`).
-- **Dev bypass**: Set `NODE_ENV=development` to disable all security checks.
-- **Token generation**: `bun run scripts/generate-jwt.ts <agentId>` creates tokens for testing.
+- `Bun.secrets` stores Buckeye password, token, and Cloudflare cookie presence per vaulted agent.
+- `GET /api/buckeye/vault-status` returns presence flags only. It never returns secret values.
+- `DELETE /api/buckeye/vault-status?agentId=...` clears one vaulted agent. `all=1` clears all vaulted Buckeye secrets.
+- WebSocket connections require a valid HS256 JWT in production mode.
+- HTTP endpoints are rate-limited through `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW_MS`.
+- `bunfig.toml` enables the OSV install-time security scanner.
+- `NODE_ENV=development` enables local development bypasses; do not use it for production exposure.
+
+Disconnecting the browser UI does not stop backend ingestion. Manual vault logout is the explicit action that prevents future automatic restore for an agent.
 
 ## UI Map
 
 ### Trading
 
 - `Trading Floor`: 16-book odds grid with consensus, best-line highlighting, spread/total prices, movement arrows, pattern icons, detail drawers, and book settings.
-- `Patterns`: Demo pattern rows and simulate button; real persistence/rules engine is still pending.
+- `Patterns`: Pattern history, filter chips, score cards, detail evidence, and detection categories for odds, wagers, agents, IP, live, and feed risk.
 
 ### Positions
 
@@ -155,10 +169,10 @@ Expected health shape:
 
 ### Agent Network
 
-- `Agent Tree`: Visual hierarchy canvas using live hierarchy when available, with local ignored export fallback.
+- `Agent Tree`: Visual hierarchy canvas using parsed/exported hierarchy data when available.
 - `Downline`: Agent hierarchy stats, sortable agent table, customer drill-down, volume/risk/alert summaries.
 - `Player Search`: Search by login and open player details.
-- `Player Detail`: Stats, 7-day P&L bars, wager breakdown, and recent wagers.
+- `Player Detail`: Stats, 7-day projection bars, wager breakdown, and recent wagers.
 
 ### Exchanges
 
@@ -169,7 +183,8 @@ Expected health shape:
 
 - `Alerts`: Alert history, severity badges, acknowledged filtering, and toast toggle.
 - `Webhooks`: Discord, Slack, Telegram, and generic webhook CRUD with trigger filters and delivery logs.
-- `Settings`: Backend URL, Buckeye base URL, agent credentials, Cloudflare cookie, auto-connect, connection test, and connect/disconnect controls.
+- `Settings`: Backend URL, Buckeye base URL, agent credentials, Cloudflare cookie, auto-connect, vault health, and logout controls.
+- `Status`: Backend health, vault status, book status, and 24-hour pattern summary.
 
 ### Coming Soon
 
@@ -182,24 +197,31 @@ Expected health shape:
 ```text
 backend/
   src/
-    index.ts              Bun HTTP server, API routes, WebSocket upgrade, static frontend serving
-    database.ts           Bun SQLite wrapper, schema init, migrations, credential encryption helpers
+    index.ts                  Bun HTTP server, API routes, WebSocket upgrade, static frontend serving
+    database.ts               Bun.SQL SQLite wrapper, schema init, migrations
+    config/
+      env.ts                  Startup environment validation
+    actions/
+      ActionQueue.ts          Per-agent action sequencing and timeouts
+    api/
+      router.ts               API router
+      routes/                 Feature route handlers
     scrapers/
-      BuckeyeAPI.ts       HTTP client for fantasy402.com auth/getBetTicker/renewToken
-      ScraperManager.ts   Agent polling lifecycle, backoff, DB persistence, exposure queries
-    odds/
-      OddsPoller.ts       Demo/live odds polling, persistence, movements, matrix views
-      providers/
-        DemoOddsProvider.ts
-        TheOddsApiProvider.ts
-    risk/
-      AlertEngine.ts      Wager alert detection rules
+      BuckeyeAPI.ts           fantasy402.com auth, wager, access-log, performance, and config client
+      ScraperManager.ts       Always-on agent lifecycle, scheduler loops, vault refresh, DB persistence
     services/
-      WebhookService.ts   Webhook CRUD, payload formatting, retry, delivery logging
+      BunSecretVault.ts       OS vault index and per-agent secret storage
+      BuckeyeVaultRestore.ts  Startup restore for all vaulted agents
+      Scheduler.ts            Managed recurring jobs using Bun.sleep
+      WebhookService.ts       Webhook CRUD, payload formatting, retry, delivery logging
+    odds/
+      OddsPoller.ts           Demo/live odds polling, persistence, movements, matrix views
+    patterns/
+      PatternService.ts       Pattern persistence, scoring, summary, and agent links
+    risk/
+      AlertEngine.ts          Wager alert detection rules
   tests/
-    api.test.ts
-    odds.test.ts
-    webhook.test.ts
+    *.test.ts
 ```
 
 The project uses a root Bun workspace lockfile: `bun.lock`.
@@ -213,6 +235,7 @@ Health and metrics:
 
 Buckeye and exposure:
 
+- `POST /api/connect`
 - `GET /api/stats`
 - `GET /api/wagers`
 - `GET /api/wagers/alerts`
@@ -220,9 +243,20 @@ Buckeye and exposure:
 - `GET /api/agents`
 - `GET /api/agents/downline`
 - `GET /api/agents/hierarchy`
+- `GET /api/buckeye/vault-status`
+- `DELETE /api/buckeye/vault-status`
+- `GET /api/buckeye/access-logs`
+- `GET /api/buckeye/agent-performance`
+- `GET /api/buckeye/sports-types`
+- `GET /api/buckeye/manager-snapshot`
 - `GET /api/exposure/sports`
 - `GET /api/exposure/agents`
-- `POST /api/connect`
+
+Patterns:
+
+- `GET /api/patterns/history`
+- `GET /api/patterns/summary`
+- `GET /api/patterns/agents`
 
 Odds:
 
@@ -248,7 +282,8 @@ Webhooks:
 - `BuckeyeAPI.normalizeWager()` converts wager amounts to dollars before persistence.
 - SQLite stores dollar values.
 - Frontend displays dollar values directly.
-- Local database lives at `backend/data/terminal.db` and is ignored by Git.
+- Local database files live under `backend/data/` and are ignored by Git.
+- Raw Buckeye exports in `docs/agentobject.md` and `docs/agentslistharz.md` are ignored because they can contain sensitive customer/agent material.
 
 Ignored local data/tools:
 
@@ -260,21 +295,21 @@ Ignored local data/tools:
 - `docs/agentobject.md`
 - `docs/*.exe`
 
-The ignored docs exports may contain sensitive customer/agent data and should not be committed.
+## Documentation Map
+
+- `README.md`: current operator/developer quickstart and surface map.
+- `docs/IMPLEMENTATION_TRACKER.md`: current delivery status and verification notes.
+- `docs/BUCKEYE_BACKEND_SCOPE.md`: Buckeye endpoint, schema, and ingestion contract.
+- `docs/PROJECT_ORGANIZATION.md`: where new code, docs, raw exports, and runtime files belong.
+- `docs/CHANGELOG.md`: chronological change notes.
+- `docs/CODE_QUALITY_CHECKLIST.md`: quick review checks before handoff.
 
 ## Troubleshooting
 
 ### App does not open locally
 
-Check server status:
-
 ```powershell
 bun run status
-```
-
-Start fresh:
-
-```powershell
 bun run clean-start
 ```
 
@@ -299,11 +334,12 @@ bun install
 - Confirm agent ID and password.
 - Paste a fresh `cf_clearance` cookie into Settings.
 - Confirm `BUCKEYE_BASE_URL=https://fantasy402.com`.
+- Check `GET /api/buckeye/vault-status` for presence flags.
 - Enable `DEBUG=true` for verbose backend logging.
 
 ### Odds grid works but Buckeye data is empty
 
-That is expected before connecting Buckeye. Demo odds run automatically; live wager data appears after Buckeye auth starts polling.
+Demo odds run automatically. Live wager data appears after Buckeye auth starts polling or after a vaulted agent is restored on backend startup.
 
 ## GitHub
 

@@ -96,6 +96,7 @@ async function startServer() {
     port: PORT,
     hostname: HOST,
     websocket: {
+      perMessageDeflate: true, // Built-in compression for WS messages
       open(ws) {
         console.log('[WS] Client connected');
         ws.data = { agentId: null, isAuthenticated: false, lastPing: Date.now() };

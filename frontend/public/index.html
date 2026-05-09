@@ -224,6 +224,11 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
         <svg class="w-4 h-4 icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
         <span>Webhooks</span>
       </button>
+      <button class="sidebar-item w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all" onclick="switchSection('status', this)">
+        <svg class="w-4 h-4 icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-6m4 6V7m4 10v-3M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+        <span>Status</span>
+        <span id="statusBadge" class="ml-auto text-xs px-1.5 py-0.5 rounded-full" style="background:var(--border);color:var(--text-dim);">...</span>
+      </button>
       <button class="sidebar-item w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all" onclick="switchSection('settings', this)">
         <svg class="w-4 h-4 icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
         <span>Settings</span>
@@ -269,7 +274,7 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
 
     <div class="p-3 border-t mt-auto" style="border-color:var(--border);">
       <div class="flex items-center justify-between text-xs" style="color:var(--text-dim);">
-        <span>API Status</span>
+        <span>Status</span>
         <div class="flex items-center gap-1">
           <div class="w-1.5 h-1.5 rounded-full" style="background:var(--green);"></div>
           <span>Odds</span>
@@ -751,6 +756,35 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
             <input type="checkbox" id="toastToggle" checked onchange="localStorage.setItem('toastsEnabled',this.checked)">
             <span>Toast notifications</span>
           </label>
+        </div>
+      </div>
+    </div>
+
+    <div id="statusSection" class="section-content flex-1 overflow-y-auto p-4 hidden">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 class="text-lg font-bold">System Status</h2>
+          <p class="text-xs mt-1" style="color:var(--text-dim);">Backend health, vaulted Buckeye ingestion, odds books, patterns, and action queues.</p>
+        </div>
+        <button class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--accent);color:#fff;" onclick="loadStatusPage(true)">Refresh</button>
+      </div>
+      <div id="statusSummaryGrid" class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4"></div>
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div class="rounded-lg border p-4" style="background:var(--panel);border-color:var(--border);">
+          <h3 class="text-sm font-semibold mb-3">Buckeye Agents</h3>
+          <div id="statusAgentsList" class="space-y-2 text-xs"></div>
+        </div>
+        <div class="rounded-lg border p-4" style="background:var(--panel);border-color:var(--border);">
+          <h3 class="text-sm font-semibold mb-3">Odds Books</h3>
+          <div id="statusBooksList" class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs"></div>
+        </div>
+        <div class="rounded-lg border p-4" style="background:var(--panel);border-color:var(--border);">
+          <h3 class="text-sm font-semibold mb-3">Counters</h3>
+          <div id="statusCountersList" class="space-y-2 text-xs"></div>
+        </div>
+        <div class="rounded-lg border p-4" style="background:var(--panel);border-color:var(--border);">
+          <h3 class="text-sm font-semibold mb-3">Action Queue</h3>
+          <div id="statusQueueList" class="space-y-2 text-xs"></div>
         </div>
       </div>
     </div>
@@ -1944,6 +1978,9 @@ function switchSection(section, btn) {
       break;
     case 'webhooks':
       loadWebhooks();
+      break;
+    case 'status':
+      loadStatusPage();
       break;
   }
 }
@@ -4369,6 +4406,166 @@ async function loadWebhooks(force = false) {
   } catch (err) {
     container.innerHTML = '<div class="text-sm p-4 rounded-lg border" style="background:var(--panel);border-color:var(--border);color:var(--text-dim);">Failed to load webhooks. Is the backend running?</div>';
   }
+}
+
+async function loadStatusPage(force = false) {
+  const summary = document.getElementById('statusSummaryGrid');
+  const agentsEl = document.getElementById('statusAgentsList');
+  const booksEl = document.getElementById('statusBooksList');
+  const countersEl = document.getElementById('statusCountersList');
+  const queueEl = document.getElementById('statusQueueList');
+  if (!summary || !agentsEl || !booksEl || !countersEl || !queueEl) return;
+
+  summary.innerHTML = statusLoadingCards();
+  agentsEl.innerHTML = statusLoadingRow('Loading Buckeye agents...');
+  booksEl.innerHTML = statusLoadingRow('Loading books...');
+  countersEl.innerHTML = statusLoadingRow('Loading counters...');
+  queueEl.innerHTML = statusLoadingRow('Loading queue...');
+
+  try {
+    const [healthRes, vaultRes, booksRes, patternsRes] = await Promise.all([
+      fetch(`${getApiBaseUrl()}/health`),
+      fetch(`${getApiBaseUrl()}/api/buckeye/vault-status`),
+      fetch(`${getApiBaseUrl()}/api/books/status`),
+      fetch(`${getApiBaseUrl()}/api/patterns/summary?sinceHours=24`),
+    ]);
+
+    if (!healthRes.ok) throw new Error(`Health request failed: ${healthRes.status}`);
+    const health = await healthRes.json();
+    const vault = vaultRes.ok ? await vaultRes.json() : { available: false, agents: [] };
+    const books = booksRes.ok ? await booksRes.json() : [];
+    const patterns = patternsRes.ok ? await patternsRes.json() : { total: 0, bySeverity: {} };
+
+    const agents = Array.isArray(vault.agents) ? vault.agents : [];
+    const activeAgents = Number(health.scrapers?.activeAgents || 0);
+    const totalQueued = Number(health.scrapers?.actionQueue?.totalQueued || 0);
+    const onlineBooks = (Array.isArray(books) ? books : []).filter(book => book.status === 'online').length;
+    const criticalPatterns = Number(patterns.bySeverity?.critical || 0);
+    const statusOk = health.status === 'ok';
+
+    summary.innerHTML = [
+      statusCard('Backend', statusOk ? 'Online' : 'Issue', formatUptime(health.uptime), statusOk ? 'var(--green)' : 'var(--red)'),
+      statusCard('Buckeye', String(activeAgents), `${agents.length} vaulted`, activeAgents > 0 ? 'var(--green)' : 'var(--yellow)'),
+      statusCard('Books', `${onlineBooks}/${Array.isArray(books) ? books.length : 0}`, 'online', onlineBooks > 0 ? 'var(--green)' : 'var(--yellow)'),
+      statusCard('Patterns', String(patterns.total || 0), `${criticalPatterns} critical`, criticalPatterns > 0 ? 'var(--red)' : 'var(--green)'),
+    ].join('');
+
+    agentsEl.innerHTML = agents.length
+      ? agents.map(agent => statusAgentRow(agent)).join('')
+      : '<div style="color:var(--text-dim);">No vaulted Buckeye agents. Add one from Settings to enable always-on ingestion.</div>';
+
+    booksEl.innerHTML = Array.isArray(books) && books.length
+      ? books.map(book => statusBookPill(book)).join('')
+      : '<div class="col-span-full" style="color:var(--text-dim);">No book health rows yet.</div>';
+
+    const counters = health.scrapers?.counters || {};
+    countersEl.innerHTML = [
+      statusKeyValue('Wagers seen', counters.wagers_total || 0),
+      statusKeyValue('Alerts triggered', counters.alerts_triggered_total || 0),
+      statusKeyValue('Errors', counters.errors_total || 0),
+      statusKeyValue('WebSocket', wsClient?.isConnected ? 'connected' : 'offline'),
+    ].join('');
+
+    const queues = health.scrapers?.actionQueue?.queues || {};
+    const queueRows = Object.entries(queues);
+    queueEl.innerHTML = [
+      statusKeyValue('Total queued', totalQueued),
+      ...(queueRows.length
+        ? queueRows.map(([agent, count]) => statusKeyValue(agent, count))
+        : [statusKeyValue('Per-agent queues', 'empty')]),
+    ].join('');
+
+    updateStatusBadge(statusOk, activeAgents, criticalPatterns);
+  } catch (error) {
+    summary.innerHTML = statusCard('Backend', 'Offline', error instanceof Error ? error.message : 'Status unavailable', 'var(--red)');
+    agentsEl.innerHTML = '<div style="color:var(--red);">Could not load status. Is the backend running?</div>';
+    booksEl.innerHTML = '';
+    countersEl.innerHTML = '';
+    queueEl.innerHTML = '';
+    updateStatusBadge(false, 0, 0);
+  }
+}
+
+function statusLoadingCards() {
+  return [
+    statusCard('Backend', 'Loading', '', 'var(--text-dim)'),
+    statusCard('Buckeye', 'Loading', '', 'var(--text-dim)'),
+    statusCard('Books', 'Loading', '', 'var(--text-dim)'),
+    statusCard('Patterns', 'Loading', '', 'var(--text-dim)'),
+  ].join('');
+}
+
+function statusLoadingRow(text) {
+  return `<div style="color:var(--text-dim);">${escapeHtml(text)}</div>`;
+}
+
+function statusCard(label, value, subtext, color) {
+  return `<div class="rounded-lg border p-3" style="background:var(--panel);border-color:var(--border);">
+    <div class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);">${escapeHtml(label)}</div>
+    <div class="text-xl font-bold mt-1" style="color:${color};">${escapeHtml(value)}</div>
+    <div class="text-xs mt-1" style="color:var(--text-dim);">${escapeHtml(subtext || '')}</div>
+  </div>`;
+}
+
+function statusAgentRow(agent) {
+  const flags = [
+    agent.hasPassword ? 'password' : null,
+    agent.hasCfCookie ? 'cookie' : null,
+    agent.hasToken ? 'token' : null,
+  ].filter(Boolean).join(' + ') || 'no usable secrets';
+  const color = agent.active ? 'var(--green)' : 'var(--yellow)';
+  const error = agent.lastError ? `<div class="mt-1" style="color:var(--red);">${escapeHtml(agent.lastError)}</div>` : '';
+  return `<div class="rounded border p-2" style="background:var(--bg);border-color:var(--border);">
+    <div class="flex items-center justify-between gap-2">
+      <span class="font-mono" style="color:var(--text);">${escapeHtml(agent.agentId || 'Unknown')}</span>
+      <span class="px-1.5 py-0.5 rounded text-[10px] font-bold" style="background:${color}22;color:${color};">${agent.active ? 'ACTIVE' : 'VAULTED'}</span>
+    </div>
+    <div class="mt-1" style="color:var(--text-dim);">${escapeHtml(flags)}</div>
+    ${error}
+  </div>`;
+}
+
+function statusBookPill(book) {
+  const color = book.status === 'online' ? 'var(--green)' : book.status === 'offline' ? 'var(--red)' : 'var(--yellow)';
+  return `<div class="rounded border px-2 py-1 flex items-center justify-between gap-2" style="background:var(--bg);border-color:var(--border);">
+    <span class="font-mono" style="color:var(--text);">${escapeHtml(book.book || book.key || 'Book')}</span>
+    <span class="w-2 h-2 rounded-full" style="background:${color};"></span>
+  </div>`;
+}
+
+function statusKeyValue(label, value) {
+  return `<div class="flex items-center justify-between gap-3 rounded px-2 py-1" style="background:var(--bg);border:1px solid var(--border);">
+    <span style="color:var(--text-dim);">${escapeHtml(label)}</span>
+    <span class="font-mono" style="color:var(--text);">${escapeHtml(String(value))}</span>
+  </div>`;
+}
+
+function formatUptime(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (hours > 0) return `${hours}h ${minutes}m uptime`;
+  return `${minutes}m uptime`;
+}
+
+function updateStatusBadge(ok, activeAgents, criticalPatterns) {
+  const badge = document.getElementById('statusBadge');
+  if (!badge) return;
+  if (!ok) {
+    badge.textContent = 'Down';
+    badge.style.background = 'var(--red)';
+    badge.style.color = '#fff';
+    return;
+  }
+  if (criticalPatterns > 0) {
+    badge.textContent = String(criticalPatterns);
+    badge.style.background = 'var(--red)';
+    badge.style.color = '#fff';
+    return;
+  }
+  badge.textContent = activeAgents > 0 ? 'Live' : 'OK';
+  badge.style.background = activeAgents > 0 ? 'rgba(16,185,129,0.18)' : 'var(--border)';
+  badge.style.color = activeAgents > 0 ? 'var(--green)' : 'var(--text-dim)';
 }
 
 async function editWebhook(id) {

@@ -1,32 +1,45 @@
-import { describe, test, expect } from 'bun:test';
+import { afterEach, describe, test, expect, jest } from 'bun:test';
 import { loadEnv } from '../src/config/env';
 import { createManagedInterval } from '../src/services/Scheduler';
 
+afterEach(() => {
+  jest.useRealTimers();
+});
+
 describe('managed scheduler', () => {
   test('runs interval tasks and stops cleanly', async () => {
+    jest.useFakeTimers();
     let count = 0;
     const task = createManagedInterval('test.fast', 20, () => {
       count++;
     }, { initialDelayMs: 0 });
 
-    await Bun.sleep(55);
+    await Promise.resolve();
+    jest.advanceTimersByTime(55);
+    await Promise.resolve();
     task.stop();
     const stoppedAt = count;
-    await Bun.sleep(35);
+    jest.advanceTimersByTime(35);
+    await Promise.resolve();
 
     expect(stoppedAt).toBeGreaterThanOrEqual(2);
     expect(count).toBe(stoppedAt);
   });
 
   test('restarts with a new interval', async () => {
+    jest.useFakeTimers();
     let count = 0;
     const task = createManagedInterval('test.restart', 100, () => {
       count++;
     }, { initialDelayMs: 100 });
 
-    await Bun.sleep(30);
+    await Promise.resolve();
+    jest.advanceTimersByTime(30);
+    await Promise.resolve();
     task.restart(10, 0);
-    await Bun.sleep(35);
+    await Promise.resolve();
+    jest.advanceTimersByTime(35);
+    await Promise.resolve();
     task.stop();
 
     expect(count).toBeGreaterThanOrEqual(2);

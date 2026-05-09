@@ -143,7 +143,7 @@ export class WebhookService {
     // Retry on failure (max 3 attempts, exponential backoff)
     if (!success && attempt < 3) {
       const delay = Math.pow(2, attempt) * this.retryDelayMs;
-      await new Promise((r) => setTimeout(r, delay));
+      await Bun.sleep(delay);
       await this.dispatchToWebhook(hook, alert, attempt + 1);
     }
   }

@@ -1,4 +1,4 @@
-import { Database as BunDatabase } from 'bun:sqlite';
+import { SQL } from 'bun';
 import crypto from 'crypto';
 
 const dbPath = normalizeDatabasePath(process.env.DATABASE_URL || './data/terminal.db');
@@ -35,35 +35,36 @@ export interface DbRunResult {
 }
 
 export class AppDatabase {
-  private db: BunDatabase;
+  private db: SQL;
 
   constructor(filename: string) {
-    this.db = new BunDatabase(filename);
+    this.db = new SQL(toSqliteUrl(filename));
   }
 
   async exec(sql: string): Promise<void> {
-    this.db.exec(sql);
+    await this.db.unsafe(sql);
   }
 
   async run(sql: string, params: unknown[] = []): Promise<DbRunResult> {
-    const query = this.db.query(sql);
-    const result = query.run(...params);
+    const result = await this.db.unsafe(sql, params);
+    const changes = await this.db.unsafe('SELECT changes() AS changes');
     return {
-      lastID: Number(this.db.query('SELECT last_insert_rowid() AS id').get()?.id ?? 0),
-      changes: result.changes,
+      lastID: Number(result.lastInsertRowid ?? 0),
+      changes: Number(changes[0]?.changes ?? 0),
     };
   }
 
   async get<T = any>(sql: string, params: unknown[] = []): Promise<T | null> {
-    return this.db.query(sql).get(...params) as T | null;
+    const rows = await this.db.unsafe(sql, params);
+    return (rows[0] ?? null) as T | null;
   }
 
   async all<T = any>(sql: string, params: unknown[] = []): Promise<T[]> {
-    return this.db.query(sql).all(...params) as T[];
+    return (await this.db.unsafe(sql, params)) as T[];
   }
 
   async close(): Promise<void> {
-    this.db.close();
+    await this.db.close();
   }
 }
 
@@ -403,6 +404,12 @@ export async function initDatabase(): Promise<AppDatabase> {
   await createPostMigrationIndexes(db);
   await seedBuckeyeSportTypes(db);
   return db;
+}
+
+function toSqliteUrl(filename: string): string {
+  if (filename.startsWith('sqlite://')) return filename;
+  if (filename === ':memory:') return 'sqlite://:memory:';
+  return `sqlite://${filename.replace(/\\/g, '/')}`;
 }
 
 async function createPostMigrationIndexes(db: AppDatabase): Promise<void> {

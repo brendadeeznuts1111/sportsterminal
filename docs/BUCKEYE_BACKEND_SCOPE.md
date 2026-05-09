@@ -1,324 +1,380 @@
-# Buckeye PPH Backend v5.2 — Production Scope
+# Buckeye PPH Backend v5.3 - Integration Scope
 
 ## Executive Summary
 
-Based on real screenshots and API analysis of the Buckeye PPH platform (`fantasy402.com`), this document defines the complete backend architecture for integrating live wager data into the Sports Terminal.
+Sports Terminal integrates with Buckeye PPH (`fantasy402.com`) through direct HTTP APIs. The backend authenticates agents, stores secrets in the OS vault, restores vaulted agents on startup, and keeps live ingestion running while the backend process is alive.
 
-**Key Discovery**: Buckeye exposes a `getBetTicker` JSON API endpoint that returns all active wagers. Instead of Puppeteer DOM scraping, we authenticate and poll this API directly — much more reliable and performant.
+The browser UI is now a client of the backend, not the owner of ingestion. Closing the browser does not stop Buckeye polling. Manual vault logout is the explicit action that removes credentials and prevents future automatic restore.
 
-**Amount Units**: The API returns `AmountWagered`, `ToWinAmount`, and `VolumeAmount` in **cents**. The backend normalizes these to dollars by dividing by 100 in `normalizeWager()`.
+Amount units remain important:
+
+- Buckeye wager amount fields arrive in cents.
+- `BuckeyeAPI.normalizeWager()` converts them to dollars before persistence.
+- SQLite stores dollars.
+- Frontend displays dollars directly.
 
 ---
 
-## 1. API Reverse-Engineering
+## Discovered Buckeye Endpoints
 
-### 1.1 Discovered Endpoints
+All Manager/System endpoints are under `https://fantasy402.com` unless overridden by `BUCKEYE_BASE_URL`.
 
-| Endpoint | Method | URL Pattern | Auth |
-|----------|--------|-------------|------|
-| Login | POST | `/cloud/api/System/authenticateCustomer` | None (returns JWT) |
-| Get Bet Ticker | POST | `/cloud/api/Manager/getBetTicker` | Bearer JWT + cf_clearance cookie |
-| Get Bet Ticker Config | POST | `/cloud/api/Manager/getBetTickerConfig` | Bearer JWT |
-| Renew Token | POST | `/cloud/api/System/renewToken` | Bearer JWT |
+| Family | Operation | Method | Path | Notes |
+|--------|-----------|--------|------|-------|
+| Auth | `authenticateCustomer` | POST | `/cloud/api/System/authenticateCustomer` | Returns short-lived JWT |
+| Auth | `renewToken` | POST | `/cloud/api/System/renewToken` | Refreshes session |
+| Wagers | `getBetTicker` | POST | `/cloud/api/Manager/getBetTicker` | Live wager feed |
+| Wagers | `getBetTickerConfig` | POST | `/cloud/api/Manager/getBetTickerConfig` | Feed/config metadata |
+| Access logs | `getWebLog` | POST | `/qubic/api/Manager/getWebLog` | Primary path for Buckeye IP/access tools |
+| Access logs | `getWebLog` | POST | `/cloud/api/Manager/getWebLog` | Fallback path |
+| Performance | `getAgentPerformance` | POST | `/cloud/api/Manager/getAgentPerformance` | Customer/sport/volume/graded report rows |
+| Weekly figures | `getWeeklyFigureByAgentLite` | POST | `/cloud/api/Manager/getWeeklyFigureByAgentLite` | This week, active, today summary |
+| Sports | `getSportsType` | POST | `/cloud/api/Manager/getSportsType` | Sports list seeding |
+| Account | `getAccountInfoOwner` | POST | `/cloud/api/Manager/getAccountInfoOwner` | Owner/account context |
+| Config | `getConfigWebReports` | POST | `/cloud/api/Manager/getConfigWebReports` | Report config context |
+| Config | `getConfigWebReportsPending` | POST | `/cloud/api/Manager/getConfigWebReportsPending` | Pending report config |
+| Config | `getAuthorizations` | POST | `/cloud/api/Manager/getAuthorizations` | Feature/permission context |
+| Messages | `getMessage` | POST | `/cloud/api/Manager/getMessage` | Manager message context |
+| Messages | `getNewEmailsCount` | POST | `/cloud/api/Manager/getNewEmailsCount` | Notification count |
+| Agents | `getListAgenstByAgent` | POST | `/cloud/api/Manager/getListAgenstByAgent` | Downline/list context, name is misspelled upstream |
 
-### 1.2 Authentication Flow
+Authentication generally needs:
 
-```
-1. POST /cloud/api/System/authenticateCustomer
-   Body: customerID, password, domain, state=true, operation=authenticateCustomer, RRO=1
-   Response: JSON { code: "JWT_TOKEN", accountInfo: {...} }
+- `Authorization: Bearer <Buckeye JWT>`
+- `Cookie: cf_clearance=<value>; __cf_bm=<value when available>`
+- `Content-Type: application/x-www-form-urlencoded; charset=UTF-8`
+- `X-Requested-With: XMLHttpRequest` for Manager endpoints
+- `agentID`, `agentOwner`, `agentSite=1`, `operation`, and `RRO=1` form fields
 
-2. POST /cloud/api/Manager/getBetTicker
-   Headers: Authorization: Bearer {JWT}, Cookie: cf_clearance=xxx
-   Body: agentID, agentOwner, agentSite=1, operation=getBetTicker, RRO=1, wagerNumber={lastSeen}
-   Response: { "LIST": [ wager objects ] }
+---
 
-3. POST /cloud/api/System/renewToken (every 15 min)
-   Refreshes session to prevent timeout
-```
+## Authentication and Vault Model
 
-### 1.3 Response Schema (Confirmed from Real Data)
+### Login Flow
+
+1. User enters agent ID, password, and Cloudflare cookie in Settings.
+2. Backend calls `authenticateCustomer`.
+3. Backend receives a Buckeye JWT.
+4. Backend stores available password, token, and cookie material in `Bun.secrets`.
+5. Backend upserts the agent into the vault index.
+6. Backend starts ingestion loops for that agent.
+
+### Startup Restore
+
+1. Backend reads the vault index from `Bun.secrets`.
+2. Each vaulted agent is restored independently.
+3. Token resume is attempted first.
+4. If token resume fails, password/cookie login is attempted.
+5. If one agent fails, it is marked unhealthy and other agents continue.
+
+### Token Renewal
+
+- Renewal runs on the current token renewal interval.
+- Successful `renewToken` writes the new token back to the OS vault.
+- Failed renewal falls back to re-auth with vaulted password/cookie.
+- Repeated failure stops only that agent and marks `lastError`.
+
+### Vault Status API
+
+`GET /api/buckeye/vault-status` returns only presence flags:
 
 ```json
 {
-  "LIST": [
+  "available": true,
+  "agents": [
     {
-      "WagerNumber": 749959076,
-      "AgentID": "NXC337",
-      "CustomerID": "NZ121 ",
-      "Login": "NZ121",
-      "WagerType": "M",
-      "AmountWagered": 2500,
-      "InsertDateTime": "2026-05-08 08:51:18.427",
-      "ToWinAmount": 1397,
-      "TicketWriter": "GSLIVE",
-      "VolumeAmount": 2500,
-      "ShortDesc": "M.G296512619 - Tennis - Geoffrey Blancaneaux vs Alejo Sanchez Quilez / 2nd Set / Winner (2 way) / Geoffrey Blancaneaux -179",
-      "VIP": "0",
-      "AgentLogin": "NXC337 "
+      "agentId": "BILLY666",
+      "hasPassword": true,
+      "hasCfCookie": true,
+      "hasToken": true,
+      "active": true,
+      "lastError": null
     }
   ]
 }
 ```
 
-**Amounts are in cents** — `AmountWagered: 2500` = $25.00.
+It must never return secret values.
 
-### 1.4 Field Mapping to UI
+`DELETE /api/buckeye/vault-status?agentId=BILLY666` clears one agent.
 
-| UI Column | JSON Field | Notes |
-|-----------|-----------|-------|
-| Customer | `Login` | Player login ID |
-| Type | `WagerType` | M=Straight, L=Line, S=Spread, P=Parlay, E=Exotic, T=Teaser, C=Custom |
-| Agent | `AgentLogin` | Agent code |
-| Sport | Parsed from `ShortDesc` | Extracted via regex from description prefix |
-| Description | `ShortDesc` | Full wager description with sport/game/line/odds |
-| Risk | `VolumeAmount` | Risk amount (0 = pending/alert). Stored in dollars |
-| Win | `ToWinAmount` | Potential payout. Stored in dollars |
-| Source | `TicketWriter` | Internet / GSLIVE / ALERT |
-| Time | `InsertDateTime` | Timestamp in ET |
+`DELETE /api/buckeye/vault-status?all=1` clears all vaulted Buckeye agents.
 
 ---
 
-## 2. Backend Architecture (Bun + TypeScript)
+## Live Ingestion Loops
 
-### 2.1 Project Structure
+The app uses managed recurring jobs in `backend/src/services/Scheduler.ts`. This is intentionally not `Bun.scheduler`, because the current Bun runtime does not expose that API.
 
-```
-backend/
-├── src/
-│   ├── index.ts                   # Bun HTTP server + WS upgrade
-│   ├── database.ts                # SQLite init + schema
-│   ├── scrapers/
-│   │   ├── BuckeyeAPI.ts          # API client (HTTP, NOT Puppeteer)
-│   │   └── ScraperManager.ts      # Polling lifecycle, backoff, re-auth
-│   ├── risk/
-│   │   └── AlertEngine.ts         # Alert detection rules
-│   └── types/
-│       └── index.ts               # Shared interfaces
-├── tests/
-│   └── api.test.ts                # Bun.test — AlertEngine + change detection
-├── data/
-│   └── terminal.db                # SQLite database
-├── .env.example
-└── package.json
-```
+| Loop | Default | Owner | Purpose |
+|------|---------|-------|---------|
+| Wagers | `POLL_INTERVAL_MS`, usually 5s | `ScraperManager` | Pull live `getBetTicker` deltas |
+| Access logs | `ACCESS_LOG_INTERVAL_MS`, usually 10m | `ScraperManager` | Pull Buckeye IP/access data |
+| Agent performance | `AGENT_PERFORMANCE_INTERVAL_MS`, usually 15m | `ScraperManager` | Pull customer/agent performance snapshots |
+| Token renewal | `TOKEN_RENEWAL_MINUTES`, usually 15m | `ScraperManager` | Keep Buckeye JWT fresh |
+| Odds | provider interval | `OddsPoller` | Update odds snapshots, movements, and book health |
 
-### 2.2 Core Files
-
-#### `src/scrapers/BuckeyeAPI.ts` — API Client
-
-```typescript
-interface BuckeyeCredentials {
-  agentId: string;      // "BILLY666"
-  password: string;
-  baseUrl?: string;     // "https://fantasy402.com"
-  cfCookie?: string;    // cf_clearance from browser DevTools
-}
-
-class BuckeyeAPI {
-  async login(): Promise<boolean>
-  async testAccess(): Promise<boolean>
-  async getBetTicker(): Promise<EnrichedWager[]>  // polls live wager feed
-  async renewToken(): Promise<boolean>
-  detectChanges(newWagers: EnrichedWager[]): WagerChange[]
-  clearCache(): void
-  isAuthenticated(): boolean
-  getToken(): string
-}
-```
-
-**Normalization**: `normalizeWager()` divides `AmountWagered`, `ToWinAmount`, `VolumeAmount` by 100 (cents → dollars).
-
-#### `src/scrapers/ScraperManager.ts` — Polling Manager
-
-- `startAgent()` → login → interval polling + token renewal
-- `pollAgent()` → fetch wagers → detect changes → persist to DB → broadcast WS events → evaluate alerts
-- Exponential backoff on errors: 5s → 10s → 20s → 40s → max 60s
-- Max 3 re-login attempts, then broadcasts `auth_failed` event
-- `resumeAgent()` for session persistence via stored JWT
-
-#### `src/risk/AlertEngine.ts` — Alert Detection
-
-| Rule | Threshold | Severity |
-|------|-----------|----------|
-| High Volume Wager | ≥ $50,000 | critical |
-| ALERT Ticket Writer | Any ALERT wager | warning |
-| Live Large Wager | GSLIVE + ≥ $10,000 | warning |
-| Parlay High Payout | Parlay + win ≥ $100,000 | warning |
-| VIP Wager | Any VIP player wager | info |
-| Exotic Large | Exotic + ≥ $5,000 | warning |
-| Teaser Large | Teaser + ≥ $5,000 | warning |
+Browser clients do not start or stop these loops. Backend process lifetime controls them.
 
 ---
 
-## 3. Polling Strategy
+## Buckeye Request Details
 
-| Endpoint | Interval | Rationale |
-|----------|----------|-----------|
-| `getBetTicker` | 5 seconds (adaptive) | Near real-time wager feed |
-| `renewToken` | 15 minutes | Prevent session expiry |
-| Error backoff | 5s → 10s → 20s → 40s → 60s | Exponential on failures |
-| DB cleanup | 1 hour (planned) | Archive old wagers |
+### `getBetTicker`
 
----
+Minimum form:
 
-## 4. WebSocket Events
+```text
+agentID=<agent>
+agentOwner=<owner>
+agentSite=1
+operation=getBetTicker
+RRO=1
+wagerNumber=<lastSeen>
+```
 
-```typescript
-// Server → Client
-interface WsEvent {
-  type: 'wager.new' | 'wager.alert' | 'exposure.update' | 'auth_failed';
-  timestamp: string;
-  payload: unknown;
-}
+Confirmed response row:
 
-// wager.new — New bet placed
+```json
 {
-  type: 'wager.new',
-  payload: {
-    wagerNumber: 749959999,
-    login: "NZ121",
-    agentLogin: "NXC337",
-    wagerType: "M",
-    amountWagered: 50.00,    // dollars
-    ticketWriter: "GSLIVE",
-    shortDesc: "M.G296512999 - Tennis - ..."
-  }
-}
-
-// wager.alert — Risk flagged
-{
-  type: 'wager.alert',
-  payload: {
-    wagerNumber: 749959999,
-    rule: "High Volume Wager",
-    severity: "critical",
-    message: "Agent NXC337: $50,000.00 wager by NZ121"
-  }
+  "WagerNumber": 749959076,
+  "AgentID": "NXC337",
+  "CustomerID": "NZ121 ",
+  "Login": "NZ121",
+  "WagerType": "M",
+  "AmountWagered": 2500,
+  "InsertDateTime": "2026-05-08 08:51:18.427",
+  "ToWinAmount": 1397,
+  "TicketWriter": "GSLIVE",
+  "VolumeAmount": 2500,
+  "ShortDesc": "M.G296512619 - Tennis - Geoffrey Blancaneaux vs Alejo Sanchez Quilez / 2nd Set / Winner (2 way) / Geoffrey Blancaneaux -179",
+  "VIP": "0",
+  "AgentLogin": "NXC337 "
 }
 ```
 
+### `getWebLog`
+
+Buckeye UI exposes an IP Tracker module that calls `getWebLog` with action types:
+
+| Action | Meaning |
+|--------|---------|
+| `A` | Web Access Log |
+| `B` | Global IP Matcher |
+| `C` | Account IP Match / player matcher |
+| `I` | Users by IP |
+
+Request shape observed from Buckeye JS:
+
+```text
+agentID=<agent>
+customerID=<optional>
+start=<MM/DD/YYYY>
+end=<MM/DD/YYYY>
+type=<type>
+actions=<A|B|C|I>
+ip=<optional>
+operation=getWebLog
+RRO=1
+```
+
+Limits from Buckeye UI:
+
+- Users-by-IP maximum range: 7 days.
+- Access logs maximum range: 30 days.
+
+Persisted fields:
+
+- `LoginID`
+- `IPAddress`
+- `AccessDateTime`
+- `Operation`
+- `Data`
+- `type`
+- `agent_id`
+- `pulled_at`
+
+### `getAgentPerformance`
+
+Representative form:
+
+```text
+start=04%2F28%2F2026
+end=05%2F09%2F2026
+agentID=BILLY666
+type=CP
+freePlay=Y
+store=BILLY666
+sport=Basketball++++++++++
+subsport=NBA
+period=-1
+wagerType=
+betType=
+tipo=0
+debug=0
+operation=getAgentPerformance
+RRO=1
+agentOwner=SHARPTOBBY
+agentSite=1
+```
+
+Important fields:
+
+| Field | Meaning |
+|-------|---------|
+| `start`, `end` | Report date range, `MM/DD/YYYY` |
+| `agentID` | Agent or master being queried |
+| `type` | Report type. Known: `CP` customer performance, `CPS` sport performance, `CPV` customer volume, `G` graded wagers |
+| `freePlay` | Include free play flag, observed `Y` |
+| `store` | Store/root agent context |
+| `sport` | Sport value from `getSportsType`, often padded |
+| `subsport` | League/subsport, such as `NBA` |
+| `period` | `-1` all, `0` game, `1` first half, `2` second half, quarters `3`-`6` |
+| `wagerType` | `S`, `P`, `T`, `I`, `C`, `A`, or blank |
+| `betType` | `S` spread, `M` money line, `L` total, `E` team total, or blank |
+| `tipo` | Activity filter. `-1` all action, `0` sports, `4` live betting, other values for casino/racebook/poker/etc. |
+| `debug` | Debug flag, observed `0` |
+
+Confirmed response row:
+
+```json
+{
+  "CustomerID": "CF346     ",
+  "AgentID": "CHEDDFAM",
+  "Login": "CF346 (pw:fixes)",
+  "wagercount": 1,
+  "Risk": 25.95,
+  "ToWin": 79.14,
+  "amountwon": 79.14,
+  "amountlost": 0,
+  "volume": 25.95,
+  "net": 79.14
+}
+```
+
+### `getSportsType`
+
+Known values:
+
+```text
+Auto Racing
+Baseball
+Basketball
+Boxing
+Cricket
+Entertainment
+Esports
+Football
+Golf
+Hockey
+Horse Racing
+LIVE
+Martial Arts
+Olympics
+Other
+Rugby
+Soccer
+Tennis
+Virtual Sports
+```
+
+Persist trimmed display values but keep raw values when they matter for upstream requests.
+
 ---
 
-## 5. Frontend Integration Points
+## Persistence Contract
 
-### 5.1 Real-Time Feed
-- WS connection to `/ws`
-- `wager.new` events append to Bet Ticker table
-- `wager.alert` events flash red + show toast (if toasts enabled)
-- Auto-scroll to newest wager (toggleable)
-- Session persistence: JWT token + credentials in `localStorage`
-- Auto-connect on page load (if enabled)
+Important tables:
 
-### 5.2 Bet Ticker UI (Matching Real Buckeye)
-- Columns: Customer, Type, Agent, Sport, Description, Risk, Win, Source, Time
-- Color coding: ALERT=red row, GSLIVE=cyan row, Internet=default
-- Filters: Min bet amount, VIP only, wager type, search, agent filter
-- Actions: Clear ticker, export CSV, configuration
-- Toast toggle: mute/unmute all notifications
+| Table | Purpose |
+|-------|---------|
+| `wagers` | Normalized Buckeye wager rows |
+| `alerts` | Risk alert history |
+| `access_logs` | Buckeye `getWebLog` rows |
+| `agent_performance_snapshots` | Buckeye performance report rows |
+| `buckeye_sport_types` | Seeded sport types |
+| `ingestion_checkpoints` | Last processed sequence, pull time, and metadata per entity |
+| `detected_patterns` | Pattern/anomaly history |
+| `pattern_agents` | Pattern to agent links |
+| `odds_snapshots` | Odds provider snapshots |
+| `line_movements` | Odds movement history |
+| `alert_webhooks` | Webhook definitions |
+| `webhook_deliveries` | Webhook delivery attempts |
 
-### 5.3 Dashboard Panels
-- **Stats Cards**: Total Wagers, Total Volume, Unique Customers, Active Agents, Alert Wagers, Live GSLIVE, Max Wager
-- **Top Agents by Volume**: Horizontal bar chart with color thresholds
-- **Sport Breakdown**: Count + volume per sport
-- **Game Breakdown**: Top 10 games by volume with matchup parsing
+Checkpoint guidance:
 
-### 5.4 Agent Network & Player Drill-Down
-- Agent downline table with player count, wager count, volume, risk, alerts, live
-- Click agent → filter ticker to that agent's wagers
-- Player search with volume/risk sorting
-- Player detail view: stats cards, 7-day P&L bars, wager breakdown, recent wagers
-- Click customer → player detail view
+- `wagers`: store highest `WagerNumber`.
+- `hierarchy`: store parsed row count or max sequence when available.
+- `players`: store parsed row count and file hash metadata.
+- `access_logs`: store latest pulled `AccessDateTime`.
+- `agent_performance`: store latest successful report window and row count.
 
 ---
 
-## 6. Risk Thresholds
+## Pattern Detection Inputs
+
+Pattern detection depends on the correlation layer:
+
+- Parse wager `ShortDesc` into canonical sport, game, market, side, price, and period.
+- Match parsed wager to an odds event by sport, team aliases, and event window.
+- Capture nearest/current Pinnacle/reference price at wager ingest time.
+- Store evidence and reason codes so history remains explainable.
+
+Core pattern families:
+
+- Shared IP Cluster
+- IP Follow Pattern
+- Agent Swarm
+- Cross-Agent Swarm
+- Live Past-Post Risk
+- Late Live Spike
+- Pinnacle Drift Bet
+- Post-PIN Move Bet
+- Reverse Public/Sharp Bet
+- Repeat Timing Signature
+- Steam Chase
+- Bad Feed / Book Risk
+
+---
+
+## WebSocket Events
+
+Server-to-client events include:
 
 ```typescript
-const RISK_THRESHOLDS = {
-  wagerWarning: 10000,      // $10K — yellow highlight
-  wagerCritical: 50000,     // $50K — red highlight + alert
-  exposureWarning: 50000,   // Agent level
-  exposureCritical: 200000, // Agent level
-  parlayMaxLegs: 8,
-  parlayMaxPayout: 500000,  // $500K
-};
+type WsEventType =
+  | 'wager.new'
+  | 'wager.alert'
+  | 'exposure.update'
+  | 'pattern.alert'
+  | 'pattern.update'
+  | 'auth_failed'
+  | 'betAction';
 ```
 
----
-
-## 7. Implementation Checklist
-
-### Phase 1: API Client ✅
-- [x] `BuckeyeAPI.ts` — Login + getBetTicker + renewToken
-- [x] Cloudflare cookie support (`cf_clearance`)
-- [x] Session persistence (cookie jar + JWT)
-- [x] Error handling (auth failure, rate limits, backoff)
-
-### Phase 2: Data Pipeline ✅
-- [x] Wager normalization (trim fields, parse dates, cents→dollars)
-- [x] SQLite storage with schema
-- [x] Change detection (diff engine)
-- [x] Sport/line/odds parser from ShortDesc
-
-### Phase 3: Real-Time ✅
-- [x] WebSocket server with upgrade
-- [x] 5-second polling loop with adaptive backoff
-- [x] Event broadcasting (wager.new, wager.alert, exposure.update, auth_failed)
-- [x] Frontend WS client with auto-reconnect
-- [x] Session resume via stored JWT
-
-### Phase 4: Risk Engine ✅
-- [x] Alert rules implementation (7 rules)
-- [x] Alert persistence in SQLite
-- [x] Threshold management
-
-### Phase 5: Frontend Polish ✅
-- [x] Bet Ticker matching real Buckeye UI
-- [x] Agent dashboard + downline
-- [x] Player search + drill-down
-- [x] Sport breakdown + game breakdown
-- [x] Toast toggle + session persistence
-- [x] Export functionality
+Pattern deltas should stay small for high-frequency updates. Prefer agent ID, count increment, severity, and pattern ID; fetch details lazily from history endpoints when needed.
 
 ---
 
-## 8. Key Metrics from Real Data
+## Safety Rules
 
-| Metric | Value |
-|--------|-------|
-| Live Wagers | 250–300 (fluctuates in real-time) |
-| Wager Types | 7 (L, M, S, P, E, T, C) |
-| Avg Wager | ~$117 (demo: varies by player) |
-| Max Wager | ~$8,000 (live) |
-| Total Volume | ~$2.5M (live, 400+ wagers) |
-| Unique Agents | 140+ (live) |
-| Internet | ~56% |
-| GSLIVE | ~21% |
-| ALERT | ~22% |
-| Top Sport | Baseball / Tennis / Soccer (varies) |
+- Never log raw passwords, Buckeye JWTs, or Cloudflare cookies.
+- Vault status endpoints must only return boolean presence flags.
+- Keep raw exported Buckeye hierarchy/player files ignored.
+- Normalize money exactly once, in the backend.
+- Do not stop live ingestion just because the UI disconnects.
+- If one vaulted agent fails restore, continue restoring the rest.
+- Treat old Pinnacle/reference comparisons as best effort unless a reference snapshot was captured at wager ingest time.
 
 ---
 
-## 9. Security Considerations
+## Verification
 
-1. **Credential Storage**: Credentials stored in `localStorage` on frontend; backend does not persist passwords
-2. **Session Management**: Auto-renew tokens every 15 min, JWT reuse for ~10 min
-3. **Cloudflare**: `cf_clearance` cookie required; expires 30min–2hrs, user refreshes via browser
-4. **Rate Limiting**: Backend respects natural API limits (1 req/5s per agent)
-5. **Reconnection Resilience**: Exponential backoff, max 3 re-login attempts
+```powershell
+bun test
+bun run build
+Invoke-RestMethod http://localhost:3000/health
+Invoke-RestMethod http://localhost:3000/api/buckeye/vault-status
+```
 
----
-
-## 10. Files Delivered
-
-| File | Description |
-|------|-------------|
-| `frontend/public/index.html` | Single-file SPA frontend v5.2 |
-| `frontend/public/buckeye_data.js` | Demo wager data (149 records, cents) |
-| `backend/src/scrapers/BuckeyeAPI.ts` | HTTP API client |
-| `backend/src/scrapers/ScraperManager.ts` | Polling lifecycle manager |
-| `backend/src/risk/AlertEngine.ts` | Alert rule engine |
-| `backend/src/index.ts` | Bun HTTP + WebSocket server |
-| `docs/BUCKEYE_BACKEND_SCOPE.md` | This document |
-| `docs/IMPLEMENTATION_TRACKER.md` | Zone-based progress tracker |
+For endpoint work, add or update route tests and at least one synthetic fixture that mirrors the observed Buckeye response shape.
