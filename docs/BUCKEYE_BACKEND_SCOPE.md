@@ -100,8 +100,7 @@ backend/
 ├── data/
 │   └── terminal.db                # SQLite database
 ├── .env.example
-├── package.json
-└── bun.lock
+└── package.json
 ```
 
 ### 2.2 Core Files

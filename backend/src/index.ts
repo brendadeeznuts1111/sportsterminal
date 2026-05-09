@@ -1,6 +1,5 @@
 import { serve } from 'bun';
-import { Database } from 'sqlite';
-import { initDatabase } from './database';
+import { initDatabase, type Database } from './database';
 import { BuckeyeScraperManager } from './scrapers/ScraperManager';
 import { BuckeyeAPI } from './scrapers/BuckeyeAPI';
 import { OddsPoller } from './odds/OddsPoller';

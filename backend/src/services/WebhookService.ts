@@ -4,7 +4,7 @@
  * dispatch with retry, and delivery logging.
  */
 
-import type { Database } from 'sqlite';
+import type { Database } from '../database';
 import type { Alert } from '../risk/AlertEngine';
 
 export type WebhookPlatform = 'discord' | 'slack' | 'telegram' | 'generic';

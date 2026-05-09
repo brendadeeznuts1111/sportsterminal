@@ -1,15 +1,54 @@
-import Database from 'sqlite3';
-import { open } from 'sqlite';
-import path from 'path';
+import { Database as BunDatabase } from 'bun:sqlite';
 import crypto from 'crypto';
 
-const dbPath = process.env.DATABASE_URL || './data/terminal.db';
+const dbPath = normalizeDatabasePath(process.env.DATABASE_URL || './data/terminal.db');
 
-export async function initDatabase() {
-  const db = await open({
-    filename: dbPath,
-    driver: Database.Database,
-  });
+export function normalizeDatabasePath(value: string): string {
+  return value.startsWith('sqlite:') ? value.slice('sqlite:'.length) : value;
+}
+
+export interface DbRunResult {
+  lastID: number;
+  changes: number;
+}
+
+export class AppDatabase {
+  private db: BunDatabase;
+
+  constructor(filename: string) {
+    this.db = new BunDatabase(filename);
+  }
+
+  async exec(sql: string): Promise<void> {
+    this.db.exec(sql);
+  }
+
+  async run(sql: string, params: unknown[] = []): Promise<DbRunResult> {
+    const query = this.db.query(sql);
+    const result = query.run(...params);
+    return {
+      lastID: Number(this.db.query('SELECT last_insert_rowid() AS id').get()?.id ?? 0),
+      changes: result.changes,
+    };
+  }
+
+  async get<T = any>(sql: string, params: unknown[] = []): Promise<T | null> {
+    return this.db.query(sql).get(...params) as T | null;
+  }
+
+  async all<T = any>(sql: string, params: unknown[] = []): Promise<T[]> {
+    return this.db.query(sql).all(...params) as T[];
+  }
+
+  async close(): Promise<void> {
+    this.db.close();
+  }
+}
+
+export type Database = AppDatabase;
+
+export async function initDatabase(): Promise<AppDatabase> {
+  const db = new AppDatabase(dbPath);
 
   // Enable foreign keys
   await db.exec('PRAGMA foreign_keys = ON');

@@ -3,17 +3,12 @@
  * Run with: bun run db:migrate
  */
 
-import { open } from 'sqlite';
-import Database from 'sqlite3';
-import { migrateDatabase } from '../src/database';
+import { AppDatabase, migrateDatabase, normalizeDatabasePath } from '../src/database';
 
-const dbPath = process.env.DATABASE_URL || './data/terminal.db';
+const dbPath = normalizeDatabasePath(process.env.DATABASE_URL || './data/terminal.db');
 
 async function main() {
-  const db = await open({
-    filename: dbPath,
-    driver: Database.Database,
-  });
+  const db = new AppDatabase(dbPath);
 
   await db.exec('PRAGMA foreign_keys = ON');
   console.log('📊 Database opened:', dbPath);

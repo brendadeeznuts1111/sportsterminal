@@ -4,7 +4,7 @@
  * Replaces Puppeteer-based scraper management.
  */
 
-import { Database } from 'sqlite';
+import type { Database } from '../database';
 import { BuckeyeAPI, BuckeyeCredentials } from './BuckeyeAPI';
 import { evaluateWager, Alert } from '../risk/AlertEngine';
 import { WebhookService } from '../services/WebhookService';

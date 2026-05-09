@@ -146,7 +146,7 @@ bun run clean-start
 | `Port 3000 already in use` | Run `bun run stop` first, then `bun run dev` |
 | Multiple Bun processes / confusion | Run `bun run status` to see what's running, then `bun run stop` or `taskkill /F /IM bun.exe` |
 | Running from wrong folder | Always run from `C:\Users\bobby\sportsterminal\` (not root) |
-| Stale node_modules | `cd backend && rm -rf node_modules && bun install` |
+| Stale node_modules | Remove `node_modules` / `backend/node_modules`, then run `bun install` from `C:\Users\bobby\sportsterminal\` |
 
 ## Development Tips
 

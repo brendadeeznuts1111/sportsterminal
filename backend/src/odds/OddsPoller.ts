@@ -4,7 +4,7 @@
  * persists snapshots, detects line movements, and tracks book health.
  */
 
-import type { Database } from 'sqlite';
+import type { Database } from '../database';
 import type { OddsProvider, EventOdds, LineMovement, BookHealth } from './types';
 import { DemoOddsProvider } from './providers/DemoOddsProvider';
 import { TheOddsProvider } from './providers/TheOddsApiProvider';

@@ -1,14 +1,10 @@
 import { describe, test, expect, beforeEach } from 'bun:test';
-import { open } from 'sqlite';
-import Database from 'sqlite3';
+import { AppDatabase } from '../src/database';
 import { WebhookService } from '../src/services/WebhookService';
 import type { Alert } from '../src/risk/AlertEngine';
 
 async function createTestDb() {
-  const db = await open({
-    filename: ':memory:',
-    driver: Database.Database,
-  });
+  const db = new AppDatabase(':memory:');
 
   await db.exec(`
     CREATE TABLE alert_webhooks (
