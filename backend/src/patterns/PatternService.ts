@@ -1,5 +1,3 @@
-import crypto from 'crypto';
-
 import type { Database } from '../database';
 import type { EnrichedWager, Severity } from '../risk/AlertEngine';
 import type { BuckeyeWebLogRow, BuckeyeWebLogType } from '../scrapers/BuckeyeAPI';
@@ -876,7 +874,10 @@ function groupBy<T>(items: T[], getKey: (item: T) => string): Map<string, T[]> {
 }
 
 function hashId(parts: unknown[]): string {
-  return crypto.createHash('sha1').update(parts.map(part => String(part ?? '')).join('|')).digest('hex');
+  const input = parts.map(part => String(part ?? '')).join('|');
+  const hasher = new Bun.CryptoHasher('sha1');
+  hasher.update(input);
+  return Array.from(hasher.digest()).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 function gameKeyFor(value: string): string {

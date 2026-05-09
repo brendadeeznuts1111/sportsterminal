@@ -16,10 +16,12 @@ import { registerBuckeyeRoutes } from './routes/buckeye';
 import { registerStaticRoutes } from './routes/static';
 import type { BuckeyeScraperManager } from '../scrapers/ScraperManager';
 import type { OddsPoller } from '../odds/OddsPoller';
+import type { BunSecretVault } from '../services/BunSecretVault';
 
 export interface RouterDeps {
   scraperManager: BuckeyeScraperManager;
   oddsPoller: OddsPoller;
+  secretVault?: BunSecretVault;
 }
 
 /**
@@ -32,7 +34,7 @@ export async function routeRequest(
   deps: RouterDeps,
   rateLimiter?: RateLimiter
 ): Promise<Response | null> {
-  const { scraperManager, oddsPoller } = deps;
+  const { scraperManager, oddsPoller, secretVault } = deps;
 
   // CORS preflight
   if (request.method === 'OPTIONS') {
@@ -69,7 +71,7 @@ export async function routeRequest(
     () => Promise.resolve(registerRiskRoutes(url, request, scraperManager)),
     () => Promise.resolve(registerWebhookRoutes(url, request, scraperManager)),
     () => Promise.resolve(registerOddsRoutes(url, request, oddsPoller)),
-    () => Promise.resolve(registerBuckeyeRoutes(url, request, scraperManager)),
+    () => Promise.resolve(registerBuckeyeRoutes(url, request, scraperManager, secretVault)),
 
     // Static files (last resort)
     () => registerStaticRoutes(url),

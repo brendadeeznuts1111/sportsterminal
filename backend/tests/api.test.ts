@@ -521,6 +521,167 @@ describe('BuckeyeAPI agent performance parser', () => {
   });
 });
 
+describe('BunSecretVault', () => {
+  test('indexes multiple Buckeye agents and clears one without removing the other', async () => {
+    const { BunSecretVault } = await import('../src/services/BunSecretVault');
+    const values = new Map<string, string>();
+    const vault = new BunSecretVault({
+      get: async ({ service, name }) => values.get(`${service}:${name}`) || null,
+      set: async ({ service, name, value }) => {
+        values.set(`${service}:${name}`, value);
+      },
+      delete: async ({ service, name }) => {
+        values.delete(`${service}:${name}`);
+      },
+    });
+
+    await vault.saveBuckeyeSecrets({
+      agentId: 'billy666',
+      password: 'pw',
+      cfCookie: 'cf_clearance=abc',
+      token: 'token',
+    });
+    await vault.saveBuckeyeSecrets({
+      agentId: 'second',
+      password: 'pw2',
+      cfCookie: 'cf_clearance=def',
+      token: 'token2',
+    });
+
+    expect(await vault.getBuckeyeAgentIds()).toEqual(['BILLY666', 'SECOND']);
+
+    const restored = await vault.getBuckeyeSecrets('billy666');
+
+    expect(restored).toEqual({
+      agentId: 'BILLY666',
+      password: 'pw',
+      cfCookie: 'cf_clearance=abc',
+      token: 'token',
+    });
+
+    await vault.clearBuckeyeSecrets('BILLY666');
+
+    expect(await vault.getBuckeyeSecrets('BILLY666')).toBeNull();
+    expect(await vault.getBuckeyeAgentIds()).toEqual(['SECOND']);
+    expect((await vault.getBuckeyeSecrets('SECOND'))?.token).toBe('token2');
+
+    await vault.clearAllBuckeyeSecrets();
+
+    expect(await vault.getBuckeyeAgentIds()).toEqual([]);
+    expect(await vault.getBuckeyeSecrets('SECOND')).toBeNull();
+  });
+});
+
+describe('Buckeye vault routes', () => {
+  test('returns presence-only vault status for all agents and clears one stored agent', async () => {
+    const { registerBuckeyeRoutes } = await import('../src/api/routes/buckeye');
+    const { BunSecretVault } = await import('../src/services/BunSecretVault');
+    const values = new Map<string, string>();
+    const vault = new BunSecretVault({
+      get: async ({ service, name }) => values.get(`${service}:${name}`) || null,
+      set: async ({ service, name, value }) => {
+        values.set(`${service}:${name}`, value);
+      },
+      delete: async ({ service, name }) => {
+        values.delete(`${service}:${name}`);
+      },
+    });
+    await vault.saveBuckeyeSecrets({
+      agentId: 'BILLY666',
+      password: 'secret',
+      cfCookie: 'cf_clearance=abc',
+      token: 'bearer',
+    });
+    await vault.saveBuckeyeSecrets({
+      agentId: 'SECOND',
+      password: 'secret2',
+      token: 'bearer2',
+    });
+    const manager = {
+      isAgentActive: (agentId: string) => agentId === 'BILLY666',
+      getAgentLastError: (agentId: string) => (agentId === 'SECOND' ? 'bad cookie' : undefined),
+      stopAgent: () => undefined,
+    } as any;
+
+    const statusResponse = await registerBuckeyeRoutes(
+      new URL('http://localhost/api/buckeye/vault-status'),
+      new Request('http://localhost/api/buckeye/vault-status'),
+      manager,
+      vault
+    );
+    const status = await statusResponse!.json();
+
+    expect(status.available).toBe(true);
+    expect(status.agents).toContainEqual({
+      agentId: 'BILLY666',
+      hasPassword: true,
+      hasCfCookie: true,
+      hasToken: true,
+      active: true,
+    });
+    expect(status.agents).toContainEqual({
+      agentId: 'SECOND',
+      hasPassword: true,
+      hasCfCookie: false,
+      hasToken: true,
+      active: false,
+      lastError: 'bad cookie',
+    });
+    expect(JSON.stringify(status)).not.toContain('secret');
+    expect(JSON.stringify(status)).not.toContain('bearer');
+
+    const clearResponse = await registerBuckeyeRoutes(
+      new URL('http://localhost/api/buckeye/vault-status?agentId=BILLY666'),
+      new Request('http://localhost/api/buckeye/vault-status?agentId=BILLY666', { method: 'DELETE' }),
+      manager,
+      vault
+    );
+    const clear = await clearResponse!.json();
+
+    expect(clear.success).toBe(true);
+    expect(await vault.getBuckeyeSecrets('BILLY666')).toBeNull();
+    expect((await vault.getBuckeyeSecrets('SECOND'))?.token).toBe('bearer2');
+  });
+});
+
+describe('Buckeye vault restore', () => {
+  test('restores vaulted agents independently and falls back from token resume to password login', async () => {
+    const { BunSecretVault } = await import('../src/services/BunSecretVault');
+    const { restoreBuckeyeAgentsFromVault } = await import('../src/services/BuckeyeVaultRestore');
+    const values = new Map<string, string>();
+    const vault = new BunSecretVault({
+      get: async ({ service, name }) => values.get(`${service}:${name}`) || null,
+      set: async ({ service, name, value }) => {
+        values.set(`${service}:${name}`, value);
+      },
+      delete: async ({ service, name }) => {
+        values.delete(`${service}:${name}`);
+      },
+    });
+    await vault.saveBuckeyeSecrets({ agentId: 'A1', password: 'pw1', token: 'token1' });
+    await vault.saveBuckeyeSecrets({ agentId: 'A2', password: 'pw2', token: 'token2' });
+    await vault.saveBuckeyeSecrets({ agentId: 'A3', password: 'pw3' });
+
+    const calls: string[] = [];
+    const manager = {
+      resumeAgent: async (agentId: string) => {
+        calls.push(`resume:${agentId}`);
+        return agentId === 'A1';
+      },
+      startAgent: async (agentId: string) => {
+        calls.push(`start:${agentId}`);
+        if (agentId === 'A3') throw new Error('login failed');
+      },
+    } as any;
+
+    const result = await restoreBuckeyeAgentsFromVault(vault, manager, 'https://example.test');
+
+    expect(calls).toEqual(['resume:A1', 'resume:A2', 'start:A2', 'start:A3']);
+    expect(result.restored).toEqual(['A1', 'A2']);
+    expect(result.failed).toEqual([{ agentId: 'A3', error: 'login failed' }]);
+  });
+});
+
 describe('BuckeyeScraperManager manager snapshot', () => {
   test('returns unauthenticated response without an active Buckeye agent', async () => {
     const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');

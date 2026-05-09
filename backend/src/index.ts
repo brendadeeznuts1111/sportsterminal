@@ -6,24 +6,23 @@ import { routeRequest } from './api/router';
 import { corsHeaders } from './api/helpers';
 import { createToken, verifyToken, isDevMode } from './auth/jwt';
 import { getRateLimiter } from './api/rateLimiter';
+import { BunSecretVault } from './services/BunSecretVault';
+import { restoreBuckeyeAgentsFromVault } from './services/BuckeyeVaultRestore';
+import { loadEnv } from './config/env';
 
-const PORT = parseInt(process.env.PORT || '3000');
-const HOST = process.env.HOST || '0.0.0.0';
-const JWT_SECRET = process.env.JWT_SECRET || 'change-me-in-production-min-32-chars';
-const IDLE_TIMEOUT_MS = parseInt(process.env.IDLE_TIMEOUT_MS || '300000', 10); // 5 min default
+const env = loadEnv();
+const PORT = env.PORT;
+const HOST = env.HOST;
+const JWT_SECRET = env.JWT_SECRET;
 
 // Initialize database and scraper
 let db: Database;
 let scraperManager: BuckeyeScraperManager;
 let oddsPoller: OddsPoller;
+let secretVault: BunSecretVault;
 
 // Connected WebSocket clients
 const wsClients = new Set<any>();
-let idleTimeout: ReturnType<typeof setTimeout> | null = null;
-let isIdleShutdown = false;
-
-// Stored credentials for idle reconnect
-let lastCredentials: { agentId: string; password: string; baseUrl?: string; cfCookie?: string } | null = null;
 
 function broadcast(msg: object) {
   const payload = JSON.stringify(msg);
@@ -38,44 +37,16 @@ function broadcast(msg: object) {
   }
 }
 
-function startIdleTimer() {
-  cancelIdleTimer();
-  if (IDLE_TIMEOUT_MS <= 0) return;
-  idleTimeout = setTimeout(() => {
-    console.log('[Idle] No clients connected — stopping scrapers');
-    isIdleShutdown = true;
-    for (const agentId of scraperManager.getAgentIds()) {
-      scraperManager.stopAgent(agentId);
-    }
-    oddsPoller.stop();
-  }, IDLE_TIMEOUT_MS);
-}
-
-function cancelIdleTimer() {
-  if (idleTimeout) {
-    clearTimeout(idleTimeout);
-    idleTimeout = null;
+async function restoreBuckeyeFromVault(): Promise<void> {
+  const result = await restoreBuckeyeAgentsFromVault(secretVault, scraperManager, env.BUCKEYE_BASE_URL);
+  for (const agentId of result.restored) {
+    console.log(`[SecretVault] Restored Buckeye ingestion for ${agentId}`);
   }
-}
-
-function onClientConnected() {
-  cancelIdleTimer();
-  if (isIdleShutdown) {
-    console.log('[Idle] Client reconnected — restarting scrapers');
-    oddsPoller.start();
-    // Restart Buckeye scrapers if we have stored credentials
-    if (lastCredentials) {
-      scraperManager.startAgent(lastCredentials.agentId, lastCredentials).catch(err => {
-        console.error('[Idle] Failed to restart agent:', err);
-      });
-    }
-    isIdleShutdown = false;
-  }
-}
-
-function onClientDisconnected() {
-  if (wsClients.size === 0) {
-    startIdleTimer();
+  for (const failure of result.failed) {
+    console.warn(
+      `[SecretVault] Stored Buckeye credentials for ${failure.agentId} could not be used:`,
+      failure.error
+    );
   }
 }
 
@@ -108,14 +79,17 @@ async function startServer() {
   console.log('✅ Database initialized');
 
   // Initialize scraper manager with broadcast callback
-  const debugMode = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
-  scraperManager = new BuckeyeScraperManager(db, broadcast, debugMode);
+  const debugMode = env.DEBUG;
+  secretVault = new BunSecretVault();
+  scraperManager = new BuckeyeScraperManager(db, broadcast, debugMode, secretVault);
   console.log('✅ Scraper manager initialized');
 
   // Initialize odds poller
   oddsPoller = new OddsPoller(db, broadcast);
   oddsPoller.start();
   console.log('✅ Odds poller initialized');
+
+  await restoreBuckeyeFromVault();
 
   // Create HTTP server with WebSocket support
   const server = serve({
@@ -126,7 +100,6 @@ async function startServer() {
         console.log('[WS] Client connected');
         ws.data = { agentId: null, isAuthenticated: false, lastPing: Date.now() };
         wsClients.add(ws);
-        onClientConnected();
 
         // Heartbeat: ping every 30s, close if no response within 45s
         ws.data.pingInterval = setInterval(() => {
@@ -146,10 +119,6 @@ async function startServer() {
         console.log('[WS] Client disconnected');
         if (ws.data?.pingInterval) clearInterval(ws.data.pingInterval);
         wsClients.delete(ws);
-        if (ws.data?.agentId) {
-          scraperManager.stopAgent(ws.data.agentId);
-        }
-        onClientDisconnected();
       },
     },
     async fetch(request, server) {
@@ -196,6 +165,7 @@ async function startServer() {
       const result = await routeRequest(url, request, {
         scraperManager,
         oddsPoller,
+        secretVault,
       }, getRateLimiter());
 
       if (result !== null) {
@@ -231,11 +201,17 @@ async function handleWebSocketMessage(
             const resumed = await scraperManager.resumeAgent(msg.agentId, {
               agentId: msg.agentId,
               password: msg.password || '',
-              baseUrl: process.env.BUCKEYE_BASE_URL,
+              baseUrl: env.BUCKEYE_BASE_URL,
               cfCookie: msg.cfCookie,
             }, msg.token);
 
             if (resumed) {
+              await secretVault.saveBuckeyeSecrets({
+                agentId: msg.agentId,
+                password: msg.password || undefined,
+                cfCookie: msg.cfCookie,
+                token: msg.token,
+              });
               ws.data.isAuthenticated = true;
               // Issue a fresh JWT
               let jwtToken = '';
@@ -278,7 +254,7 @@ async function handleWebSocketMessage(
           await scraperManager.startAgent(msg.agentId, {
             agentId: msg.agentId,
             password: msg.password,
-            baseUrl: process.env.BUCKEYE_BASE_URL,
+            baseUrl: env.BUCKEYE_BASE_URL,
             cfCookie: msg.cfCookie,
           });
         } catch (err) {
@@ -293,17 +269,15 @@ async function handleWebSocketMessage(
           return;
         }
 
-        // Store credentials for idle reconnect
-        lastCredentials = {
-          agentId: msg.agentId,
-          password: msg.password,
-          baseUrl: process.env.BUCKEYE_BASE_URL,
-          cfCookie: msg.cfCookie,
-        };
-
         // Get token from the agent
         const agentInstance = scraperManager.getAgentInstance(msg.agentId);
         const buckeyeToken = agentInstance?.api.getToken() || '';
+        await secretVault.saveBuckeyeSecrets({
+          agentId: msg.agentId,
+          password: msg.password,
+          cfCookie: msg.cfCookie,
+          token: buckeyeToken,
+        });
 
         // Issue our own JWT for future reconnections
         let jwtToken = '';

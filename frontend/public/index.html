@@ -680,6 +680,18 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
                 <p class="text-xs mt-1" style="color:var(--text-dim);">Open DevTools > Application > Cookies > fantasy402.com > copy cf_clearance value</p>
               </div>
             </div>
+            <div class="rounded p-3 text-xs flex items-start justify-between gap-3" style="background:var(--bg);border:1px solid var(--border);">
+              <div class="min-w-0 flex-1">
+                <div class="font-semibold" style="color:var(--text);">Vault</div>
+                <div id="vaultStatusText" class="mt-1" style="color:var(--text-dim);">Checking OS vault...</div>
+                <div id="vaultAgentList" class="mt-2 space-y-1"></div>
+                <p class="mt-2" style="color:var(--text-dim);">Backend continues ingesting vaulted agents while the server is running.</p>
+              </div>
+              <div class="flex gap-2 shrink-0">
+                <button class="px-3 py-1.5 rounded text-xs font-medium" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onclick="refreshVaultStatus()">Check</button>
+                <button class="px-3 py-1.5 rounded text-xs font-medium" style="background:var(--red);color:#fff;" onclick="logoutBuckeyeVault()">Logout</button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1033,10 +1045,6 @@ class TerminalWebSocketClient {
       console.log('[WS] Connected to', this.url);
       this.reconnectAttempts = 0;
       updateWSStatus(true);
-      // Auto-authenticate if we have stored credentials
-      if (this.agentId) {
-        this.authenticate(this.agentId, localStorage.getItem('username') || '', localStorage.getItem('password') || '');
-      }
     };
 
     this.ws.onmessage = (e) => {
@@ -1419,19 +1427,19 @@ function detectMarketType(wagerOrDesc) {
 document.addEventListener('DOMContentLoaded', () => {
   // Load saved settings into form
   const savedAgent = localStorage.getItem('agentId') || '';
-  const savedPass = localStorage.getItem('password') || '';
   const savedBase = localStorage.getItem('baseUrl') || 'https://fantasy402.com';
-  const savedCf = localStorage.getItem('cfCookie') || '';
   const savedRetainedRisk = localStorage.getItem('retainedRiskPercent') || '100';
+  localStorage.removeItem('password');
+  localStorage.removeItem('cfCookie');
   const agentInput = document.getElementById('settingsAgentId');
   const passInput = document.getElementById('settingsPassword');
   const baseInput = document.getElementById('settingsBaseUrl');
   const cfInput = document.getElementById('settingsCfCookie');
   const retainedRiskInput = document.getElementById('retainedRiskPercent');
   if (agentInput) agentInput.value = savedAgent;
-  if (passInput) passInput.value = savedPass;
+  if (passInput) passInput.value = '';
   if (baseInput) baseInput.value = savedBase;
-  if (cfInput) cfInput.value = savedCf;
+  if (cfInput) cfInput.value = '';
   if (retainedRiskInput) retainedRiskInput.value = savedRetainedRisk;
 
   const playerSearchTable = document.getElementById('playerSearchTable');
@@ -1450,22 +1458,9 @@ document.addEventListener('DOMContentLoaded', () => {
   if (toastToggle) toastToggle.checked = localStorage.getItem('toastsEnabled') !== 'false';
   updateAlertsToastButton();
   updateTopBarStatus();
+  refreshVaultStatus();
 
-  // Auto-connect on startup if enabled and credentials exist
-  if (localStorage.getItem('autoConnect') !== 'false' && savedAgent && savedPass) {
-    setTimeout(() => {
-      const token = localStorage.getItem('buckeyeToken');
-      const lastAuth = parseInt(localStorage.getItem('lastAuthTime') || '0');
-      const tokenFresh = token && (Date.now() - lastAuth < 10 * 60 * 1000); // 10 min
-      if (tokenFresh) {
-        console.log('[AutoConnect] Resuming session with stored token');
-        resumeSession(savedAgent, savedPass, savedBase, savedCf, token);
-      } else {
-        console.log('[AutoConnect] Starting fresh connection');
-        saveAndConnect(savedAgent, savedPass, savedBase, savedCf);
-      }
-    }, 1500);
-  }
+  // Buckeye secrets live in the backend OS vault; the browser no longer stores them.
 
   // Load Buckeye static data if available
   // Note: buckeye_data.js amounts are in cents (from API); convert to dollars
@@ -3974,13 +3969,11 @@ function toggleAuthModal() {
   const modal = document.getElementById('authModal');
   const content = document.getElementById('authModalContent');
   const savedAgent = localStorage.getItem('agentId') || '';
-  const savedPass = localStorage.getItem('password') || '';
-  const savedCf = localStorage.getItem('cfCookie') || '';
   content.innerHTML = `
     <div class="space-y-3">
       <div><label class="text-xs" style="color:var(--text-dim);">Agent ID</label><input id="modalAgentId" type="text" value="${savedAgent}" class="w-full mt-1 text-sm px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" placeholder="Enter agent ID"></div>
-      <div><label class="text-xs" style="color:var(--text-dim);">Password</label><input id="modalPassword" type="password" value="${savedPass}" class="w-full mt-1 text-sm px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" placeholder="Enter password"></div>
-      <div><label class="text-xs" style="color:var(--text-dim);">Cloudflare Cookie (optional)</label><input id="modalCfCookie" type="text" value="${savedCf}" class="w-full mt-1 text-sm px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" placeholder="Paste cf_clearance"></div>
+      <div><label class="text-xs" style="color:var(--text-dim);">Password</label><input id="modalPassword" type="password" value="" class="w-full mt-1 text-sm px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" placeholder="Enter password"></div>
+      <div><label class="text-xs" style="color:var(--text-dim);">Cloudflare Cookie (optional)</label><input id="modalCfCookie" type="text" value="" class="w-full mt-1 text-sm px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" placeholder="Paste cf_clearance"></div>
       <button class="w-full py-2 rounded-lg text-sm font-medium" style="background:var(--accent);color:#fff;" onclick="modalSignIn()">Connect to Buckeye</button>
       <button class="w-full py-2 rounded-lg text-sm font-medium" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onclick="openBuckeyeForCookie()">Open Buckeye to Get Cookie</button>
     </div>`;
@@ -4052,15 +4045,8 @@ function closePosition(game) {
 }
 
 function connectBuckeye() {
-  const agentId = localStorage.getItem('agentId');
-  const password = localStorage.getItem('password');
-  const cfCookie = localStorage.getItem('cfCookie');
-  if (agentId && password) {
-    saveAndConnect(agentId, password, null, cfCookie);
-  } else {
-    showBuckeyeSettings();
-    showToast('Enter your credentials in Settings first', 'warning');
-  }
+  showBuckeyeSettings();
+  showToast('Enter credentials once; the backend stores them in the OS vault after login.', 'info');
 }
 
 function disconnectBuckeye() {
@@ -4097,9 +4083,9 @@ function saveSettings() {
   }
 
   localStorage.setItem('agentId', agentId);
-  localStorage.setItem('password', password);
   localStorage.setItem('baseUrl', baseUrl);
-  localStorage.setItem('cfCookie', cfCookie);
+  localStorage.removeItem('password');
+  localStorage.removeItem('cfCookie');
   localStorage.setItem('retainedRiskPercent', String(retainedRisk));
   computeSportExposureLocal();
   computeAgentExposureLocal();
@@ -4119,6 +4105,74 @@ function getApiBaseUrl() {
     return 'http://localhost:3000';
   }
   return `${window.location.protocol}//${window.location.host}`;
+}
+
+async function refreshVaultStatus() {
+  const el = document.getElementById('vaultStatusText');
+  const listEl = document.getElementById('vaultAgentList');
+  if (!el) return;
+  try {
+    const url = new URL(`${getApiBaseUrl()}/api/buckeye/vault-status`);
+    const res = await fetch(url);
+    const status = await res.json();
+    if (listEl) listEl.innerHTML = '';
+    if (!status.available) {
+      el.textContent = 'OS vault unavailable';
+      el.style.color = 'var(--yellow)';
+      return;
+    }
+    const agents = Array.isArray(status.agents) ? status.agents : (status.agentId ? [status] : []);
+    if (!agents.length) {
+      el.textContent = 'No Buckeye secrets stored';
+      el.style.color = 'var(--text-dim)';
+      return;
+    }
+    const activeCount = agents.filter(agent => agent.active).length;
+    el.textContent = `${agents.length} vaulted agent${agents.length === 1 ? '' : 's'} | ${activeCount} ingesting`;
+    el.style.color = activeCount ? 'var(--green)' : 'var(--yellow)';
+    if (listEl) {
+      listEl.innerHTML = agents.map(agent => {
+        const flags = [
+          agent.hasPassword ? 'password' : null,
+          agent.hasCfCookie ? 'cookie' : null,
+          agent.hasToken ? 'token' : null,
+          agent.active ? 'active' : null,
+        ].filter(Boolean);
+        const flagText = flags.length ? flags.join(' + ') : 'no usable secrets';
+        const color = agent.active ? 'var(--green)' : (flags.length ? 'var(--yellow)' : 'var(--text-dim)');
+        const error = agent.lastError ? `<span style="color:var(--red);"> | ${escapeHtml(agent.lastError)}</span>` : '';
+        return `<div class="flex items-center justify-between gap-2 rounded px-2 py-1" style="background:var(--panel);border:1px solid var(--border);">
+          <span class="font-mono" style="color:var(--text);">${escapeHtml(agent.agentId || 'Unknown')}</span>
+          <span style="color:${color};">${escapeHtml(flagText)}${error}</span>
+        </div>`;
+      }).join('');
+    }
+  } catch {
+    el.textContent = 'Vault status unavailable';
+    el.style.color = 'var(--yellow)';
+    if (listEl) listEl.innerHTML = '';
+  }
+}
+
+async function logoutBuckeyeVault() {
+  const agentId = document.getElementById('settingsAgentId')?.value?.trim() || localStorage.getItem('agentId') || '';
+  if (!agentId) {
+    showToast('Select an agent before logging out of the vault', 'warning');
+    return;
+  }
+  try {
+    const url = new URL(`${getApiBaseUrl()}/api/buckeye/vault-status`);
+    url.searchParams.set('agentId', agentId);
+    await fetch(url, { method: 'DELETE' });
+    if (wsClient?.ws) wsClient.ws.close();
+    localStorage.removeItem('buckeyeToken');
+    localStorage.removeItem('lastAuthTime');
+    updateConnectionStatus('disconnected');
+    await refreshVaultStatus();
+    showToast(`Buckeye vault credentials cleared for ${agentId}`, 'success');
+  } catch {
+    showToast('Could not clear Buckeye vault credentials', 'error');
+  }
 }
 
 async function testConnection() {
@@ -4156,9 +4210,9 @@ async function testConnection() {
 
 function saveAndConnect(agentId, password, baseUrl, cfCookie) {
   localStorage.setItem('agentId', agentId);
-  localStorage.setItem('password', password);
   if (baseUrl) localStorage.setItem('baseUrl', baseUrl);
-  if (cfCookie) localStorage.setItem('cfCookie', cfCookie);
+  localStorage.removeItem('password');
+  localStorage.removeItem('cfCookie');
 
   updateConnectionStatus('connecting');
   showToast('Connecting to Buckeye...', 'info');
@@ -4176,9 +4230,9 @@ function saveAndConnect(agentId, password, baseUrl, cfCookie) {
 
 function resumeSession(agentId, password, baseUrl, cfCookie, token) {
   localStorage.setItem('agentId', agentId);
-  localStorage.setItem('password', password);
   if (baseUrl) localStorage.setItem('baseUrl', baseUrl);
-  if (cfCookie) localStorage.setItem('cfCookie', cfCookie);
+  localStorage.removeItem('password');
+  localStorage.removeItem('cfCookie');
 
   updateConnectionStatus('connecting');
   showToast('Resuming session...', 'info');
@@ -4196,11 +4250,8 @@ function resumeSession(agentId, password, baseUrl, cfCookie, token) {
 
 function attemptAutoReconnect() {
   const agentId = localStorage.getItem('agentId');
-  const password = localStorage.getItem('password');
-  const cfCookie = localStorage.getItem('cfCookie');
-  if (agentId && password) {
-    showToast('Auto-reconnecting...', 'info');
-    saveAndConnect(agentId, password, null, cfCookie);
+  if (agentId) {
+    showToast('Reconnect from Settings if the backend vault has not restored the session.', 'info');
   }
 }
 

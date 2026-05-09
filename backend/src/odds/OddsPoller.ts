@@ -8,6 +8,7 @@ import type { Database } from '../database';
 import type { OddsProvider, EventOdds, LineMovement, BookHealth } from './types';
 import { DemoOddsProvider } from './providers/DemoOddsProvider';
 import { TheOddsProvider } from './providers/TheOddsApiProvider';
+import { createManagedInterval, type ManagedIntervalTask } from '../services/Scheduler';
 
 type PatternSeverity = 'info' | 'warning' | 'critical';
 
@@ -28,8 +29,8 @@ interface DetectedPattern {
 export class OddsPoller {
   private db: Database;
   private provider: OddsProvider;
-  private intervalId: ReturnType<typeof setInterval> | null = null;
-  private healthIntervalId: ReturnType<typeof setInterval> | null = null;
+  private pollTask: ManagedIntervalTask | null = null;
+  private healthTask: ManagedIntervalTask | null = null;
   private pollIntervalMs: number = 30000; // 30 seconds
   private healthIntervalMs: number = 60000; // 60 seconds
   private lastOdds: EventOdds[] = [];
@@ -50,27 +51,23 @@ export class OddsPoller {
   }
 
   start(): void {
-    if (this.intervalId) return;
+    if (this.pollTask?.isRunning()) return;
 
-    this.intervalId = setInterval(() => this.poll(), this.pollIntervalMs);
-    this.healthIntervalId = setInterval(() => this.checkHealth(), this.healthIntervalMs);
-
-    // Immediate first poll (use setTimeout to avoid microtask cascade)
-    setTimeout(() => this.poll(), 0);
-    setTimeout(() => this.checkHealth(), 100);
+    this.pollTask = createManagedInterval('odds.poll', this.pollIntervalMs, () => this.poll(), {
+      initialDelayMs: 0,
+    });
+    this.healthTask = createManagedInterval('odds.health', this.healthIntervalMs, () => this.checkHealth(), {
+      initialDelayMs: 100,
+    });
 
     console.log(`[OddsPoller] Started polling every ${this.pollIntervalMs}ms`);
   }
 
   stop(): void {
-    if (this.intervalId) {
-      clearInterval(this.intervalId);
-      this.intervalId = null;
-    }
-    if (this.healthIntervalId) {
-      clearInterval(this.healthIntervalId);
-      this.healthIntervalId = null;
-    }
+    this.pollTask?.stop();
+    this.healthTask?.stop();
+    this.pollTask = null;
+    this.healthTask = null;
     console.log('[OddsPoller] Stopped');
   }
 

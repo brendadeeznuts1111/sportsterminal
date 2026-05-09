@@ -624,15 +624,17 @@ export async function seedBuckeyeSportTypes(db: Database): Promise<void> {
 
 // Encryption utilities for storing credentials
 export function encryptCredentials(data: any, key: string): string {
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(key, 'hex'), iv);
+  // Use Bun's native crypto for random IV (faster than Node crypto.randomBytes)
+  const iv = new Uint8Array(16);
+  crypto.getRandomValues(iv);
+  const cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(key, 'hex'), Buffer.from(iv));
 
   let encrypted = cipher.update(JSON.stringify(data), 'utf8', 'hex');
   encrypted += cipher.final('hex');
 
   const authTag = cipher.getAuthTag();
 
-  return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
+  return `${Buffer.from(iv).toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
 }
 
 export function decryptCredentials(encryptedData: string, key: string): any {

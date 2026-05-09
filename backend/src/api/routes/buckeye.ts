@@ -4,12 +4,72 @@
 import { clampInt, readJsonBody, handleAsync, corsHeaders } from '../helpers';
 import { BuckeyeAPI } from '../../scrapers/BuckeyeAPI';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
+import type { BuckeyeSecretStatus, BunSecretVault } from '../../services/BunSecretVault';
 
 export function registerBuckeyeRoutes(
   url: URL,
   request: Request,
-  scraperManager: BuckeyeScraperManager
+  scraperManager: BuckeyeScraperManager,
+  secretVault?: BunSecretVault
 ): Response | null {
+  if (url.pathname === '/api/buckeye/vault-status') {
+    if (request.method === 'GET') {
+      return handleAsync(async () => {
+        if (!secretVault) {
+          return {
+            available: false,
+            agents: [],
+          };
+        }
+        const agentId = url.searchParams.get('agentId') || undefined;
+        const status = await secretVault.getBuckeyeSecretStatus(agentId);
+
+        if (Array.isArray(status)) {
+          return {
+            available: true,
+            agents: status.map((entry) => decorateVaultStatus(entry, scraperManager)),
+          };
+        }
+
+        return { available: true, ...decorateVaultStatus(status, scraperManager) };
+      }, corsHeaders);
+    }
+    if (request.method === 'DELETE' || request.method === 'POST') {
+      return handleAsync(async () => {
+        if (!secretVault) {
+          return { success: false, message: 'Secret vault unavailable' };
+        }
+        const body = request.method === 'POST' ? await readJsonBody(request) : {};
+        const clearAll = url.searchParams.get('all') === '1' || body.all === true || body.all === '1';
+        if (clearAll) {
+          const agentIds = await secretVault.getBuckeyeAgentIds();
+          await secretVault.clearAllBuckeyeSecrets();
+          for (const agentId of agentIds) {
+            scraperManager.stopAgent(agentId);
+          }
+          return {
+            success: true,
+            cleared: 'all',
+            count: agentIds.length,
+            message: 'All Buckeye vault credentials cleared',
+          };
+        }
+
+        const agentId = url.searchParams.get('agentId') || body.agentId || undefined;
+        const normalizedAgentId = agentId ? String(agentId).trim().toUpperCase() : undefined;
+        await secretVault.clearBuckeyeSecrets(agentId);
+        if (normalizedAgentId) {
+          scraperManager.stopAgent(normalizedAgentId);
+        }
+        return {
+          success: true,
+          agentId: normalizedAgentId || null,
+          message: 'Buckeye vault credentials cleared',
+        };
+      }, corsHeaders);
+    }
+  }
+
   // Buckeye language/theme config
   if (url.pathname === '/api/buckeye/ui-config') {
     if (request.method === 'GET') {
@@ -313,6 +373,16 @@ export function registerBuckeyeRoutes(
   }
 
   return null;
+}
+
+function decorateVaultStatus(status: BuckeyeSecretStatus, scraperManager: BuckeyeScraperManager): BuckeyeSecretStatus & {
+  active: boolean;
+  lastError?: string;
+} {
+  const agentId = status.agentId || '';
+  const active = agentId ? scraperManager.isAgentActive(agentId) : false;
+  const lastError = agentId ? scraperManager.getAgentLastError(agentId) : undefined;
+  return lastError ? { ...status, active, lastError } : { ...status, active };
 }
 
 const BUCKEYE_AGENT_PERFORMANCE_OPTIONS = {

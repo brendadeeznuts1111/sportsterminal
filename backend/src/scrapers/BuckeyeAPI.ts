@@ -876,6 +876,10 @@ export class BuckeyeAPI {
     return this.token;
   }
 
+  getCookie(): string {
+    return this.cfCookie;
+  }
+
   /**
    * Accept or decline a wager through the Buckeye bet ticker action API.
    * Endpoint: /cloud/api/Manager/betTickerAction

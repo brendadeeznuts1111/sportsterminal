@@ -19,19 +19,22 @@ import { WebhookService } from '../services/WebhookService';
 import { PatternService } from '../patterns/PatternService';
 import { ActionQueue } from '../actions/ActionQueue';
 import { backfillAgentsAndPlayers } from '../services/HierarchyBackfillService';
+import type { BunSecretVault } from '../services/BunSecretVault';
+import { createManagedInterval, type ManagedIntervalTask } from '../services/Scheduler';
 
 interface AgentInstance {
   api: BuckeyeAPI;
-  intervalId: ReturnType<typeof setInterval>;
-  renewalId: ReturnType<typeof setInterval>;
-  accessLogId?: ReturnType<typeof setInterval>;
-  performanceId?: ReturnType<typeof setInterval>;
+  pollTask: ManagedIntervalTask;
+  renewalTask: ManagedIntervalTask;
+  accessLogTask?: ManagedIntervalTask;
+  performanceTask?: ManagedIntervalTask;
   credentials: BuckeyeCredentials;
   lastPoll: number;
   errorCount: number;
   consecutiveErrors: number;
   currentPollMs: number;
   reloginAttempts: number;
+  lastError?: string;
   liveTree?: LiveAgentTree;
   isPolling: boolean; // guard against concurrent polls
 }
@@ -60,13 +63,20 @@ export class BuckeyeScraperManager {
   private wagerCount: number = 0;
   private alertCount: number = 0;
   private errorCount: number = 0;
+  private secretVault?: BunSecretVault;
 
   private debugMode: boolean;
 
-  constructor(db: Database, broadcast: (msg: object) => void, debugMode: boolean = false) {
+  constructor(
+    db: Database,
+    broadcast: (msg: object) => void,
+    debugMode: boolean = false,
+    secretVault?: BunSecretVault
+  ) {
     this.db = db;
     this.broadcast = broadcast;
     this.debugMode = debugMode;
+    this.secretVault = secretVault;
     this.webhookService = new WebhookService(db);
     this.patternService = new PatternService(db, broadcast);
     this.actionQueue = new ActionQueue(db, broadcast, 30_000, async (request) => this.executeBetAction(request));
@@ -89,14 +99,17 @@ export class BuckeyeScraperManager {
 
     const instance: AgentInstance = {
       api,
-      intervalId: setInterval(() => this.pollAgent(agentId), this.pollIntervalMs),
-      renewalId: setInterval(() => this.renewToken(agentId), this.tokenRenewalMs),
+      pollTask: createManagedInterval(`buckeye.${agentId}.bets`, this.pollIntervalMs, () => this.pollAgent(agentId), {
+        initialDelayMs: 0,
+      }),
+      renewalTask: createManagedInterval(`buckeye.${agentId}.renewal`, this.tokenRenewalMs, () => this.renewToken(agentId)),
       credentials,
       lastPoll: Date.now(),
       errorCount: 0,
       consecutiveErrors: 0,
       currentPollMs: this.pollIntervalMs,
       reloginAttempts: 0,
+      lastError: undefined,
       isPolling: false,
     };
 
@@ -106,10 +119,6 @@ export class BuckeyeScraperManager {
     this.startPerformancePolling(agentId, instance);
     console.log(`[Manager] Started polling for ${agentId} every ${this.pollIntervalMs}ms`);
 
-    // Fire first poll immediately (not via setImmediate to avoid microtask cascade)
-    setTimeout(() => this.pollAgent(agentId), 0);
-    setTimeout(() => this.refreshAccessLogs(agentId).catch(err => console.warn(`[Manager] Access log refresh failed for ${agentId}:`, err.message)), 1000);
-    setTimeout(() => this.refreshAgentPerformance(agentId).catch(err => console.warn(`[Manager] Agent performance refresh failed for ${agentId}:`, err.message)), 2000);
   }
 
   /**
@@ -136,14 +145,17 @@ export class BuckeyeScraperManager {
 
     const instance: AgentInstance = {
       api,
-      intervalId: setInterval(() => this.pollAgent(agentId), this.pollIntervalMs),
-      renewalId: setInterval(() => this.renewToken(agentId), this.tokenRenewalMs),
+      pollTask: createManagedInterval(`buckeye.${agentId}.bets`, this.pollIntervalMs, () => this.pollAgent(agentId), {
+        initialDelayMs: 0,
+      }),
+      renewalTask: createManagedInterval(`buckeye.${agentId}.renewal`, this.tokenRenewalMs, () => this.renewToken(agentId)),
       credentials,
       lastPoll: Date.now(),
       errorCount: 0,
       consecutiveErrors: 0,
       currentPollMs: this.pollIntervalMs,
       reloginAttempts: 0,
+      lastError: undefined,
       isPolling: false,
     };
 
@@ -153,10 +165,6 @@ export class BuckeyeScraperManager {
     this.startPerformancePolling(agentId, instance);
     console.log(`[Manager] Resumed session for ${agentId}`);
 
-    // Fire first poll immediately
-    setTimeout(() => this.pollAgent(agentId), 0);
-    setTimeout(() => this.refreshAccessLogs(agentId).catch(err => console.warn(`[Manager] Access log refresh failed for ${agentId}:`, err.message)), 1000);
-    setTimeout(() => this.refreshAgentPerformance(agentId).catch(err => console.warn(`[Manager] Agent performance refresh failed for ${agentId}:`, err.message)), 2000);
     return true;
   }
 
@@ -168,6 +176,14 @@ export class BuckeyeScraperManager {
     return Array.from(this.agents.keys());
   }
 
+  isAgentActive(agentId: string): boolean {
+    return this.agents.has(agentId);
+  }
+
+  getAgentLastError(agentId: string): string | undefined {
+    return this.agents.get(agentId)?.lastError;
+  }
+
   /**
    * Stop polling for an agent.
    */
@@ -175,10 +191,10 @@ export class BuckeyeScraperManager {
     const instance = this.agents.get(agentId);
     if (!instance) return;
 
-    clearInterval(instance.intervalId);
-    clearInterval(instance.renewalId);
-    if (instance.accessLogId) clearInterval(instance.accessLogId);
-    if (instance.performanceId) clearInterval(instance.performanceId);
+    instance.pollTask.stop();
+    instance.renewalTask.stop();
+    instance.accessLogTask?.stop();
+    instance.performanceTask?.stop();
     this.actionQueue.clearAgent(agentId);
     this.agents.delete(agentId);
     console.log(`[Manager] Stopped polling for ${agentId}`);
@@ -994,8 +1010,7 @@ export class BuckeyeScraperManager {
       // Reset poll interval to normal on success
       if (instance.currentPollMs !== this.pollIntervalMs) {
         instance.currentPollMs = this.pollIntervalMs;
-        clearInterval(instance.intervalId);
-        instance.intervalId = setInterval(() => this.pollAgent(agentId), instance.currentPollMs);
+        instance.pollTask.restart(instance.currentPollMs);
       }
 
       const changes = instance.api.detectChanges(wagers);
@@ -1047,6 +1062,7 @@ export class BuckeyeScraperManager {
       instance.errorCount++;
       instance.consecutiveErrors++;
       this.errorCount++;
+      instance.lastError = error instanceof Error ? error.message : String(error);
       console.error(`[Manager] Poll error for ${agentId}:`, error);
 
       // Backoff: increase poll interval on consecutive errors
@@ -1056,8 +1072,7 @@ export class BuckeyeScraperManager {
       );
       if (backoffMs !== instance.currentPollMs) {
         instance.currentPollMs = backoffMs;
-        clearInterval(instance.intervalId);
-        instance.intervalId = setInterval(() => this.pollAgent(agentId), instance.currentPollMs);
+        instance.pollTask.restart(instance.currentPollMs);
         console.log(`[Manager] Backing off ${agentId} to ${backoffMs}ms`);
       }
 
@@ -1094,9 +1109,31 @@ export class BuckeyeScraperManager {
     if (!instance) return;
 
     const ok = await instance.api.renewToken();
-    if (!ok) {
-      console.warn(`[Manager] Token renewal failed for ${agentId}, will re-auth on next poll`);
+    if (ok) {
+      instance.lastError = undefined;
+      await this.saveAgentSecrets(agentId, instance);
+      return;
     }
+
+    console.warn(`[Manager] Token renewal failed for ${agentId}, attempting password re-login`);
+    const reloginOk = await instance.api.login();
+    if (reloginOk) {
+      instance.lastError = undefined;
+      await this.saveAgentSecrets(agentId, instance);
+    } else {
+      instance.lastError = 'Token renewal and password re-login failed';
+      console.warn(`[Manager] Password re-login failed for ${agentId}; will retry on next renewal`);
+    }
+  }
+
+  private async saveAgentSecrets(agentId: string, instance: AgentInstance): Promise<void> {
+    if (!this.secretVault) return;
+    await this.secretVault.saveBuckeyeSecrets({
+      agentId,
+      password: instance.credentials.password || undefined,
+      cfCookie: instance.api.getCookie() || instance.credentials.cfCookie,
+      token: instance.api.getToken(),
+    });
   }
 
   /**
@@ -1174,21 +1211,29 @@ export class BuckeyeScraperManager {
   }
 
   private startAccessLogPolling(agentId: string, instance: AgentInstance): void {
-    if (instance.accessLogId) clearInterval(instance.accessLogId);
-    instance.accessLogId = setInterval(() => {
-      this.refreshAccessLogs(agentId).catch(err => {
-        console.warn(`[Manager] Access log refresh failed for ${agentId}:`, err.message);
-      });
-    }, this.accessLogIntervalMs);
+    instance.accessLogTask?.stop();
+    instance.accessLogTask = createManagedInterval(
+      `buckeye.${agentId}.accessLogs`,
+      this.accessLogIntervalMs,
+      () => this.refreshAccessLogs(agentId).then(() => undefined),
+      {
+        initialDelayMs: 1000,
+        onError: (err) => console.warn(`[Manager] Access log refresh failed for ${agentId}:`, err instanceof Error ? err.message : err),
+      }
+    );
   }
 
   private startPerformancePolling(agentId: string, instance: AgentInstance): void {
-    if (instance.performanceId) clearInterval(instance.performanceId);
-    instance.performanceId = setInterval(() => {
-      this.refreshAgentPerformance(agentId).catch(err => {
-        console.warn(`[Manager] Agent performance refresh failed for ${agentId}:`, err.message);
-      });
-    }, this.performanceIntervalMs);
+    instance.performanceTask?.stop();
+    instance.performanceTask = createManagedInterval(
+      `buckeye.${agentId}.performance`,
+      this.performanceIntervalMs,
+      () => this.refreshAgentPerformance(agentId).then(() => undefined),
+      {
+        initialDelayMs: 2000,
+        onError: (err) => console.warn(`[Manager] Agent performance refresh failed for ${agentId}:`, err instanceof Error ? err.message : err),
+      }
+    );
   }
 
   private async refreshAgentPerformance(agentId: string): Promise<{ rows: number; checkpointed: boolean }> {
