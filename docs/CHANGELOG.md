@@ -13,6 +13,7 @@
 
 ### Changed
 
+- Player 360 frontend rendering is being split into focused browser modules: transaction/free-play rendering now lives in `player-transactions.js`, Docs/data-map rendering lives in `player-docs.js`, and shared escaping/formatting helpers live in `utils.js`.
 - Player 360 source status is per-player: `wager_archive` is live only when archive rows exist for that player; deposits and customer snapshots remain probe/missing until rows or validated probes exist.
 - Profile Tab Coverage now shows the weakest required source timestamp as Recent Update plus the refresh-policy summary for each tab.
 - Player performance enrichment now probes `getPerformancePlayer` with `acc=<player/account>&period=0` before relying on broader agent-performance rows.

@@ -5,7 +5,7 @@
 > Runtime: **Bun 1.3.13+**
 > Database: **Bun.SQL SQLite wrapper**
 > Auth: **JWT (HS256) + Buckeye OS vault through Bun.secrets**
-> Latest full verification: **95 passing, 4 intentionally skipped + build clean**
+> Latest full verification: **108 passing, 4 intentionally skipped + build clean**
 
 ---
 
@@ -20,7 +20,7 @@ Key current pillars:
 - Pattern detection and history across odds, wagers, agents, IP, live timing, and feed risk.
 - Odds grid with live-provider support, book health, movements, best-line highlighting, and pattern hooks. Synthetic odds are dev/test-only behind `ODDS_DEMO_MODE=true`.
 - Alert center, webhook delivery, status page, and operational health endpoints.
-- Player 360 profile modal with real API-only hydration, source coverage, field-contract mapping, explicit gaps, endpoint health, and mismatch tracking.
+- Player 360 profile modal with real API-only hydration, source coverage, field-contract mapping, explicit gaps, endpoint health, mismatch tracking, and focused frontend modules for transaction and Docs/data-map rendering.
 - Project docs reorganized into README, Buckeye scope, implementation tracker, changelog, and project organization guide.
 
 ---
@@ -178,6 +178,13 @@ Follow-ups:
 | `docs/CHANGELOG.md` | Chronological release notes | Current |
 | `docs/CODE_QUALITY_CHECKLIST.md` | Review checks before handoff | Current |
 | `docs/archive/legacy/DEVELOPMENT_ROADMAP_2026-05-08.md` | Historical roadmap/audit | Archived |
+
+Frontend module notes:
+
+- `frontend/public/js/app.js` remains the compatibility host for legacy inline handlers and shared state wiring.
+- `frontend/public/js/player-transactions.js` owns Player 360 ledger and Free-Play sub-tab rendering.
+- `frontend/public/js/player-docs.js` owns the Player 360 Docs tab and live intelligence-map display.
+- `frontend/public/js/utils.js` owns shared escaping, formatting, money, and DOM text helpers.
 
 ---
 

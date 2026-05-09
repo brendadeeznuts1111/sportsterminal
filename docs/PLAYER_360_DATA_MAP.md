@@ -4,6 +4,19 @@ Player 360 is real API first. The modal must hydrate from `/api/v1/players/:play
 
 Buckeye's public `manual-agent.pdf` and `FAQ.pdf` confirm the UI/report semantics behind the Player 360 sources. See `docs/BUCKEYE_MANUAL_FINDINGS.md` for the reviewed notes.
 
+## Frontend Module Map
+
+Player 360 rendering is being extracted from the legacy `app.js` host into focused browser modules while preserving the existing API/data contracts:
+
+| Module | Responsibility |
+|---|---|
+| `frontend/public/js/app.js` | Compatibility host, global inline-handler bridge, profile lifecycle, and shared state wiring. |
+| `frontend/public/js/player-transactions.js` | Transaction ledger and Free-Play sub-tab rendering from `/profile`, `/transactions?category=freeplay`, and `/api/v1/freeplay/analysis`-compatible fields. |
+| `frontend/public/js/player-docs.js` | Docs tab renderer for the live `/api/v1/players/:playerId/intelligence-map` data map, source coverage, gaps, and field contract. |
+| `frontend/public/js/utils.js` | Shared escaping, date, money, compact-dollar, and DOM text helpers used by Player 360 and broader dashboards. |
+
+New Player 360 UI work should prefer a focused module with explicit dependency injection from `app.js` instead of adding another large inline renderer to the compatibility host.
+
 ## Refresh And Scale Model
 
 Player 360 uses a hybrid hotset model. `getBetTicker` remains real-time and cheap enough to run continuously. Heavy player endpoints are TTL-based and on-demand so a 50k-customer archive does not trigger 50k profile, ledger, or KYC calls.

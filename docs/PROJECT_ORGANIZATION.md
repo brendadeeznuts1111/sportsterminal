@@ -78,14 +78,16 @@ Reference `.docx` files live in `docs/archive/reference/`. Raw markdown exports 
 
 ## Frontend Organization
 
-The frontend is a single HTML file today. Keep it navigable:
+The frontend shell is static HTML with browser modules under `frontend/public/js/`. Keep the split moving in small, contract-preserving slices:
 
-- Put sidebar buttons near the matching section markup.
+- Keep `app.js` as the compatibility host for legacy inline handlers while extracting coherent feature renderers into focused modules.
+- Put shared formatting, escaping, and DOM helpers in `utils.js`.
+- Put Player 360 feature surfaces in `player-*.js` modules, such as `player-transactions.js` and `player-docs.js`, with dependencies injected from `app.js`.
 - Keep section rendering functions named `render...` or `load...`.
-- Use data attributes and delegated event listeners instead of unsafe inline dynamic JavaScript.
+- Use data attributes and delegated event listeners instead of adding new inline dynamic JavaScript.
 - Escape external text before rendering.
 - Keep cards for real repeated items or panels; avoid nested card layouts.
-- Update the UI Map in `README.md` when sidebar tabs change.
+- Update the UI Map in `README.md` and `docs/PLAYER_360_DATA_MAP.md` when sidebar tabs, Player 360 fields, or endpoint contracts change.
 
 ## Documentation Handoff Checklist
 
