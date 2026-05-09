@@ -382,6 +382,19 @@ Seeded sports type list.
 
 Full manager bootstrap snapshot.
 
+### `GET /api/buckeye/players-list`
+
+Live player/customer list from Buckeye (`getPlayers`). Returns `LIST` array with `customerID`, `Login`, `NameFirst`, `Password`, `Agent`. No `SeqNumber` field is present — players do not have sequence numbers in the Buckeye API.
+
+**Response 200:**
+```json
+{
+  "LIST": [
+    {"customerID": "S844", "Login": "S844", "NameFirst": "Laney Naramore", "Password": "Cliffy123", "Agent": "CSUTT"}
+  ]
+}
+```
+
 ### `POST /api/connect`
 
 Authenticate and start polling for a Buckeye agent.

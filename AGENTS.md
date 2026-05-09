@@ -191,7 +191,7 @@ Every sidebar tab, its zone, and current implementation status.
 
 | Tab | Zone | Status | Description |
 |-----|------|--------|-------------|
-| **Downline** | Zone 4 | ✅ Full | Agent hierarchy derived from wager data, stats cards, sortable agent table, customer drill-down with volume % |
+| **Agent Hierarchy** | Zone 4 | ✅ Full | Full recursive agent tree (Ctrl+7) from `agent_hierarchy` table: 2,288 agents, 3 roots, max depth 17, with seq_numbers, commission rates, player counts, collapsible tree canvas |
 | **Player Search** | Zone 4 | ✅ Full | Search players by login, list with P&L/exposure, click-through to Player Detail |
 | **Player Detail** | Zone 4 | ✅ Full | Stats cards, 7-day P&L bars, wager breakdown, recent wagers table. Navigated from Player Search or wager table. |
 

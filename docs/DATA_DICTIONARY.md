@@ -627,6 +627,7 @@ Rugby, Soccer, Tennis, Virtual Sports
 | `login` | Player login |
 | `display_name` | UI display name |
 | `agent_login` | Raw agent login from export/source |
+| `seq_number` | Source sequence number when available (Buckeye API does not provide player SeqNumbers; column reserved for future compatibility) |
 | `net_pnl`, `ytd_pnl` | Performance fields when available |
 | `exposure` | Current/projected exposure |
 | `credit_limit` | Player credit limit when available |
