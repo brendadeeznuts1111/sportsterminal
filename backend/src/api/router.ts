@@ -6,10 +6,31 @@
 import { corsHeaders } from './helpers';
 import { RateLimiter } from './rateLimiter';
 import { registerHealthRoutes } from './routes/health';
-import { registerWagerRoutes } from './routes/wagers';
-import { registerAgentRoutes } from './routes/agents';
-import { registerPlayerRoutes } from './routes/players';
-import { registerRiskRoutes } from './routes/risk';
+import {
+  registerWagerStatsRoutes,
+  registerWagerListRoutes,
+  registerWagerAlertRoutes,
+  registerWagerLiveRoutes,
+} from './routes/wagers';
+import {
+  registerAgentRoutes,
+  registerAgentExposureRoutes,
+  registerAgentPerformanceRoutes,
+  registerAgentDownlineRoutes,
+  registerAgentHierarchyRoutes,
+  registerAgentBackfillRoutes,
+  registerAgentAccessLogRoutes,
+} from './routes/agents';
+import {
+  registerPlayerDetailsRoutes,
+  registerPlayerWagersRoutes,
+  registerPlayerPnlRoutes,
+} from './routes/players';
+import {
+  registerRiskAlertRoutes,
+  registerExposureSportsRoutes,
+  registerExposureAgentsRoutes,
+} from './routes/risk';
 import { registerWebhookRoutes } from './routes/webhooks';
 import { registerOddsRoutes } from './routes/odds';
 import { registerBuckeyeRoutes } from './routes/buckeye';
@@ -31,7 +52,6 @@ export interface RouterDeps {
 /**
  * Create and configure the URLPattern router with all registered routes.
  */
-  const { performanceCache } = deps;
 export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPatternRouter {
   const router = new UrlPatternRouter();
 
@@ -45,49 +65,77 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
     return registerHealthRoutes(url, request, deps.scraperManager);
   });
 
-  // API routes
-  router.get('/api/wagers', async (url, request) => {
-    return registerWagerRoutes(url, request, deps.scraperManager);
+  router.get('/metrics', async (url, request) => {
+    return registerHealthRoutes(url, request, deps.scraperManager);
   });
 
-  router.get('/api/wagers/:wagerId', async (url, request) => {
-    return registerWagerRoutes(url, request, deps.scraperManager);
+  // API routes
+  router.get('/api/stats', async (url, request) => {
+    return registerWagerStatsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/wagers', async (url, request) => {
+    return registerWagerListRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/wagers/alerts', async (url, request) => {
+    return registerWagerAlertRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/wagers/live', async (url, request) => {
+    return registerWagerLiveRoutes(url, request, deps.scraperManager);
   });
 
   router.get('/api/agents', async (url, request) => {
     return registerAgentRoutes(url, request, deps.scraperManager);
   });
 
-  router.get('/api/agents/:agentId', async (url, request) => {
-    return registerAgentRoutes(url, request, deps.scraperManager);
+  router.get('/api/agents/downline', async (url, request) => {
+    return registerAgentDownlineRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/agents/hierarchy', async (url, request) => {
+    return registerAgentHierarchyRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/agents/backfill/hierarchy', async (url, request) => {
+    return registerAgentBackfillRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/agents/access-logs', async (url, request) => {
+    return registerAgentAccessLogRoutes(url, request, deps.scraperManager);
   });
 
   router.get('/api/agents/:agentId/performance', async (url, request) => {
-    return registerAgentRoutes(url, request, deps.scraperManager);
+    return registerAgentPerformanceRoutes(url, request, deps.scraperManager);
   });
 
   router.get('/api/agents/:agentId/exposure', async (url, request) => {
-    return registerAgentRoutes(url, request, deps.scraperManager);
+    return registerAgentExposureRoutes(url, request, deps.scraperManager);
   });
 
-  router.get('/api/agents/:agentId/hierarchy', async (url, request) => {
-    return registerAgentRoutes(url, request, deps.scraperManager);
+  router.get('/api/players/:playerId/details', async (url, request) => {
+    return registerPlayerDetailsRoutes(url, request, deps.scraperManager);
   });
 
-  router.get('/api/players', async (url, request) => {
-    return registerPlayerRoutes(url, request, deps.scraperManager);
+  router.get('/api/players/:playerId/wagers', async (url, request) => {
+    return registerPlayerWagersRoutes(url, request, deps.scraperManager);
   });
 
-  router.get('/api/players/:playerId', async (url, request) => {
-    return registerPlayerRoutes(url, request, deps.scraperManager);
+  router.get('/api/players/:playerId/pnl', async (url, request) => {
+    return registerPlayerPnlRoutes(url, request, deps.scraperManager);
   });
 
   router.get('/api/risk/alerts', async (url, request) => {
-    return registerRiskRoutes(url, request, deps.scraperManager);
+    return registerRiskAlertRoutes(url, request, deps.scraperManager);
   });
 
-  router.get('/api/risk/alerts/:alertId', async (url, request) => {
-    return registerRiskRoutes(url, request, deps.scraperManager);
+  router.get('/api/exposure/sports', async (url, request) => {
+    return registerExposureSportsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/exposure/agents', async (url, request) => {
+    return registerExposureAgentsRoutes(url, request, deps.scraperManager);
   });
 
   router.get('/api/webhooks', async (url, request) => {
@@ -95,6 +143,10 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
   });
 
   router.post('/api/webhooks', async (url, request) => {
+    return registerWebhookRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/webhooks/:webhookId', async (url, request) => {
     return registerWebhookRoutes(url, request, deps.scraperManager);
   });
 
@@ -106,11 +158,47 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
     return registerWebhookRoutes(url, request, deps.scraperManager);
   });
 
-  router.get('/api/odds', async (url, request) => {
+  router.get('/api/webhooks/:webhookId/deliveries', async (url, request) => {
+    return registerWebhookRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/odds/live', async (url, request) => {
     return registerOddsRoutes(url, request, deps.oddsPoller);
   });
 
-  router.get('/api/odds/:bookId', async (url, request) => {
+  router.get('/api/odds/events', async (url, request) => {
+    return registerOddsRoutes(url, request, deps.oddsPoller);
+  });
+
+  router.get('/api/odds/events/:eventId', async (url, request) => {
+    return registerOddsRoutes(url, request, deps.oddsPoller);
+  });
+
+  router.get('/api/odds/snapshots', async (url, request) => {
+    return registerOddsRoutes(url, request, deps.oddsPoller);
+  });
+
+  router.get('/api/odds/movements', async (url, request) => {
+    return registerOddsRoutes(url, request, deps.oddsPoller);
+  });
+
+  router.get('/api/books', async (url, request) => {
+    return registerOddsRoutes(url, request, deps.oddsPoller);
+  });
+
+  router.get('/api/books/status', async (url, request) => {
+    return registerOddsRoutes(url, request, deps.oddsPoller);
+  });
+
+  router.get('/api/patterns/history', async (url, request) => {
+    return registerOddsRoutes(url, request, deps.oddsPoller);
+  });
+
+  router.get('/api/patterns/summary', async (url, request) => {
+    return registerOddsRoutes(url, request, deps.oddsPoller);
+  });
+
+  router.get('/api/patterns/agents', async (url, request) => {
     return registerOddsRoutes(url, request, deps.oddsPoller);
   });
 
@@ -119,6 +207,22 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
   });
 
   router.delete('/api/buckeye/vault-status', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+
+  router.get('/api/buckeye/ui-config', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+
+  router.get('/api/buckeye/account-info', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+
+  router.get('/api/buckeye/weekly-figures', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+
+  router.get('/api/buckeye/agent-performance/options', async (url, request) => {
     return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
   });
 
@@ -138,21 +242,16 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
     return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
   });
 
-  router.get('/api/buckeye/hierarchy', async (url, request) => {
+  router.post('/api/connect', async (url, request) => {
     return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
   });
 
-  router.get('/api/buckeye/player-details', async (url, request) => {
-    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  // Performance cache routes. Keep status before :agentId so it does not
+  // get interpreted as an agent login.
+  router.get('/api/performance/status', async (url, request) => {
+    return registerPerformanceRoutes(url, request, deps);
   });
 
-  router.get('/api/buckeye/exposure/sports', async (url, request) => {
-    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
-  });
-
-  router.get('/api/buckeye/exposure/agents', async (url, request) => {
-    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
-  });Performance cache routes
   router.get('/api/performance/:agentId', async (url, request, params) => {
     return registerPerformanceRoutes(url, request, deps, params);
   });
@@ -160,12 +259,6 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
   router.delete('/api/performance/:agentId', async (url, request, params) => {
     return registerPerformanceRoutes(url, request, deps, params);
   });
-
-  router.get('/api/performance/status', async (url, request) => {
-    return registerPerformanceRoutes(url, request, deps);
-  });
-
-  //
 
   // Static files (last resort)
   router.all('/*', async (url, request) => {

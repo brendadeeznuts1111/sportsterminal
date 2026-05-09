@@ -1,58 +1,64 @@
 /**
  * Agent routes
  */
-import { handleAsync, corsHeaders, loadLocalAgentHierarchy } from '../helpers';
+import { createRouteHandler, createParamRouteHandler, createMethodRouteHandler } from './base';
+import { loadLocalAgentHierarchy } from '../helpers';
+import { logRequest } from '../../utils/logger';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 
-export function registerAgentRoutes(
-  url: URL,
-  request: Request,
-  scraperManager: BuckeyeScraperManager
-): Response | null {
-  if (url.pathname === '/api/agents') {
-    return handleAsync(async () => scraperManager.getAgents(), corsHeaders);
-  }
+export const registerAgentRoutes = createRouteHandler('/api/agents', async (_url, _req, scraperManager) => {
+  logRequest('GET', '/api/agents');
+  return scraperManager.getAgents();
+});
 
-  const agentExposureMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/exposure$/);
-  if (agentExposureMatch) {
-    const agentId = decodeURIComponent(agentExposureMatch[1]);
-    return handleAsync(async () => scraperManager.getAgentData(agentId), corsHeaders);
+export const registerAgentExposureRoutes = createParamRouteHandler(
+  '/api/agents/:agentId/exposure',
+  'agentId',
+  async (_url, _req, scraperManager, params) => {
+    logRequest('GET', `/api/agents/${params.agentId}/exposure`);
+    return scraperManager.getAgentData(params.agentId);
   }
+);
 
-  const agentPerformanceMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/performance$/);
-  if (agentPerformanceMatch) {
-    const agentId = decodeURIComponent(agentPerformanceMatch[1]);
-    return handleAsync(async () => scraperManager.getAgentPerformance(agentId), corsHeaders);
+export const registerAgentPerformanceRoutes = createParamRouteHandler(
+  '/api/agents/:agentId/performance',
+  'agentId',
+  async (_url, _req, scraperManager, params) => {
+    logRequest('GET', `/api/agents/${params.agentId}/performance`);
+    return scraperManager.getAgentPerformance(params.agentId);
   }
+);
 
-  if (url.pathname === '/api/agents/downline') {
-    return handleAsync(async () => scraperManager.getAgentDownline(), corsHeaders);
+export const registerAgentDownlineRoutes = createRouteHandler('/api/agents/downline', async (_url, _req, scraperManager) => {
+  logRequest('GET', '/api/agents/downline');
+  return scraperManager.getAgentDownline();
+});
+
+export const registerAgentHierarchyRoutes = createRouteHandler('/api/agents/hierarchy', async (url, _req, scraperManager) => {
+  logRequest('GET', '/api/agents/hierarchy');
+  const agentId = url.searchParams.get('agentId') || undefined;
+  const persistedHierarchy = await scraperManager.getPersistedAgentHierarchy();
+  if (Array.isArray(persistedHierarchy?.GENERAL) && persistedHierarchy.GENERAL.length > 0) {
+    return persistedHierarchy;
   }
-
-  if (url.pathname === '/api/agents/hierarchy') {
-    const agentId = url.searchParams.get('agentId') || undefined;
-    return handleAsync(async () => {
-      const persistedHierarchy = await scraperManager.getPersistedAgentHierarchy();
-      if (Array.isArray(persistedHierarchy?.GENERAL) && persistedHierarchy.GENERAL.length > 0) {
-        return persistedHierarchy;
-      }
-      const liveHierarchy = await scraperManager.getAgentHierarchy(agentId);
-      if (Array.isArray(liveHierarchy?.GENERAL) && liveHierarchy.GENERAL.length > 0) {
-        return liveHierarchy;
-      }
-      const localHierarchy = await loadLocalAgentHierarchy();
-      return localHierarchy.GENERAL.length > 0 ? localHierarchy : liveHierarchy;
-    }, corsHeaders);
+  const liveHierarchy = await scraperManager.getAgentHierarchy(agentId);
+  if (Array.isArray(liveHierarchy?.GENERAL) && liveHierarchy.GENERAL.length > 0) {
+    return liveHierarchy;
   }
+  const localHierarchy = await loadLocalAgentHierarchy();
+  return localHierarchy.GENERAL.length > 0 ? localHierarchy : liveHierarchy;
+});
 
-  if (url.pathname === '/api/agents/backfill/hierarchy' && request.method === 'POST') {
-    return handleAsync(async () => scraperManager.backfillAgentHierarchy(), corsHeaders);
+export const registerAgentBackfillRoutes = createMethodRouteHandler(
+  '/api/agents/backfill/hierarchy',
+  'POST',
+  async (_url, _req, scraperManager) => {
+    logRequest('POST', '/api/agents/backfill/hierarchy');
+    return scraperManager.backfillAgentHierarchy();
   }
+);
 
-  // Buckeye IP access logs
-  if (url.pathname === '/api/agents/access-logs') {
-    return handleAsync(async () => scraperManager.getAccessLogs(), corsHeaders);
-  }
-
-  return null;
-}
+export const registerAgentAccessLogRoutes = createRouteHandler('/api/agents/access-logs', async (_url, _req, scraperManager) => {
+  logRequest('GET', '/api/agents/access-logs');
+  return scraperManager.getAccessLogs();
+});

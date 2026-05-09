@@ -118,6 +118,10 @@ export class PerformanceCache {
     return this.connected;
   }
 
+  getDefaultTtlMs(): number {
+    return this.defaultTtlMs;
+  }
+
   /**
    * Close the Redis connection.
    */

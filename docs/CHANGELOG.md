@@ -20,6 +20,7 @@
 - Bun install security scanner configuration through `bunfig.toml`.
 - Project organization guide.
 - Data dictionary covering env vars, vault keys, Buckeye fields, local tables, API routes, and WebSocket events.
+- Complete URLPattern route registration for existing route modules.
 
 ### Changed
 

@@ -5,11 +5,7 @@
 
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 import type { PerformanceCache } from '../../services/PerformanceCache';
-
-export interface PerformanceRoutesDeps {
-  scraperManager: BuckeyeScraperManager;
-  performanceCache: PerformanceCache;
-}
+import type { RouterDeps } from '../router';
 
 /**
  * Register performance cache routes.
@@ -18,21 +14,19 @@ export interface PerformanceRoutesDeps {
 export async function registerPerformanceRoutes(
   url: URL,
   request: Request,
-  deps: PerformanceRoutesDeps,
+  deps: RouterDeps,
   params?: Record<string, string | undefined>
 ): Promise<Response | null> {
   const { performanceCache } = deps;
 
   // GET /api/performance/:agentId
-  if (request.method === 'GET' && params?.agentId) {
+  if (request.method === 'GET' && params?.agentId && performanceCache) {
     try {
       const result = await performanceCache.get(params.agentId);
       return new Response(
         JSON.stringify({
           agentId: params.agentId,
           source: result.source,
-          cachedAt: result.data?.cachedAt || null,
-          ttlMs: result.data?.ttlMs || null,
           data: result.data,
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -46,10 +40,9 @@ export async function registerPerformanceRoutes(
   }
 
   // DELETE /api/performance/:agentId
-  if (request.method === 'DELETE' && params?.agentId) {
+  if (request.method === 'DELETE' && params?.agentId && performanceCache) {
     try {
-      // Invalidate cache by deleting the key
-      await performanceCache.set(params.agentId, null, 0);
+      await performanceCache.invalidate(params.agentId);
       return new Response(
         JSON.stringify({ message: 'Cache invalidated', agentId: params.agentId }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -67,8 +60,8 @@ export async function registerPerformanceRoutes(
     return new Response(
       JSON.stringify({
         cacheEnabled: performanceCache !== undefined,
-        redisConnected: performanceCache?.connected ?? false,
-        defaultTtlMs: performanceCache?.defaultTtlMs ?? 0,
+        redisConnected: performanceCache?.isConnected() ?? false,
+        defaultTtlMs: performanceCache?.getDefaultTtlMs(),
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
     );

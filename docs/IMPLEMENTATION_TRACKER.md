@@ -5,7 +5,7 @@
 > Runtime: **Bun 1.3.13+**
 > Database: **Bun.SQL SQLite wrapper**
 > Auth: **JWT (HS256) + Buckeye OS vault through Bun.secrets**
-> Latest full verification: **77/77 tests passing + build clean**
+> Latest full verification: **82 passing, 4 intentionally skipped + build clean**
 
 ---
 

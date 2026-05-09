@@ -55,6 +55,13 @@ export class UrlPatternRouter {
   }
 
   /**
+   * Register an OPTIONS route.
+   */
+  options(pathname: string, handler: RouteHandler): this {
+    return this.add('OPTIONS', pathname, handler);
+  }
+
+  /**
    * Register a route for any method.
    */
   all(pathname: string, handler: RouteHandler): this {
@@ -68,11 +75,11 @@ export class UrlPatternRouter {
   match(method: string, pathname: string): { handler: RouteHandler; params: Record<string, string | undefined> } | null {
     for (const entry of this.routes) {
       if (entry.method !== '*' && entry.method !== method) continue;
-      const result = entry.pattern.exec(pathname);
+      const result = entry.pattern.exec({ pathname });
       if (result) {
         return {
           handler: entry.handler,
-          params: Object.fromEntries(result.pathname.groups),
+          params: result.pathname.groups,
         };
       }
     }

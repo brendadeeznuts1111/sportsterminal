@@ -23,6 +23,9 @@ This is the single reference for Sports Terminal names: environment variables, O
 | `RATE_LIMIT_WINDOW_MS` | `60000` | No | `RateLimiter` | HTTP rate-limit window length |
 | `ODDS_API_KEY` | unset | No | `OddsPoller` | Enables The Odds API provider; demo provider is used when unset |
 | `REDIS_URL` | unset | No | `PerformanceCache` | Optional Redis cache URL for performance cache |
+| `FRONTEND_PORT` | `3001` | No | `scripts/serve-frontend.ts` | Optional static frontend-only server port |
+| `BUCKEYE_AGENT_ID` | unset | Script-only | `backend/scripts/*` probes | One-off local probe/login scripts only; do not store production credentials |
+| `BUCKEYE_PASSWORD` | unset | Script-only | `backend/scripts/*` probes | One-off local probe/login scripts only; prefer interactive/vaulted auth |
 
 Do not store Buckeye passwords, Buckeye JWTs, or Cloudflare cookies in `.env`. Use Settings and the OS vault.
 
@@ -206,6 +209,8 @@ Request fields:
 | `wagerType` | `S` | Wager type filter, blank for all |
 | `betType` | `M` | Bet type filter, blank for all |
 | `tipo` | `0` | Activity filter |
+| `group` | `1` | Optional grouping mode |
+| `week` | `enter-dates` | Convenience preset translated into `start`/`end` |
 | `debug` | `0` | Upstream debug flag |
 | `operation` | `getAgentPerformance` | Operation |
 | `RRO` | `1` | Required upstream flag |
@@ -267,6 +272,17 @@ Period values:
 | `4` | 2nd Quarter |
 | `5` | 3rd Quarter |
 | `6` | 4th Quarter |
+
+Grouping and week preset values:
+
+| Field | Value | Label |
+|-------|-------|-------|
+| `group` | `1` | Group Agent |
+| `group` | `2` | Sorting Columns |
+| `week` | `-1` | Today |
+| `week` | `0` | This Week |
+| `week` | `1` | Last Week |
+| `week` | `enter-dates` | Entered Dates |
 
 Response fields:
 
@@ -479,11 +495,11 @@ Core data:
 | `/api/agents/hierarchy` | GET | Agent hierarchy |
 | `/api/agents/backfill/hierarchy` | POST | Parse/backfill local hierarchy/player exports |
 | `/api/agents/access-logs` | GET | Agent access-log view |
-| `/api/agents/:id/performance` | GET | Agent performance |
-| `/api/agents/:id/exposure` | GET | Agent exposure |
-| `/api/players/:id/details` | GET | Player detail |
-| `/api/players/:id/wagers` | GET | Player wagers |
-| `/api/players/:id/pnl` | GET | Player projected P/L buckets |
+| `/api/agents/:agentId/performance` | GET | Agent performance |
+| `/api/agents/:agentId/exposure` | GET | Agent exposure |
+| `/api/players/:playerId/details` | GET | Player detail |
+| `/api/players/:playerId/wagers` | GET | Player wagers |
+| `/api/players/:playerId/pnl` | GET | Player projected P/L buckets |
 | `/api/exposure/sports` | GET | Sport exposure |
 | `/api/exposure/agents` | GET | Agent exposure |
 
@@ -493,7 +509,7 @@ Odds, books, and patterns:
 |-------|--------|---------|
 | `/api/odds/live` | GET | Live odds matrix |
 | `/api/odds/events` | GET | Events |
-| `/api/odds/events/:id` | GET | Single event detail |
+| `/api/odds/events/:eventId` | GET | Single event detail |
 | `/api/odds/snapshots` | GET | Odds snapshots |
 | `/api/odds/movements` | GET | Line movements |
 | `/api/books` | GET | Book list/settings |
@@ -508,8 +524,16 @@ Alerts and webhooks:
 |-------|--------|---------|
 | `/api/risk/alerts` | GET | Risk alert history |
 | `/api/webhooks` | GET/POST | List/create webhooks |
-| `/api/webhooks/:id` | GET/PUT/DELETE | Read/update/delete webhook |
-| `/api/webhooks/:id/deliveries` | GET | Webhook delivery log |
+| `/api/webhooks/:webhookId` | GET/PUT/DELETE | Read/update/delete webhook |
+| `/api/webhooks/:webhookId/deliveries` | GET | Webhook delivery log |
+
+Performance cache:
+
+| Route | Method | Meaning |
+|-------|--------|---------|
+| `/api/performance/status` | GET | Redis/cache health flags |
+| `/api/performance/:agentId` | GET | Cached/fetched agent performance data |
+| `/api/performance/:agentId` | DELETE | Invalidate one cached agent performance payload |
 
 ## WebSocket Event Names
 
@@ -524,16 +548,42 @@ Alerts and webhooks:
 | `pattern.update` | server to client | pattern delta/counts | Pattern summary changed |
 | `auth_failed` | server to client | `agentId`, `message` | Agent auth failed |
 | `betAction` | server to client | action ID/result | Action queue update |
+| `auth_response` | server to client | `success`, `message`, `token` | Response to auth/resume |
+| `data_response` | server to client | `agentId`, `data` | Response to `request_data` |
+| `data_error` | server to client | `agentId`, `message` | Agent data load failed |
+| `refresh_initiated` | server to client | `agentId` | Manual refresh accepted |
+| `betAction_queued` | server to client | `actionId`, `agentId`, `wagerNumber`, `action` | Bet action queued |
+| `betAction_error` | server to client | `message` | Bet action rejected/failed |
+| `token_refreshed` | server to client | `token` | App JWT refresh succeeded |
+| `token_refresh_error` | server to client | `message` | App JWT refresh failed |
+| `error` | server to client | `message` | Generic WebSocket error |
+
+Client-to-server WebSocket message types:
+
+| Event Type | Payload Keys | Meaning |
+|------------|--------------|---------|
+| `auth` | `agentId`, `password`, `cfCookie`, optional `token` | Authenticate or resume a Buckeye session |
+| `request_data` | `agentId` | Request current agent data |
+| `refresh` | `agentId` | Force a Buckeye refresh |
+| `betAction` | `agentId`, `wagerNumber`, `action`, optional `amount`, `reason` | Queue accept/decline action |
+| `token_refresh` | none | Request a fresh app JWT |
 
 ## Frontend Storage Keys
 
 | Key | Meaning | Notes |
 |-----|---------|-------|
-| `sportsTerminal.backendUrl` | Backend URL override | Local browser setting |
-| `sportsTerminal.endpoint` | Buckeye base URL/endpoint setting | Local browser setting |
-| `sportsTerminal.autoConnect` | Auto-connect toggle | Does not replace backend vault restore |
-| `sportsTerminal.toastEnabled` | Toast toggle | Local UI preference |
-| Buckeye token/password/cookie values | Avoid storing | Backend OS vault is the durable secret store |
+| `wsUrl` | WebSocket URL override | Local browser setting |
+| `agentId` | Last selected agent ID | Non-secret convenience value |
+| `baseUrl` | Buckeye base URL | Non-secret convenience value |
+| `autoConnect` | Auto-connect toggle | Does not replace backend vault restore |
+| `toastsEnabled` | Toast toggle | Local UI preference |
+| `retainedRiskPercent` | Exposure retention percentage | Local UI setting |
+| `bookPreferences` | Book visibility/order preferences | JSON UI preference |
+| `wsToken` | App JWT from auth response | Short-lived app session token |
+| `password` | Removed on load/connect | Legacy key; should not persist |
+| `cfCookie` | Removed on load/connect | Legacy key; should not persist |
+| `buckeyeToken` | Removed on vault logout | Legacy key; Buckeye tokens belong in OS vault |
+| `lastAuthTime` | Removed on vault logout | Legacy key |
 
 ## Naming Rules
 

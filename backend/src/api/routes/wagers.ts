@@ -1,31 +1,29 @@
 /**
  * Wager routes
  */
-import { clampInt, handleAsync, corsHeaders } from '../helpers';
+import { createRouteHandler } from './base';
+import { clampInt } from '../helpers';
+import { logRequest } from '../../utils/logger';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 
-export function registerWagerRoutes(
-  url: URL,
-  _request: Request,
-  scraperManager: BuckeyeScraperManager
-): Response | null {
-  if (url.pathname === '/api/stats') {
-    return handleAsync(async () => scraperManager.getStats(), corsHeaders);
-  }
+export const registerWagerStatsRoutes = createRouteHandler('/api/stats', async (_url, _req, scraperManager) => {
+  logRequest('GET', '/api/stats');
+  return scraperManager.getStats();
+});
 
-  if (url.pathname === '/api/wagers') {
-    const limit = clampInt(url.searchParams.get('limit'), 200, 1, 500);
-    const offset = clampInt(url.searchParams.get('offset'), 0, 0, 100000);
-    return handleAsync(async () => scraperManager.getWagers(limit, offset), corsHeaders);
-  }
+export const registerWagerListRoutes = createRouteHandler('/api/wagers', async (url, _req, scraperManager) => {
+  logRequest('GET', '/api/wagers');
+  const limit = clampInt(url.searchParams.get('limit'), 200, 1, 500);
+  const offset = clampInt(url.searchParams.get('offset'), 0, 0, 100000);
+  return scraperManager.getWagers(limit, offset);
+});
 
-  if (url.pathname === '/api/wagers/alerts') {
-    return handleAsync(async () => scraperManager.getAlertWagers(), corsHeaders);
-  }
+export const registerWagerAlertRoutes = createRouteHandler('/api/wagers/alerts', async (_url, _req, scraperManager) => {
+  logRequest('GET', '/api/wagers/alerts');
+  return scraperManager.getAlertWagers();
+});
 
-  if (url.pathname === '/api/wagers/live') {
-    return handleAsync(async () => scraperManager.getLiveWagers(), corsHeaders);
-  }
-
-  return null;
-}
+export const registerWagerLiveRoutes = createRouteHandler('/api/wagers/live', async (_url, _req, scraperManager) => {
+  logRequest('GET', '/api/wagers/live');
+  return scraperManager.getLiveWagers();
+});
