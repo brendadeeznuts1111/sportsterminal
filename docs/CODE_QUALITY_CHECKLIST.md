@@ -14,7 +14,7 @@ For player/account metrics, do not label projected exposure as settled P/L. Use 
 Before handing off architecture or ingestion changes, update the living docs:
 
 ```bash
-git diff -- README.md docs/IMPLEMENTATION_TRACKER.md docs/BUCKEYE_BACKEND_SCOPE.md docs/PROJECT_ORGANIZATION.md docs/CHANGELOG.md
+git diff -- README.md docs/IMPLEMENTATION_TRACKER.md docs/BUCKEYE_BACKEND_SCOPE.md docs/DATA_DICTIONARY.md docs/PROJECT_ORGANIZATION.md docs/CHANGELOG.md
 ```
 
 Keep local raw Buckeye exports and downloaded tools ignored. They can contain sensitive customer/agent data and should not become source files.

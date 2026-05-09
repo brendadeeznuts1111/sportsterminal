@@ -167,6 +167,7 @@ Follow-ups:
 |------|---------|--------|
 | `README.md` | Quickstart, current architecture, UI/API map | Current |
 | `docs/BUCKEYE_BACKEND_SCOPE.md` | Buckeye endpoint and ingestion contract | Current |
+| `docs/DATA_DICTIONARY.md` | Env vars, vault keys, source fields, local columns, API names, WebSocket events | Current |
 | `docs/IMPLEMENTATION_TRACKER.md` | Delivery status and follow-ups | Current |
 | `docs/PROJECT_ORGANIZATION.md` | Where files and future work belong | Current |
 | `docs/CHANGELOG.md` | Chronological release notes | Current |

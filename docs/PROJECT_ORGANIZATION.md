@@ -9,6 +9,7 @@ This guide keeps the Sports Terminal repo from drifting as Buckeye ingestion, pa
 | `README.md` | How to run the app, current architecture, UI/API map | User-facing feature, route, env, or runtime behavior changes |
 | `docs/IMPLEMENTATION_TRACKER.md` | Current delivery status, follow-ups, verification checklist | A zone moves status or a major feature lands |
 | `docs/BUCKEYE_BACKEND_SCOPE.md` | Buckeye endpoint contract, request fields, persistence contract | New Buckeye endpoint, schema, ingest loop, or response shape |
+| `docs/DATA_DICTIONARY.md` | Env vars, vault keys, source fields, local columns, API names, WS events | New env var, table column, source field, route, or event name |
 | `docs/CHANGELOG.md` | Chronological release notes | Before handoff or commit for meaningful changes |
 | `docs/CODE_QUALITY_CHECKLIST.md` | Review checks and recurring gotchas | A repeated bug class appears |
 | `docs/DEVELOPMENT_ROADMAP.md` | Historical planning/audit context | Rarely; prefer tracker for current status |
@@ -82,6 +83,7 @@ Before ending a substantial task:
 - `README.md` reflects new visible behavior.
 - `docs/IMPLEMENTATION_TRACKER.md` reflects current status and follow-ups.
 - `docs/BUCKEYE_BACKEND_SCOPE.md` reflects new Buckeye/API/schema behavior.
+- `docs/DATA_DICTIONARY.md` reflects new names and fields.
 - `docs/CHANGELOG.md` has a short entry.
 - Sensitive raw files remain ignored.
 - `bun test` and `bun run build` have been run for code changes.

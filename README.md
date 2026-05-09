@@ -302,6 +302,7 @@ Ignored local data/tools:
 - `README.md`: current operator/developer quickstart and surface map.
 - `docs/IMPLEMENTATION_TRACKER.md`: current delivery status and verification notes.
 - `docs/BUCKEYE_BACKEND_SCOPE.md`: Buckeye endpoint, schema, and ingestion contract.
+- `docs/DATA_DICTIONARY.md`: env vars, vault keys, source fields, table columns, API names, and WebSocket events.
 - `docs/PROJECT_ORGANIZATION.md`: where new code, docs, raw exports, and runtime files belong.
 - `docs/CHANGELOG.md`: chronological change notes.
 - `docs/CODE_QUALITY_CHECKLIST.md`: quick review checks before handoff.

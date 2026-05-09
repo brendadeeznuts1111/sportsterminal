@@ -4,6 +4,8 @@ export interface AppEnv {
   JWT_SECRET: string;
   BUCKEYE_BASE_URL?: string;
   DEBUG: boolean;
+  REDIS_URL?: string;
+  DATABASE_URL: string;
 }
 
 export function loadEnv(source: Record<string, string | undefined> = Bun.env): AppEnv {
@@ -35,6 +37,8 @@ export function loadEnv(source: Record<string, string | undefined> = Bun.env): A
     JWT_SECRET: jwtSecret,
     BUCKEYE_BASE_URL: buckeyeBaseUrl,
     DEBUG: source.DEBUG === '1' || source.DEBUG === 'true',
+    REDIS_URL: source.REDIS_URL || undefined,
+    DATABASE_URL: source.DATABASE_URL || './data/terminal.db',
   };
 }
 

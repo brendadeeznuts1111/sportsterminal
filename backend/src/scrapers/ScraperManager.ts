@@ -20,6 +20,7 @@ import { PatternService } from '../patterns/PatternService';
 import { ActionQueue } from '../actions/ActionQueue';
 import { backfillAgentsAndPlayers } from '../services/HierarchyBackfillService';
 import type { BunSecretVault } from '../services/BunSecretVault';
+import { PerformanceCache } from '../services/PerformanceCache';
 import { createManagedInterval, type ManagedIntervalTask } from '../services/Scheduler';
 
 interface AgentInstance {
@@ -71,6 +72,7 @@ export class BuckeyeScraperManager {
   private alertCount: number = 0;
   private errorCount: number = 0;
   private secretVault?: BunSecretVault;
+  private performanceCache?: PerformanceCache;
 
   private debugMode: boolean;
 
@@ -78,12 +80,14 @@ export class BuckeyeScraperManager {
     db: Database,
     broadcast: (msg: object) => void,
     debugMode: boolean = false,
-    secretVault?: BunSecretVault
+    secretVault?: BunSecretVault,
+    performanceCache?: PerformanceCache
   ) {
     this.db = db;
     this.broadcast = broadcast;
     this.debugMode = debugMode;
     this.secretVault = secretVault;
+    this.performanceCache = performanceCache;
     this.pollIntervalMs = readPositiveIntEnv('POLL_INTERVAL_MS', this.pollIntervalMs);
     this.tokenRenewalMs = readPositiveIntEnv('TOKEN_RENEWAL_MINUTES', 15) * 60 * 1000;
     this.accessLogIntervalMs = readPositiveIntEnv('ACCESS_LOG_INTERVAL_MS', this.accessLogIntervalMs);
@@ -1254,6 +1258,15 @@ export class BuckeyeScraperManager {
     }
 
     const { start, end } = this.getDefaultPerformanceWindow();
+
+    // Check Redis cache first if available
+    if (this.performanceCache) {
+      const cached = await this.performanceCache.get(agentId);
+      if (cached.source === 'cache') {
+        return { rows: 0, checkpointed: true };
+      }
+    }
+
     const result = await instance.api.getAgentPerformanceReport({
       start,
       end,
@@ -1271,6 +1284,17 @@ export class BuckeyeScraperManager {
       agentOwner: agentId,
     });
     await this.persistAgentPerformanceReport(result);
+
+    // Seed the Redis cache
+    if (this.performanceCache && result.parsed?.rows?.length) {
+      await this.performanceCache.set(agentId, {
+        totals: result.parsed.totals,
+        rows: result.parsed.rows.length,
+        start,
+        end,
+      });
+    }
+
     this.broadcast({
       type: 'agentPerformance.update',
       timestamp: new Date().toISOString(),

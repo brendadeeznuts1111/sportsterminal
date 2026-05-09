@@ -8,6 +8,7 @@ import { createToken, verifyToken, isDevMode } from './auth/jwt';
 import { getRateLimiter } from './api/rateLimiter';
 import { BunSecretVault } from './services/BunSecretVault';
 import { restoreBuckeyeAgentsFromVault } from './services/BuckeyeVaultRestore';
+import { PerformanceCache } from './services/PerformanceCache';
 import { loadEnv } from './config/env';
 
 const env = loadEnv();
@@ -20,6 +21,7 @@ let db: Database;
 let scraperManager: BuckeyeScraperManager;
 let oddsPoller: OddsPoller;
 let secretVault: BunSecretVault;
+let performanceCache: PerformanceCache | undefined;
 
 // Connected WebSocket clients
 const wsClients = new Set<any>();
@@ -78,10 +80,24 @@ async function startServer() {
   db = await initDatabase();
   console.log('✅ Database initialized');
 
+  // Initialize performance cache (Redis-backed, graceful fallback)
+  if (env.REDIS_URL) {
+    performanceCache = new PerformanceCache(
+      async (agentId: string) => {
+        // Fetcher fallback — pulls from DB if Redis is unavailable
+        return scraperManager?.getAgentPerformance(agentId) ?? null;
+      },
+      env.REDIS_URL
+    );
+    console.log('✅ Performance cache initialized (Redis)');
+  } else {
+    console.log('ℹ️  No REDIS_URL set — performance cache disabled');
+  }
+
   // Initialize scraper manager with broadcast callback
   const debugMode = env.DEBUG;
   secretVault = new BunSecretVault();
-  scraperManager = new BuckeyeScraperManager(db, broadcast, debugMode, secretVault);
+  scraperManager = new BuckeyeScraperManager(db, broadcast, debugMode, secretVault, performanceCache);
   console.log('✅ Scraper manager initialized');
 
   // Initialize odds poller
