@@ -1,7 +1,7 @@
 import { SQL } from 'bun';
 import crypto from 'crypto';
 
-const dbPath = normalizeDatabasePath(process.env.DATABASE_URL || './data/terminal.db');
+const dbUrl = process.env.DATABASE_URL || './data/terminal.db';
 
 const BUCKEYE_SPORT_TYPES = [
   'Auto Racing         ',
@@ -29,6 +29,10 @@ export function normalizeDatabasePath(value: string): string {
   return value.startsWith('sqlite:') ? value.slice('sqlite:'.length) : value;
 }
 
+export function isPostgresUrl(value: string): boolean {
+  return value.startsWith('postgres://') || value.startsWith('postgresql://');
+}
+
 export interface DbRunResult {
   lastID: number;
   changes: number;
@@ -36,9 +40,19 @@ export interface DbRunResult {
 
 export class AppDatabase {
   private db: SQL;
+  private dialect: 'sqlite' | 'postgres';
 
-  constructor(filename: string) {
-    this.db = new SQL(toSqliteUrl(filename));
+  constructor(url: string) {
+    this.dialect = isPostgresUrl(url) ? 'postgres' : 'sqlite';
+    if (this.dialect === 'sqlite') {
+      this.db = new SQL(toSqliteUrl(url));
+    } else {
+      this.db = new SQL(url);
+    }
+  }
+
+  getDialect(): 'sqlite' | 'postgres' {
+    return this.dialect;
   }
 
   async exec(sql: string): Promise<void> {
@@ -47,10 +61,17 @@ export class AppDatabase {
 
   async run(sql: string, params: unknown[] = []): Promise<DbRunResult> {
     const result = await this.db.unsafe(sql, params);
-    const changes = await this.db.unsafe('SELECT changes() AS changes');
+    if (this.dialect === 'sqlite') {
+      const changes = await this.db.unsafe('SELECT changes() AS changes');
+      return {
+        lastID: Number(result.lastInsertRowid ?? 0),
+        changes: Number(changes[0]?.changes ?? 0),
+      };
+    }
+    // Postgres: lastInsertRowid is not available; use RETURNING or omit
     return {
       lastID: Number(result.lastInsertRowid ?? 0),
-      changes: Number(changes[0]?.changes ?? 0),
+      changes: result.length ?? 0,
     };
   }
 
@@ -71,12 +92,15 @@ export class AppDatabase {
 export type Database = AppDatabase;
 
 export async function initDatabase(): Promise<AppDatabase> {
-  const db = new AppDatabase(dbPath);
+  const db = new AppDatabase(dbUrl);
 
-  // Enable foreign keys
-  await db.exec('PRAGMA foreign_keys = ON');
+  if (db.getDialect() === 'sqlite') {
+    // Enable foreign keys for SQLite
+    await db.exec('PRAGMA foreign_keys = ON');
+  }
 
-  // Create tables
+  // Create tables (SQLite-compatible; Postgres will use its own migration path)
+  if (db.getDialect() === 'sqlite') {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS agents (
       id TEXT PRIMARY KEY,

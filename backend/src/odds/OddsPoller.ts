@@ -26,6 +26,13 @@ interface DetectedPattern {
   description: string;
 }
 
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export class OddsPoller {
   private db: Database;
   private provider: OddsProvider;
@@ -39,6 +46,8 @@ export class OddsPoller {
   constructor(db: Database, broadcast: (msg: object) => void) {
     this.db = db;
     this.broadcast = broadcast;
+    this.pollIntervalMs = readPositiveIntEnv('ODDS_POLL_INTERVAL_MS', this.pollIntervalMs);
+    this.healthIntervalMs = readPositiveIntEnv('BOOK_HEALTH_INTERVAL_MS', this.healthIntervalMs);
 
     const apiKey = process.env.ODDS_API_KEY;
     if (apiKey) {

@@ -8,8 +8,6 @@
  * - Graceful degradation when Redis is unavailable
  */
 
-import { RedisClient } from 'bun';
-
 const DEFAULT_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const CACHE_PREFIX = 'sportsterminal:perf:';
 const PUBSUB_CHANNEL = 'sportsterminal:perf:updates';
@@ -17,7 +15,7 @@ const PUBSUB_CHANNEL = 'sportsterminal:perf:updates';
 export interface CachedPerformance {
   agentId: string;
   data: unknown;
-  cachedAt: string; // ISO timestamp
+  cachedAt: string;
   ttlMs: number;
 }
 
@@ -25,12 +23,13 @@ export interface PerformanceFetcher {
   (agentId: string): Promise<unknown>;
 }
 
+type RedisClient = InstanceType<typeof Bun.redis.constructor>;
+
 export class PerformanceCache {
   private redis: RedisClient | null = null;
   private connected = false;
   private fetcher: PerformanceFetcher;
   private defaultTtlMs: number;
-  private subscribeCallbacks: Map<string, Set<(msg: string) => void>> = new Map();
 
   constructor(
     fetcher: PerformanceFetcher,
@@ -52,12 +51,11 @@ export class PerformanceCache {
    * Checks Redis cache first; falls back to the fetcher on miss.
    */
   async get(agentId: string): Promise<{ data: unknown; source: 'cache' | 'api' }> {
-    // Try cache first
     if (this.connected && this.redis) {
       try {
         const cached = await this.redis.get(`${CACHE_PREFIX}${agentId}`);
         if (cached) {
-          const parsed: CachedPerformance = JSON.parse(cached);
+          const parsed: CachedPerformance = JSON.parse(cached as string);
           const age = Date.now() - new Date(parsed.cachedAt).getTime();
           if (age < parsed.ttlMs) {
             return { data: parsed.data, source: 'cache' };
@@ -68,7 +66,6 @@ export class PerformanceCache {
       }
     }
 
-    // Fallback to API
     const data = await this.fetcher(agentId);
     await this.set(agentId, data);
     return { data, source: 'api' };
@@ -93,7 +90,6 @@ export class PerformanceCache {
         Math.ceil((ttlMs ?? this.defaultTtlMs) / 1000),
         JSON.stringify(entry)
       );
-      // Publish update for dashboards
       await this.redis.publish(
         PUBSUB_CHANNEL,
         JSON.stringify({ type: 'performance_update', agentId, timestamp: entry.cachedAt })
@@ -116,41 +112,6 @@ export class PerformanceCache {
   }
 
   /**
-   * Subscribe to performance update broadcasts.
-   * Returns an unsubscribe function.
-   */
-  subscribe(callback: (msg: { type: string; agentId: string; timestamp: string }) => void): () => void {
-    const id = crypto.randomUUID();
-    if (!this.subscribeCallbacks.has(PUBSUB_CHANNEL)) {
-      this.subscribeCallbacks.set(PUBSUB_CHANNEL, new Set());
-    }
-    this.subscribeCallbacks.get(PUBSUB_CHANNEL)!.add(id);
-
-    // Start pub/sub listener if not already active
-    this.ensurePubSubListener();
-
-    // Wrap callback for type safety
-    const wrappedCallback = (raw: string) => {
-      try {
-        const parsed = JSON.parse(raw);
-        callback(parsed);
-      } catch {
-        // Ignore malformed messages
-      }
-    };
-    (wrappedCallback as any).__id = id;
-    this.subscribeCallbacks.get(PUBSUB_CHANNEL)!.add(wrappedCallback as any);
-
-    return () => {
-      const set = this.subscribeCallbacks.get(PUBSUB_CHANNEL);
-      if (set) {
-        set.delete(wrappedCallback as any);
-        set.delete(id);
-      }
-    };
-  }
-
-  /**
    * Check if Redis is connected.
    */
   isConnected(): boolean {
@@ -170,14 +131,13 @@ export class PerformanceCache {
     }
     this.redis = null;
     this.connected = false;
-    this.subscribeCallbacks.clear();
   }
 
   // ── Internal ────────────────────────────────────────────────
 
   private initRedis(redisUrl: string): void {
     try {
-      const RedisClient = (Bun as any).redis.constructor as new (url?: string) => RedisClient;
+      const RedisClient = Bun.redis.constructor as new (url?: string) => RedisClient;
       this.redis = new RedisClient(redisUrl);
       this.redis.onconnect = () => {
         this.connected = true;
@@ -192,38 +152,6 @@ export class PerformanceCache {
       console.warn('[PerformanceCache] Redis unavailable — running in fallback mode');
       this.redis = null;
       this.connected = false;
-    }
-  }
-
-  private pubSubActive = false;
-
-  private ensurePubSubListener(): void {
-    if (this.pubSubActive || !this.redis) return;
-    this.pubSubActive = true;
-
-    // Use a dedicated connection for pub/sub
-    try {
-      const RedisClient = (Bun as any).redis.constructor as new (url?: string) => RedisClient;
-      const subRedis = new RedisClient(this.redis !== null ? undefined : undefined);
-      subRedis.onconnect = () => {
-        subRedis.subscribe(PUBSUB_CHANNEL);
-      };
-      subRedis.connect();
-
-      // Poll for messages (Bun.redis subscribe delivers via callback)
-      // Since Bun.redis subscribe is callback-based, we use a simple interval
-      const pollInterval = setInterval(() => {
-        if (!this.connected) {
-          clearInterval(pollInterval);
-          this.pubSubActive = false;
-        }
-      }, 30_000);
-
-      // Store reference for cleanup
-      (this as any).__subRedis = subRedis;
-      (this as any).__subPoll = pollInterval;
-    } catch {
-      this.pubSubActive = false;
     }
   }
 }

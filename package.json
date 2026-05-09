@@ -1,7 +1,7 @@
 {
   "name": "sportsterminal",
   "version": "0.2.0",
-  "description": "Sports Terminal v5.2 - Buckeye PPH integration, odds grid, and risk management",
+  "description": "Sports Terminal v5.3 - Always-on Buckeye ingestion, odds grid, patterns, and risk management",
   "type": "module",
   "private": true,
   "workspaces": [

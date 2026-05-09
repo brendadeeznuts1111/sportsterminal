@@ -112,7 +112,8 @@ The app uses managed recurring jobs in `backend/src/services/Scheduler.ts`. This
 | Access logs | `ACCESS_LOG_INTERVAL_MS`, usually 10m | `ScraperManager` | Pull Buckeye IP/access data |
 | Agent performance | `AGENT_PERFORMANCE_INTERVAL_MS`, usually 15m | `ScraperManager` | Pull customer/agent performance snapshots |
 | Token renewal | `TOKEN_RENEWAL_MINUTES`, usually 15m | `ScraperManager` | Keep Buckeye JWT fresh |
-| Odds | provider interval | `OddsPoller` | Update odds snapshots, movements, and book health |
+| Odds | `ODDS_POLL_INTERVAL_MS`, usually 30s | `OddsPoller` | Update odds snapshots and movements |
+| Book health | `BOOK_HEALTH_INTERVAL_MS`, usually 60s | `OddsPoller` | Update book status |
 
 Browser clients do not start or stop these loops. Backend process lifetime controls them.
 

@@ -47,6 +47,13 @@ function getAgentPerformanceRawRows(data: unknown): unknown[] {
   return [];
 }
 
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export class BuckeyeScraperManager {
   private agents: Map<string, AgentInstance> = new Map();
   private db: Database;
@@ -77,6 +84,10 @@ export class BuckeyeScraperManager {
     this.broadcast = broadcast;
     this.debugMode = debugMode;
     this.secretVault = secretVault;
+    this.pollIntervalMs = readPositiveIntEnv('POLL_INTERVAL_MS', this.pollIntervalMs);
+    this.tokenRenewalMs = readPositiveIntEnv('TOKEN_RENEWAL_MINUTES', 15) * 60 * 1000;
+    this.accessLogIntervalMs = readPositiveIntEnv('ACCESS_LOG_INTERVAL_MS', this.accessLogIntervalMs);
+    this.performanceIntervalMs = readPositiveIntEnv('AGENT_PERFORMANCE_INTERVAL_MS', this.performanceIntervalMs);
     this.webhookService = new WebhookService(db);
     this.patternService = new PatternService(db, broadcast);
     this.actionQueue = new ActionQueue(db, broadcast, 30_000, async (request) => this.executeBetAction(request));
