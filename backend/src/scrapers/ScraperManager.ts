@@ -5,7 +5,8 @@
  */
 
 import type { Database } from '../database';
-import { BuckeyeAPI, BuckeyeCredentials } from './BuckeyeAPI';
+import { BuckeyeAPI, BuckeyeCredentials, type BuckeyeWeeklyFigureOptions } from './BuckeyeAPI';
+import { LiveAgentTree } from './LiveAgentTree';
 import { evaluateWager, Alert } from '../risk/AlertEngine';
 import { WebhookService } from '../services/WebhookService';
 
@@ -19,6 +20,7 @@ interface AgentInstance {
   consecutiveErrors: number;
   currentPollMs: number;
   reloginAttempts: number;
+  liveTree?: LiveAgentTree;
 }
 
 export class BuckeyeScraperManager {
@@ -28,6 +30,8 @@ export class BuckeyeScraperManager {
   private pollIntervalMs: number = 5000;
   private tokenRenewalMs: number = 15 * 60 * 1000; // 15 minutes
   private webhookService: WebhookService;
+  private accountInfoCache: Map<string, { data: any; timestamp: number }> = new Map();
+  private accountInfoCacheTtlMs: number = 5 * 60 * 1000;
 
   private debugMode: boolean;
 
@@ -66,6 +70,7 @@ export class BuckeyeScraperManager {
     };
 
     this.agents.set(agentId, instance);
+    await this.initializeLiveAgentTree(agentId, instance);
     console.log(`[Manager] Started polling for ${agentId} every ${this.pollIntervalMs}ms`);
 
     setImmediate(() => this.pollAgent(agentId));
@@ -106,6 +111,7 @@ export class BuckeyeScraperManager {
     };
 
     this.agents.set(agentId, instance);
+    await this.initializeLiveAgentTree(agentId, instance);
     console.log(`[Manager] Resumed session for ${agentId}`);
 
     setImmediate(() => this.pollAgent(agentId));
@@ -272,6 +278,81 @@ export class BuckeyeScraperManager {
     } catch (err: any) {
       console.error('[ScraperManager] getAgentHierarchy error:', err.message);
       return { GENERAL: [], error: err.message };
+    }
+  }
+
+  /**
+   * Fetch language/theme UI config through an active Buckeye session.
+   */
+  async getBuckeyeUiConfig(
+    agentId?: string,
+    includeRaw: boolean = false,
+    includeAgentParams: boolean = false
+  ): Promise<any> {
+    const instance = agentId
+      ? this.agents.get(agentId)
+      : Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
+
+    if (!instance || !instance.api.isAuthenticated()) {
+      return { parsed: null, message: 'Not authenticated to Buckeye' };
+    }
+
+    try {
+      return await instance.api.getLanguageUiConfig({ includeRaw, includeAgentParams });
+    } catch (err: any) {
+      console.error('[ScraperManager] getBuckeyeUiConfig error:', err.message);
+      return { parsed: null, error: err.message };
+    }
+  }
+
+  /**
+   * Fetch sanitized account info through an active Buckeye session.
+   */
+  async getBuckeyeAccountInfo(agentId?: string, force: boolean = false): Promise<any> {
+    const instance = agentId
+      ? this.agents.get(agentId)
+      : Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
+
+    if (!instance || !instance.api.isAuthenticated()) {
+      return { accountInfo: null, message: 'Not authenticated to Buckeye' };
+    }
+
+    try {
+      const cacheKey = agentId || instance.credentials.agentId;
+      const cached = this.accountInfoCache.get(cacheKey);
+      if (!force && cached && Date.now() - cached.timestamp < this.accountInfoCacheTtlMs) {
+        return cached.data;
+      }
+
+      const data = await instance.api.getAccountInfoOwner();
+      this.accountInfoCache.set(cacheKey, { data, timestamp: Date.now() });
+      return data;
+    } catch (err: any) {
+      console.error('[ScraperManager] getBuckeyeAccountInfo error:', err.message);
+      return { accountInfo: null, error: err.message };
+    }
+  }
+
+  /**
+   * Fetch weekly figure report through an active Buckeye session.
+   */
+  async getWeeklyFigureByAgentLite(
+    agentId?: string,
+    options: BuckeyeWeeklyFigureOptions = {}
+  ): Promise<any> {
+    const instance = agentId
+      ? this.agents.get(agentId)
+      : Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
+
+    if (!instance || !instance.api.isAuthenticated()) {
+      return { data: null, message: 'Not authenticated to Buckeye' };
+    }
+
+    try {
+      return await instance.api.getWeeklyFigureByAgentLite(options);
+    } catch (err: any) {
+      console.error('[ScraperManager] getWeeklyFigureByAgentLite error:', err.message);
+      return { data: null, error: err.message };
     }
   }
 
@@ -591,6 +672,26 @@ export class BuckeyeScraperManager {
     };
   }
 
+  private async initializeLiveAgentTree(agentId: string, instance: AgentInstance): Promise<void> {
+    try {
+      const hierarchy = await instance.api.getAgentHierarchy();
+      const agents = Array.isArray(hierarchy?.GENERAL) ? hierarchy.GENERAL : [];
+      instance.liveTree = new LiveAgentTree(agents);
+    } catch (err) {
+      console.warn(`[Manager] Live agent tree hierarchy unavailable for ${agentId}; using wager-only deltas`);
+      instance.liveTree = new LiveAgentTree([]);
+    }
+
+    instance.liveTree.onUpdate((delta) => {
+      this.broadcast({
+        type: 'agentUpdate',
+        timestamp: new Date().toISOString(),
+        agentId: delta.agent,
+        payload: delta,
+      });
+    });
+  }
+
   /**
    * Poll a single agent.
    */
@@ -618,6 +719,7 @@ export class BuckeyeScraperManager {
         await this.persistWager(change.wager);
 
         if (change.type === 'new') {
+          instance.liveTree?.processWager(change.wager);
           this.broadcast({
             type: 'wager.new',
             timestamp: new Date().toISOString(),
@@ -633,6 +735,7 @@ export class BuckeyeScraperManager {
           const alerts = evaluateWager(change.wager);
           for (const alert of alerts) {
             await this.persistAlert(alert);
+            instance.liveTree?.processAlert(change.wager.AgentLogin || change.wager.AgentID);
             this.broadcast({
               type: 'wager.alert',
               timestamp: new Date().toISOString(),

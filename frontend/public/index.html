@@ -359,7 +359,7 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
       </div>
 
       <!-- Buckeye Stats Cards -->
-      <div class="grid grid-cols-7 gap-3 mb-4">
+      <div class="grid grid-cols-8 gap-3 mb-4">
         <div class="rounded-lg p-3 border" style="background:var(--panel);border-color:var(--border);">
           <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Total Wagers</div>
           <div class="text-xl font-bold" id="buckeyeTotalWagers">149</div>
@@ -369,6 +369,11 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
           <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Total Volume</div>
           <div class="text-xl font-bold" id="buckeyeTotalVolume">$1.75M</div>
           <div class="text-xs" style="color:var(--text-dim);">Risk amount</div>
+        </div>
+        <div class="rounded-lg p-3 border" style="background:var(--panel);border-color:var(--border);">
+          <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Master Balance</div>
+          <div class="text-xl font-bold" id="masterBalance">—</div>
+          <div class="text-xs" id="masterBookPercent" style="color:var(--text-dim);">Book —</div>
         </div>
         <div class="rounded-lg p-3 border" style="background:var(--panel);border-color:var(--border);">
           <div class="text-xs uppercase tracking-wider mb-1" style="color:var(--text-dim);">Unique Customers</div>
@@ -1080,6 +1085,15 @@ const sectionCache = {
 };
 const debouncedTasks = {};
 let currentMovementIndex = {};
+let masterAccountInfo = null;
+let FEATURE_FLAGS = {
+  allowFlashBets: false,
+  allowPropBuilder: true,
+  allowExtProps: true,
+  allowLiveBetting: true,
+};
+window.MASTER_BALANCE = 0;
+window.MASTER_BOOK_PERCENT = 100;
 
 // Exposure data from backend
 let sportExposureData = [];
@@ -1095,6 +1109,89 @@ function isCacheFresh(key) {
 
 function markCacheFresh(key) {
   if (sectionCache[key]) sectionCache[key].at = Date.now();
+}
+
+function getMasterBookBase() {
+  return Math.abs(window.MASTER_BALANCE || 0);
+}
+
+function pctOfMasterBook(amount) {
+  const base = getMasterBookBase();
+  return base > 0 ? ((amount || 0) / base * 100) : 0;
+}
+
+function getExposurePct(amount, localTotal = 0) {
+  const masterPct = pctOfMasterBook(amount);
+  if (masterPct > 0) return masterPct.toFixed(2);
+  return localTotal > 0 ? ((amount || 0) / localTotal * 100).toFixed(1) : '0.0';
+}
+
+function updateMasterAccountDisplay() {
+  const balanceEl = document.getElementById('masterBalance');
+  const bookEl = document.getElementById('masterBookPercent');
+  if (balanceEl) {
+    const balance = window.MASTER_BALANCE || 0;
+    const sign = balance < 0 ? '-' : '';
+    balanceEl.textContent = balance ? `${sign}$${(Math.abs(balance) / 1000).toFixed(1)}K` : '—';
+    balanceEl.style.color = balance < 0 ? 'var(--red)' : 'var(--green)';
+  }
+  if (bookEl) {
+    const pct = window.MASTER_BOOK_PERCENT || 0;
+    const skin = masterAccountInfo?.parsed?.skin || masterAccountInfo?.parsed?.defaultSiteSkin || '—';
+    bookEl.textContent = pct ? `${pct}% book · ${skin}` : `Book — · ${skin}`;
+  }
+}
+
+async function refreshMasterAccountInfo(force = false) {
+  const agentId = localStorage.getItem('agentId') || '';
+  const url = new URL(`${getApiBaseUrl()}/api/buckeye/account-info`);
+  if (agentId) url.searchParams.set('agentId', agentId);
+  if (force) url.searchParams.set('force', '1');
+
+  try {
+    const res = await fetch(url.toString());
+    if (!res.ok) throw new Error(`Account info request failed: ${res.status}`);
+    const data = await res.json();
+    if (!data || !data.accountInfo) return null;
+
+    masterAccountInfo = data;
+    window.MASTER_BALANCE = Number(data.parsed?.balances?.current || 0);
+    window.MASTER_BOOK_PERCENT = Number(data.accountInfo?.PercentBook || 100);
+    FEATURE_FLAGS = {
+      allowFlashBets: Boolean(data.parsed?.featureFlags?.find(f => f.key === 'AllowFlashBets')?.value),
+      allowPropBuilder: Boolean(data.parsed?.featureFlags?.find(f => f.key === 'AllowPropBuilder')?.value),
+      allowExtProps: Boolean(data.parsed?.featureFlags?.find(f => f.key === 'AllowExtProps')?.value),
+      allowLiveBetting: Boolean(data.parsed?.featureFlags?.find(f => f.key === 'AllowUltraLive')?.value),
+    };
+
+    updateMasterAccountDisplay();
+    return data;
+  } catch (err) {
+    console.log('[AccountInfo] Failed to load master account info:', err.message);
+    updateMasterAccountDisplay();
+    return null;
+  }
+}
+
+function getDisabledFeatureReason(wager) {
+  const type = detectWagerType(wager);
+  const rawType = String(wager.WagerType || '').toUpperCase();
+  const desc = String(wager.ShortDesc || '');
+
+  if ((rawType === 'FLASHBET' || /flash\s*bet/i.test(desc)) && !FEATURE_FLAGS.allowFlashBets) {
+    return 'Flash bets disabled';
+  }
+  if (type === 'PROP' && !FEATURE_FLAGS.allowPropBuilder && !FEATURE_FLAGS.allowExtProps) {
+    return 'Props disabled';
+  }
+  if (wager.TicketWriter === 'GSLIVE' && !FEATURE_FLAGS.allowLiveBetting) {
+    return 'Live betting disabled';
+  }
+  return '';
+}
+
+function isLegitimateWager(wager) {
+  return getDisabledFeatureReason(wager) === '';
 }
 
 function scheduleTask(key, fn, delay = 100) {
@@ -1275,6 +1372,10 @@ document.addEventListener('DOMContentLoaded', () => {
   wsClient.on('wager.new', (msg) => {
     if (msg.payload) {
       buckeyeWagers.unshift(msg.payload);
+      const disabledReason = getDisabledFeatureReason(msg.payload);
+      if (disabledReason) {
+        showToast(`Anomaly: ${disabledReason} on wager ${msg.payload.WagerNumber}`, 'error');
+      }
       sectionCache.downline.at = 0;
       sectionCache.exposure.at = 0;
       updateBuckeyeStats();
@@ -1287,6 +1388,14 @@ document.addEventListener('DOMContentLoaded', () => {
       showToast(msg.payload.message || 'Alert triggered', msg.payload.severity === 'critical' ? 'error' : 'warning');
       scheduleRender('alerts');
     }
+  });
+
+  wsClient.on('agentUpdate', (msg) => {
+    mergeAgentDelta(msg.payload || msg);
+  });
+
+  wsClient.on('agent.update', (msg) => {
+    mergeAgentDelta(msg.payload || msg);
   });
 
   wsClient.on('exposure.update', (msg) => {
@@ -1305,6 +1414,13 @@ document.addEventListener('DOMContentLoaded', () => {
   loadOddsData();
   renderPositions();
   updateSortHeaders();
+  refreshMasterAccountInfo().then(() => {
+    sectionCache.exposure.at = 0;
+    updateBuckeyeStats();
+    renderAgentExposure();
+    renderSportExposure();
+    renderAgentTree(agentTreeData);
+  });
   scheduleRender('buckeye');
   renderBuckeyeAgentExposure();
   renderSportBreakdown();
@@ -1409,6 +1525,12 @@ function updateFromBackend(data) {
   }
 }
 
+async function refreshLiveStats() {
+  await fetchExposureData(true);
+  updateBuckeyeStats();
+  scheduleRender('all');
+}
+
 function loadSampleData() {
   // Only load sample data if no real data is present (e.g., buckeye_data.js failed to load)
   if (buckeyeWagers.length > 0) return;
@@ -1470,6 +1592,11 @@ async function fetchSportExposure() {
     const res = await fetch(`${getApiBaseUrl()}/api/exposure/sports`);
     if (!res.ok) throw new Error('Failed to fetch sport exposure');
     sportExposureData = await res.json();
+    const totalVolume = sportExposureData.reduce((sum, row) => sum + (row.total || 0), 0);
+    sportExposureData = sportExposureData.map(row => ({
+      ...row,
+      pct: getExposurePct(row.total || 0, totalVolume),
+    }));
     renderSportExposure();
   } catch (err) {
     console.log('[Exposure] Sport fetch failed:', err.message);
@@ -1483,6 +1610,11 @@ async function fetchAgentExposure() {
     const res = await fetch(`${getApiBaseUrl()}/api/exposure/agents`);
     if (!res.ok) throw new Error('Failed to fetch agent exposure');
     agentExposureData = await res.json();
+    const totalVolume = agentExposureData.reduce((sum, row) => sum + (row.total || 0), 0);
+    agentExposureData = agentExposureData.map(row => ({
+      ...row,
+      pct: getExposurePct(row.total || 0, totalVolume),
+    }));
     renderAgentExposure();
   } catch (err) {
     console.log('[Exposure] Agent fetch failed:', err.message);
@@ -1543,7 +1675,7 @@ function computeSportExposureLocal() {
 
     return {
       sport, total: data.total,
-      pct: totalVolume > 0 ? ((data.total / totalVolume) * 100).toFixed(1) : '0.0',
+      pct: getExposurePct(data.total, totalVolume),
       live: data.live, wagerCount: data.wagerCount,
       topGame, side: topSide || '—', price: topSidePrice || '—', gameTotal
     };
@@ -1583,7 +1715,7 @@ function computeAgentExposureLocal() {
     }
     return {
       agent, total: data.total,
-      pct: totalVolume > 0 ? ((data.total / totalVolume) * 100).toFixed(1) : '0.0',
+      pct: getExposurePct(data.total, totalVolume),
       live: data.live, wagerCount: data.wagerCount,
       topCustomer: topCustomer || '—', topCustomerVol,
       topGame: topGame || '—', topGameVol
@@ -1721,7 +1853,8 @@ function renderBuckeyeWagers() {
     const typeInfo = WAGER_MARKETS[marketKey] || rawTypeInfo;
     const isAlert = w.TicketWriter === 'ALERT';
     const isLive = w.TicketWriter === 'GSLIVE';
-    const rowClass = isAlert ? 'alert-row' : isLive ? 'gslive-row' : '';
+    const disabledFeatureReason = getDisabledFeatureReason(w);
+    const rowClass = disabledFeatureReason ? 'alert-row' : isAlert ? 'alert-row' : isLive ? 'gslive-row' : '';
 
     // Parse time
     const dt = new Date(w.InsertDateTime);
@@ -1746,6 +1879,8 @@ function renderBuckeyeWagers() {
     let sourceBadge = '';
     if (isAlert) {
       sourceBadge = '<span class="px-1.5 py-0.5 rounded text-xs font-bold" style="background:var(--red);color:#fff;">ALERT</span>';
+    } else if (disabledFeatureReason) {
+      sourceBadge = `<span class="px-1.5 py-0.5 rounded text-xs font-bold" title="${disabledFeatureReason}" style="background:var(--red);color:#fff;">ANOMALY</span>`;
     } else if (isLive) {
       sourceBadge = '<span class="px-1.5 py-0.5 rounded text-xs font-bold" style="background:var(--cyan);color:#fff;">GSLIVE</span>';
     } else {
@@ -1856,6 +1991,7 @@ function updateBuckeyeStats() {
   document.getElementById('buckeyeAlertWagers').textContent = alerts;
   document.getElementById('buckeyeLiveWagers').textContent = live;
   document.getElementById('buckeyeMaxWager').textContent = '$' + (maxWager / 1000).toFixed(1) + 'K';
+  updateMasterAccountDisplay();
   updateTopBarStatus();
 }
 
@@ -3560,6 +3696,7 @@ function saveAndConnect(agentId, password, baseUrl, cfCookie) {
 
   updateConnectionStatus('connecting');
   showToast('Connecting to Buckeye...', 'info');
+  refreshMasterAccountInfo(true);
 
   if (!wsClient.ws || wsClient.ws.readyState !== WebSocket.OPEN) {
     wsClient.connect();
@@ -3579,6 +3716,7 @@ function resumeSession(agentId, password, baseUrl, cfCookie, token) {
 
   updateConnectionStatus('connecting');
   showToast('Resuming session...', 'info');
+  refreshMasterAccountInfo(true);
 
   if (!wsClient.ws || wsClient.ws.readyState !== WebSocket.OPEN) {
     wsClient.connect();
@@ -3939,6 +4077,92 @@ function computeDownlineStats(nodes) {
   });
 }
 
+function mergeAgentDelta(delta) {
+  if (!delta) return;
+  const agentId = delta.agent || delta.agentId;
+  if (!agentId) return;
+
+  let agent = agentTreeFlat.find(a => a.agent === agentId || String(a.AgentID || '').trim() === agentId);
+  if (!agent) {
+    agent = {
+      agent: agentId,
+      AgentID: agentId,
+      type: delta.type || 'A',
+      level: Number(delta.level) || 1,
+      children: [],
+      expanded: true,
+      player_count: 0,
+    };
+    agentTreeData.push(agent);
+    agentTreeFlat = flattenAgentTree(agentTreeData);
+  }
+
+  applyAgentDelta(agent, delta);
+  computeDownlineStats(agentTreeData);
+  updateAgentSummary(agentTreeFlat);
+  updateAgentRow(agent);
+
+  if (currentSection === 'agentTree' && treeCanvas) {
+    computeTreeLayout(agentTreeData);
+    drawTree();
+  }
+}
+
+function applyAgentDelta(agent, delta) {
+  if (delta.total_volume !== undefined) agent.total_volume = Number(delta.total_volume) || 0;
+  if (delta.volume !== undefined) agent.total_volume = Number(delta.volume) || 0;
+  if (delta.total_risk !== undefined) agent.total_risk = Number(delta.total_risk) || 0;
+  if (delta.risk !== undefined) agent.total_risk = Number(delta.risk) || 0;
+  if (delta.wager_count !== undefined) agent.wager_count = Number(delta.wager_count) || 0;
+  if (delta.alert_count !== undefined) agent.alert_count = Number(delta.alert_count) || 0;
+  if (delta.alerts !== undefined) agent.alert_count = Number(delta.alerts) || 0;
+  if (delta.live_count !== undefined) agent.live_count = Number(delta.live_count) || 0;
+  if (delta.live !== undefined) agent.live_count = Number(delta.live) || 0;
+  if (delta.top_game !== undefined) agent.top_game = delta.top_game;
+  if (delta.topGame !== undefined) agent.top_game = delta.topGame;
+  if (delta.top_customer !== undefined) agent.top_customer = delta.top_customer;
+  if (delta.topCustomer !== undefined) agent.top_customer = delta.topCustomer;
+}
+
+function updateAgentRow(agent) {
+  const row = document.querySelector(`tr.agent-row[data-agent="${cssEscape(agent.agent)}"]`);
+  if (!row) {
+    if (currentSection === 'agentNetwork' || currentSection === 'agentTree') {
+      renderAgentTree(agentTreeData);
+    }
+    return;
+  }
+
+  const totalVolume = agentTreeFlat.reduce((s, a) => s + (a.total_volume || 0), 0);
+  const displayVolume = agent.downline_volume || agent.total_volume || 0;
+  const displayRisk = agent.downline_risk || agent.total_risk || 0;
+  const displayPlayers = agent.downline_players || agent.player_count || 0;
+  const displayWagers = agent.downline_wagers || agent.wager_count || 0;
+  const bookPct = getExposurePct(displayRisk, totalVolume);
+  const alertBadge = agent.alert_count > 0 ? `<span class="ml-1 text-[10px] px-1 py-0.5 rounded-full" style="background:var(--red);color:#fff;">${agent.alert_count}</span>` : '—';
+
+  const playersCell = row.querySelector('[data-agent-field="players"]');
+  const wagersCell = row.querySelector('[data-agent-field="wagers"]');
+  const volumeCell = row.querySelector('[data-agent-field="volume"]');
+  const riskCell = row.querySelector('[data-agent-field="risk"]');
+  const alertsCell = row.querySelector('[data-agent-field="alerts"]');
+  if (playersCell) playersCell.textContent = displayPlayers;
+  if (wagersCell) wagersCell.textContent = displayWagers;
+  if (volumeCell) volumeCell.textContent = displayVolume > 0 ? '$' + Math.round(displayVolume).toLocaleString() : '—';
+  if (riskCell) {
+    riskCell.innerHTML = `${displayRisk > 0 ? '$' + Math.round(displayRisk).toLocaleString() : '—'} <span style="color:var(--text-dim);font-size:10px;">${bookPct}%</span>`;
+    riskCell.title = `${bookPct}% of master book`;
+  }
+  if (alertsCell) alertsCell.innerHTML = alertBadge;
+  row.classList.add('flash-green');
+  setTimeout(() => row.classList.remove('flash-green'), 900);
+}
+
+function cssEscape(value) {
+  if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
+  return String(value).replace(/["\\]/g, '\\$&');
+}
+
 function updateAgentSummary(flatAgents) {
   const totalAgents = flatAgents.length;
   const totalPlayers = flatAgents.reduce((s, a) => s + (a.player_count || 0), 0);
@@ -3980,9 +4204,11 @@ function renderAgentTree(nodes, parentElement, depth = 0, budget) {
     const volumeStr = displayVolume > 0 ? '$' + Math.round(displayVolume).toLocaleString() : '—';
     const riskStr = displayRisk > 0 ? '$' + Math.round(displayRisk).toLocaleString() : '—';
     const commStr = node.commission > 0 ? node.commission + '%' : '—';
+    const bookPct = getExposurePct(displayRisk, totalVolume);
 
     const row = document.createElement('tr');
-    row.className = 'border-b';
+    row.className = 'agent-row border-b';
+    row.dataset.agent = node.agent;
     row.style.borderColor = 'var(--border)';
     row.innerHTML = `
       <td class="px-3 py-2">
@@ -3994,11 +4220,11 @@ function renderAgentTree(nodes, parentElement, depth = 0, budget) {
       <td class="px-3 py-2 text-center">${node.level}</td>
       <td class="px-3 py-2 text-center">${typeBadge}</td>
       <td class="px-3 py-2 text-center">${commStr}</td>
-      <td class="px-3 py-2 text-center">${displayPlayers}</td>
-      <td class="px-3 py-2 text-center">${displayWagers}</td>
-      <td class="px-3 py-2 text-right font-mono">${volumeStr}</td>
-      <td class="px-3 py-2 text-right font-mono">${riskStr}</td>
-      <td class="px-3 py-2 text-center">${alertBadge || '—'}</td>
+      <td class="px-3 py-2 text-center" data-agent-field="players">${displayPlayers}</td>
+      <td class="px-3 py-2 text-center" data-agent-field="wagers">${displayWagers}</td>
+      <td class="px-3 py-2 text-right font-mono" data-agent-field="volume">${volumeStr}</td>
+      <td class="px-3 py-2 text-right font-mono" data-agent-field="risk" title="${bookPct}% of master book">${riskStr} <span style="color:var(--text-dim);font-size:10px;">${bookPct}%</span></td>
+      <td class="px-3 py-2 text-center" data-agent-field="alerts">${alertBadge || '—'}</td>
       <td class="px-3 py-2 text-center">
         <button class="px-2 py-1 rounded text-xs" style="background:var(--accent);color:#fff;" onclick="filterTickerByAgent('${node.agent}')">Wagers</button>
       </td>

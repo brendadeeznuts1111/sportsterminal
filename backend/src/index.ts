@@ -211,6 +211,127 @@ async function startServer() {
         }, corsHeaders);
       }
 
+      // Buckeye language/theme config
+      if (url.pathname === '/api/buckeye/ui-config') {
+        if (request.method === 'GET') {
+          const agentId = url.searchParams.get('agentId') || undefined;
+          const includeRaw = url.searchParams.get('includeRaw') === '1';
+          const includeAgentParams = url.searchParams.get('includeAgentParams') === '1';
+          return handleAsync(
+            async () => scraperManager.getBuckeyeUiConfig(agentId, includeRaw, includeAgentParams),
+            corsHeaders
+          );
+        }
+        if (request.method === 'POST') {
+          return handleAsync(async () => {
+            const body = await readJsonBody(request);
+            const api = new BuckeyeAPI(
+              {
+                agentId: body.agentId,
+                password: body.password || '',
+                baseUrl: body.baseUrl,
+                cfCookie: body.cfCookie,
+              },
+              false
+            );
+
+            if (body.token) {
+              (api as any).token = body.token;
+              (api as any).loggedIn = true;
+            } else {
+              const ok = await api.login();
+              if (!ok) {
+                throw new Error('Login failed — invalid credentials or site unreachable');
+              }
+            }
+
+            return api.getLanguageUiConfig({
+              includeRaw: body.includeRaw === true,
+              includeAgentParams: body.includeAgentParams === true,
+            });
+          }, corsHeaders);
+        }
+      }
+
+      // Buckeye account info and capability flags
+      if (url.pathname === '/api/buckeye/account-info') {
+        if (request.method === 'GET') {
+          const agentId = url.searchParams.get('agentId') || undefined;
+          const force = url.searchParams.get('force') === '1';
+          return handleAsync(async () => scraperManager.getBuckeyeAccountInfo(agentId, force), corsHeaders);
+        }
+        if (request.method === 'POST') {
+          return handleAsync(async () => {
+            const body = await readJsonBody(request);
+            const api = new BuckeyeAPI(
+              {
+                agentId: body.agentId,
+                password: body.password || '',
+                baseUrl: body.baseUrl,
+                cfCookie: body.cfCookie,
+              },
+              false
+            );
+
+            if (body.token) {
+              (api as any).token = body.token;
+              (api as any).loggedIn = true;
+            } else {
+              const ok = await api.login();
+              if (!ok) {
+                throw new Error('Login failed — invalid credentials or site unreachable');
+              }
+            }
+
+            return api.getAccountInfoOwner();
+          }, corsHeaders);
+        }
+      }
+
+      // Buckeye weekly figure report
+      if (url.pathname === '/api/buckeye/weekly-figures') {
+        if (request.method === 'GET') {
+          const agentId = url.searchParams.get('agentId') || undefined;
+          const week = clampInt(url.searchParams.get('week'), 0, 0, 52);
+          const type = url.searchParams.get('type') || 'A';
+          const layout = url.searchParams.get('layout') || 'byDay';
+          return handleAsync(
+            async () => scraperManager.getWeeklyFigureByAgentLite(agentId, { week, type, layout }),
+            corsHeaders
+          );
+        }
+        if (request.method === 'POST') {
+          return handleAsync(async () => {
+            const body = await readJsonBody(request);
+            const api = new BuckeyeAPI(
+              {
+                agentId: body.agentId,
+                password: body.password || '',
+                baseUrl: body.baseUrl,
+                cfCookie: body.cfCookie,
+              },
+              false
+            );
+
+            if (body.token) {
+              (api as any).token = body.token;
+              (api as any).loggedIn = true;
+            } else {
+              const ok = await api.login();
+              if (!ok) {
+                throw new Error('Login failed — invalid credentials or site unreachable');
+              }
+            }
+
+            return api.getWeeklyFigureByAgentLite({
+              week: Number.isInteger(body.week) ? body.week : 0,
+              type: body.type || 'A',
+              layout: body.layout || 'byDay',
+            });
+          }, corsHeaders);
+        }
+      }
+
       // Players
       const playerDetailsMatch = url.pathname.match(/^\/api\/players\/([^/]+)\/details$/);
       if (playerDetailsMatch) {

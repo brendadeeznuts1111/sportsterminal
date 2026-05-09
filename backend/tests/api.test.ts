@@ -191,6 +191,167 @@ describe('BuckeyeAPI detectChanges', () => {
   });
 });
 
+describe('BuckeyeAPI ui config parser', () => {
+  test('extracts bet type labels from nested UI language JSON', async () => {
+    const { parseBuckeyeUiConfig } = await import('../src/scrapers/BuckeyeAPI');
+
+    const parsed = parseBuckeyeUiConfig({
+      manager: {
+        wagerTypes: {
+          M: 'Straight',
+          P: 'Parlay',
+          T: 'Teaser',
+        },
+        markets: {
+          betTypeFuture: 'Future',
+        },
+      },
+    });
+
+    expect(parsed.betTypes).toContainEqual({
+      code: 'M',
+      label: 'Straight',
+      path: 'manager.wagerTypes.M',
+    });
+    expect(parsed.betTypes.some((type) => type.label === 'Future')).toBe(true);
+  });
+
+  test('extracts boolean feature flags and sportsbook strings', async () => {
+    const { parseBuckeyeUiConfig } = await import('../src/scrapers/BuckeyeAPI');
+
+    const parsed = parseBuckeyeUiConfig({
+      features: {
+        enableLiveBetting: true,
+        showPropBuilder: false,
+      },
+      labels: {
+        liveBetTicket: 'Live Bet Ticket',
+        account: 'Account',
+      },
+    });
+
+    expect(parsed.featureFlags).toContainEqual({
+      path: 'features.enableLiveBetting',
+      key: 'enableLiveBetting',
+      value: true,
+    });
+    expect(parsed.featureFlags).toContainEqual({
+      path: 'features.showPropBuilder',
+      key: 'showPropBuilder',
+      value: false,
+    });
+    expect(parsed.sportsbookStrings.some((entry) => entry.value === 'Live Bet Ticket')).toBe(true);
+    expect(parsed.sportsbookStrings.some((entry) => entry.value === 'Account')).toBe(false);
+  });
+});
+
+describe('BuckeyeAPI account info parser', () => {
+  test('redacts sensitive fields and extracts account capabilities', async () => {
+    const { buildAccountInfoResult } = await import('../src/scrapers/BuckeyeAPI');
+
+    const result = buildAccountInfoResult('BILLY666', {
+      accountInfo: {
+        customerID: 'BILLY666',
+        Login: 'BILLY666  ',
+        AgentType: 'M',
+        Office: 'NOLAROSE',
+        Skin: 'skin-e',
+        DefaultSiteSkin: 'RiseOfSnake',
+        Language: 'English',
+        CurrencyCode: 'USD',
+        TimeZone: 1,
+        CurrentBalance: -163545500,
+        AvailableBalance: -1635455,
+        Password: 'secret',
+        PasswordFix: 'secret-fix',
+        SMSPhoneNumber: 5551234567,
+        AllowPropBuilder: 'Y',
+        DenyLiveBetting: 'Y',
+        AllowFlashBets: 'N',
+        MaxPropPayout: 10000,
+      },
+      preferenceDate: [{ Theme: 'theme1/theme1.css' }],
+      site: [],
+      SERVER: { date: '2026-05-08 23:41:52.680' },
+    });
+
+    expect(result.accountInfo.Password).toBe('REDACTED');
+    expect(result.accountInfo.PasswordFix).toBe('REDACTED');
+    expect(result.accountInfo.SMSPhoneNumber).toBe('REDACTED');
+    expect(result.redactedFields).toContain('Password');
+    expect(result.parsed.accountId).toBe('BILLY666');
+    expect(result.parsed.login).toBe('BILLY666');
+    expect(result.parsed.balances.current).toBe(-1635455);
+    expect(result.parsed.balances.available).toBe(-16354.55);
+    expect(result.parsed.limits.MaxPropPayout).toBe(100);
+    expect(result.parsed.featureFlags).toContainEqual({
+      key: 'AllowPropBuilder',
+      value: true,
+      raw: 'Y',
+    });
+    expect(result.parsed.featureFlags).toContainEqual({
+      key: 'DenyLiveBetting',
+      value: true,
+      raw: 'Y',
+    });
+    expect(result.parsed.featureFlags).toContainEqual({
+      key: 'AllowFlashBets',
+      value: false,
+      raw: 'N',
+    });
+  });
+});
+
+describe('LiveAgentTree', () => {
+  test('processes a wager and propagates risk to parent agents', async () => {
+    const { LiveAgentTree } = await import('../src/scrapers/LiveAgentTree');
+    const tree = new LiveAgentTree([
+      { AgentID: 'M1', Login: 'MASTER', AgentType: 'M', Level: 1, SeqNumber: 1 },
+      { AgentID: 'A1', Login: 'AGENT1', AgentType: 'A', Level: 2, SeqNumber: 2 },
+    ]);
+    const updates: any[] = [];
+    tree.onUpdate((delta: any) => updates.push(delta));
+
+    tree.processWager({
+      WagerNumber: 1,
+      AgentID: 'A1',
+      CustomerID: 'C1',
+      Login: 'PLAYER1',
+      WagerType: 'M',
+      AmountWagered: 100,
+      ToWinAmount: 90,
+      VolumeAmount: 100,
+      InsertDateTime: '2026-05-09 00:00:00.000',
+      TicketWriter: 'Internet',
+      ShortDesc: 'M.Football #123 Eagles - For Game',
+      VIP: '0',
+      AgentLogin: 'AGENT1',
+    });
+
+    const agent = updates.find((u) => u.agent === 'AGENT1');
+    const master = updates.find((u) => u.agent === 'MASTER');
+    expect(agent.total_volume).toBe(100);
+    expect(agent.total_risk).toBe(100);
+    expect(agent.wager_count).toBe(1);
+    expect(agent.top_game).toBe('Eagles');
+    expect(master.total_volume).toBe(100);
+    expect(master.total_risk).toBe(100);
+  });
+
+  test('increments alert counts up the tree', async () => {
+    const { LiveAgentTree } = await import('../src/scrapers/LiveAgentTree');
+    const tree = new LiveAgentTree([
+      { AgentID: 'M1', Login: 'MASTER', AgentType: 'M', Level: 1, SeqNumber: 1 },
+      { AgentID: 'A1', Login: 'AGENT1', AgentType: 'A', Level: 2, SeqNumber: 2 },
+    ]);
+
+    const deltas = tree.processAlert('AGENT1');
+
+    expect(deltas.find((d: any) => d.agent === 'AGENT1').alert_count).toBe(1);
+    expect(deltas.find((d: any) => d.agent === 'MASTER').alert_count).toBe(1);
+  });
+});
+
 describe('BuckeyeScraperManager hierarchy', () => {
   test('returns unauthenticated response without an active Buckeye agent', async () => {
     const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
@@ -230,5 +391,51 @@ describe('BuckeyeScraperManager hierarchy', () => {
 
     expect(calls).toEqual(['A2']);
     expect(result.GENERAL[0].Login).toBe('A2');
+  });
+});
+
+describe('BuckeyeScraperManager weekly figures', () => {
+  test('returns unauthenticated response without an active Buckeye agent', async () => {
+    const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
+    const manager = new BuckeyeScraperManager({} as any, () => {}, false);
+
+    const result = await manager.getWeeklyFigureByAgentLite(undefined, { week: 0 });
+
+    expect(result.data).toBeNull();
+    expect(result.message).toContain('Not authenticated');
+  });
+
+  test('uses requested active agent for weekly figure lookups', async () => {
+    const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
+    const manager = new BuckeyeScraperManager({} as any, () => {}, false);
+    const calls: string[] = [];
+
+    (manager as any).agents.set('A1', {
+      api: {
+        isAuthenticated: () => true,
+        getWeeklyFigureByAgentLite: async () => {
+          calls.push('A1');
+          return { data: { GENERAL: [{ agent: 'A1' }] } };
+        },
+      },
+    });
+    (manager as any).agents.set('A2', {
+      api: {
+        isAuthenticated: () => true,
+        getWeeklyFigureByAgentLite: async (options: any) => {
+          calls.push(`A2:${options.week}:${options.type}:${options.layout}`);
+          return { data: { GENERAL: [{ agent: 'A2' }] } };
+        },
+      },
+    });
+
+    const result = await manager.getWeeklyFigureByAgentLite('A2', {
+      week: 0,
+      type: 'A',
+      layout: 'byDay',
+    });
+
+    expect(calls).toEqual(['A2:0:A:byDay']);
+    expect(result.data.GENERAL[0].agent).toBe('A2');
   });
 });
