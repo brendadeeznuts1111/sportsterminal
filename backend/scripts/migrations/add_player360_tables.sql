@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS deposits (
 );
 
 CREATE INDEX IF NOT EXISTS idx_deposits_customer_time ON deposits(customer_id, transaction_time DESC);
+CREATE INDEX IF NOT EXISTS idx_deposits_login_time ON deposits(login, transaction_time DESC);
 CREATE INDEX IF NOT EXISTS idx_deposits_ip_time ON deposits(ip_address, transaction_time DESC);
 
 CREATE TABLE IF NOT EXISTS customer_snapshots (
@@ -57,6 +58,7 @@ CREATE TABLE IF NOT EXISTS customer_snapshots (
 );
 
 CREATE INDEX IF NOT EXISTS idx_customer_snapshots_customer_time ON customer_snapshots(customer_id, snapshot_time DESC);
+CREATE INDEX IF NOT EXISTS idx_customer_snapshots_login_time ON customer_snapshots(login, snapshot_time DESC);
 
 CREATE TABLE IF NOT EXISTS player_links (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

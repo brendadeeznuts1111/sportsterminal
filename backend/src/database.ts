@@ -553,12 +553,18 @@ export async function initDatabase(): Promise<AppDatabase> {
     CREATE INDEX IF NOT EXISTS idx_wager_archive_time ON wager_archive(insert_date_time);
     CREATE INDEX IF NOT EXISTS idx_wager_archive_agent_time ON wager_archive(agent_login, insert_date_time);
     CREATE INDEX IF NOT EXISTS idx_wager_archive_customer ON wager_archive(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_wager_archive_login_time ON wager_archive(login, insert_date_time DESC);
     CREATE INDEX IF NOT EXISTS idx_wager_archive_ingested ON wager_archive(ingested_at);
     CREATE INDEX IF NOT EXISTS idx_deposits_customer_time ON deposits(customer_id, transaction_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_deposits_login_time ON deposits(login, transaction_time DESC);
     CREATE INDEX IF NOT EXISTS idx_deposits_ip_time ON deposits(ip_address, transaction_time DESC);
     CREATE INDEX IF NOT EXISTS idx_player_transactions_customer_time ON player_transactions(customer_id, transaction_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_player_transactions_login_time ON player_transactions(login, transaction_time DESC);
     CREATE INDEX IF NOT EXISTS idx_player_transactions_category_time ON player_transactions(category, transaction_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_player_transactions_category_customer ON player_transactions(category, customer_id, transaction_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_player_transactions_category_login ON player_transactions(category, login, transaction_time DESC);
     CREATE INDEX IF NOT EXISTS idx_customer_snapshots_customer_time ON customer_snapshots(customer_id, snapshot_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_customer_snapshots_login_time ON customer_snapshots(login, snapshot_time DESC);
     CREATE INDEX IF NOT EXISTS idx_player_source_status_customer ON player_source_status(customer_id, source_key);
     CREATE INDEX IF NOT EXISTS idx_player_source_status_next ON player_source_status(agent_id, next_refresh_at);
     CREATE INDEX IF NOT EXISTS idx_player_links_a ON player_links(player_a, detected_at DESC);
@@ -572,6 +578,7 @@ export async function initDatabase(): Promise<AppDatabase> {
     CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor_id);
     CREATE INDEX IF NOT EXISTS idx_agent_perf_customer ON agent_performance_snapshots(customer_id, pulled_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_perf_login ON agent_performance_snapshots(login, pulled_at DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_perf_agent ON agent_performance_snapshots(agent_id, pulled_at DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_perf_report ON agent_performance_snapshots(report_agent_id, start_date, end_date);
     CREATE INDEX IF NOT EXISTS idx_odds_event ON odds(event_id);
@@ -1070,10 +1077,15 @@ export async function migrateDatabase(db: any) {
       );
 
       CREATE INDEX IF NOT EXISTS idx_deposits_customer_time ON deposits(customer_id, transaction_time DESC);
+      CREATE INDEX IF NOT EXISTS idx_deposits_login_time ON deposits(login, transaction_time DESC);
       CREATE INDEX IF NOT EXISTS idx_deposits_ip_time ON deposits(ip_address, transaction_time DESC);
       CREATE INDEX IF NOT EXISTS idx_player_transactions_customer_time ON player_transactions(customer_id, transaction_time DESC);
+      CREATE INDEX IF NOT EXISTS idx_player_transactions_login_time ON player_transactions(login, transaction_time DESC);
       CREATE INDEX IF NOT EXISTS idx_player_transactions_category_time ON player_transactions(category, transaction_time DESC);
+      CREATE INDEX IF NOT EXISTS idx_player_transactions_category_customer ON player_transactions(category, customer_id, transaction_time DESC);
+      CREATE INDEX IF NOT EXISTS idx_player_transactions_category_login ON player_transactions(category, login, transaction_time DESC);
       CREATE INDEX IF NOT EXISTS idx_customer_snapshots_customer_time ON customer_snapshots(customer_id, snapshot_time DESC);
+      CREATE INDEX IF NOT EXISTS idx_customer_snapshots_login_time ON customer_snapshots(login, snapshot_time DESC);
       CREATE INDEX IF NOT EXISTS idx_player_source_status_customer ON player_source_status(customer_id, source_key);
       CREATE INDEX IF NOT EXISTS idx_player_source_status_next ON player_source_status(agent_id, next_refresh_at);
       CREATE INDEX IF NOT EXISTS idx_player_links_a ON player_links(player_a, detected_at DESC);
@@ -1148,6 +1160,7 @@ export async function migrateDatabase(db: any) {
       CREATE INDEX IF NOT EXISTS idx_raw_logs_agent ON raw_api_logs(agent_id);
       CREATE INDEX IF NOT EXISTS idx_raw_logs_fetched_at ON raw_api_logs(fetched_at);
       CREATE INDEX IF NOT EXISTS idx_agent_perf_customer ON agent_performance_snapshots(customer_id, pulled_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_agent_perf_login ON agent_performance_snapshots(login, pulled_at DESC);
       CREATE INDEX IF NOT EXISTS idx_agent_perf_agent ON agent_performance_snapshots(agent_id, pulled_at DESC);
       CREATE INDEX IF NOT EXISTS idx_agent_perf_report ON agent_performance_snapshots(report_agent_id, start_date, end_date);
     `);
