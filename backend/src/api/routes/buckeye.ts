@@ -2,7 +2,7 @@
  * Buckeye-specific routes: UI config, account info, weekly figures, connect test
  */
 import { clampInt, readJsonBody, handleAsync, corsHeaders } from '../helpers';
-import { BuckeyeAPI } from '../../scrapers/BuckeyeAPI';
+import { BuckeyeAPI, type BuckeyeWebLogOptions } from '../../scrapers/BuckeyeAPI';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 import type { BuckeyeSecretStatus, BunSecretVault } from '../../services/BunSecretVault';
 
@@ -394,6 +394,33 @@ export function registerBuckeyeRoutes(
         return scraperManager.forceAccessLogRefresh(body.agentId);
       }, corsHeaders);
     }
+  }
+
+  // Buckeye web-log live proxy (getWebLog with actions parameter)
+  if (url.pathname === '/api/buckeye/web-log' && request.method === 'GET') {
+    const agentId = url.searchParams.get('agentId') || undefined;
+    const customerId = url.searchParams.get('customerId') || '';
+    const start = url.searchParams.get('start') || '';
+    const end = url.searchParams.get('end') || '';
+    const type = (url.searchParams.get('type') || 'A') as BuckeyeWebLogOptions['type'];
+    const actions = url.searchParams.get('actions') || 'A';
+    const ip = url.searchParams.get('ip') || '';
+
+    if (!start || !end) {
+      throw new Error('start and end parameters are required');
+    }
+
+    return handleAsync(async () =>
+      scraperManager.getWebLogLive({
+        customerID: customerId,
+        start,
+        end,
+        type,
+        actions,
+        ip,
+      }, agentId),
+      corsHeaders
+    );
   }
 
   // Buckeye players list (getPlayers)

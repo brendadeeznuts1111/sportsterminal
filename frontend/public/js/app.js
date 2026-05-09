@@ -47,6 +47,8 @@ FactoryWager.state.playerProfile = FactoryWager.state.playerProfile || {
   virtualLimits: { wagers: 75, access: 100, deposits: 100, transactions: 100, notes: 100 },
   liveRegionMessage: '',
   agentFilter: '',
+  accessLogFilters: { actions: 'A', customerId: '', start: '', end: '', ip: '' },
+  accessLogLive: [],
 };
 FactoryWager.state.ws = FactoryWager.state.ws || {
   subscribedPlayerId: null,
@@ -5989,6 +5991,8 @@ async function openPlayerProfileModal(playerId) {
   playerProfileState.tab = 'overview';
   playerProfileState.transactionTab = 'all';
   playerProfileState.wagerPage = 1;
+  playerProfileState.accessLogLive = [];
+  playerProfileState.accessLogFilters = { actions: 'A', customerId: '', start: '', end: '', ip: '' };
   modal.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
   document.getElementById('playerProfileTitle').textContent = playerId;
@@ -7149,21 +7153,136 @@ function setPlayerWagerPage(page) {
 function renderPlayerProfileAccess(profile) {
   const el = document.getElementById('playerProfileAccess');
   if (!el) return;
-  const virtual = getVirtualHistoryRows(profile.accessLogs || [], 'access');
+  const filters = playerProfileState.accessLogFilters || {};
+  const liveLogs = playerProfileState.accessLogLive || [];
+  const displayLogs = liveLogs.length ? liveLogs : (profile.accessLogs || []);
+  const virtual = getVirtualHistoryRows(displayLogs, 'access');
   const logs = virtual.rows;
-  el.innerHTML = `<div class="rounded-lg border overflow-auto" style="border-color:var(--border);">
-    <table class="profile-table">
-      <thead><tr><th>Time</th><th>IP</th><th>Flag</th><th>Device</th><th>Geo</th><th>Operation</th></tr></thead>
-      <tbody>${logs.map(log => `<tr class="${log.isNewIp ? 'new-ip-row' : ''}">
-        <td style="color:var(--text-dim);">${formatShortDateTime(log.access_datetime)}</td>
-        <td class="font-mono">${escapeHtml(log.ip_address)}</td>
-        <td>${log.isNewIp ? '<span class="new-ip-pill px-2 py-0.5 rounded text-xs">New IP</span>' : '<span style="color:var(--text-dim);">Known</span>'}</td>
-        <td>${escapeHtml(log.device || '-')}</td>
-        <td>${escapeHtml(log.geo || '-')}</td>
-        <td>${escapeHtml(log.operation || log.log_type || '-')}</td>
-      </tr>`).join('') || '<tr><td colspan="6" class="text-center" style="color:var(--text-dim);">No access logs found.</td></tr>'}</tbody>
-    </table>
-  </div>${virtual.moreHtml}`;
+
+  const today = new Date().toISOString().split('T')[0];
+  const defaultStart = filters.start || today;
+  const defaultEnd = filters.end || today;
+  const defaultCustomer = filters.customerId || profile.playerId || '';
+
+  el.innerHTML = `
+    <div class="mb-3" style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;">
+      <div>
+        <label class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);display:block;margin-bottom:2px;">Actions</label>
+        <select id="accessActionsFilter" class="text-xs px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);min-width:150px;">
+          <option value="A" ${filters.actions === 'A' ? 'selected' : ''}>Web Access Log</option>
+          <option value="B" ${filters.actions === 'B' ? 'selected' : ''}>Global IP Matcher</option>
+          <option value="C" ${filters.actions === 'C' ? 'selected' : ''}>Acct IP Match</option>
+          <option value="I" ${filters.actions === 'I' ? 'selected' : ''}>Users by IP</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);display:block;margin-bottom:2px;">Customer</label>
+        <input id="accessCustomerFilter" type="text" value="${escapeHtml(defaultCustomer)}" placeholder="Player ID" class="text-xs px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);width:120px;">
+      </div>
+      <div>
+        <label class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);display:block;margin-bottom:2px;">Start</label>
+        <input id="accessStart" type="date" value="${defaultStart}" class="text-xs px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">
+      </div>
+      <div>
+        <label class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);display:block;margin-bottom:2px;">End</label>
+        <input id="accessEnd" type="date" value="${defaultEnd}" class="text-xs px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">
+      </div>
+      <div>
+        <label class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);display:block;margin-bottom:2px;">IP</label>
+        <input id="accessIpFilter" type="text" value="${escapeHtml(filters.ip || '')}" placeholder="Filter IP" class="text-xs px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);width:120px;">
+      </div>
+      <button id="accessFetchBtn" class="px-3 py-1.5 rounded text-xs font-medium" style="background:var(--accent);color:#fff;" onclick="loadPlayerProfileAccessLogs()">Fetch Live</button>
+    </div>
+    <div class="rounded-lg border overflow-auto" style="border-color:var(--border);">
+      <table class="profile-table">
+        <thead><tr><th>Time</th><th>Login</th><th>IP</th><th>Flag</th><th>Operation</th><th>Data</th></tr></thead>
+        <tbody>${logs.map(log => `<tr class="${log.isNewIp ? 'new-ip-row' : ''}">
+          <td style="color:var(--text-dim);">${formatShortDateTime(log.access_datetime || log.AccessDateTime)}</td>
+          <td class="font-mono">${escapeHtml(log.login_id || log.LoginID || log.customer_id || '')}</td>
+          <td class="font-mono">${escapeHtml(log.ip_address || log.IPAddress || '')}</td>
+          <td>${log.isNewIp ? '<span class="new-ip-pill px-2 py-0.5 rounded text-xs">New IP</span>' : '<span style="color:var(--text-dim);">Known</span>'}</td>
+          <td>${escapeHtml(log.operation || log.log_type || log.Operation || '-')}</td>
+          <td>${escapeHtml(log.data || log.Data || '-')}</td>
+        </tr>`).join('') || '<tr><td colspan="6" class="text-center" style="color:var(--text-dim);">No access logs found. Click Fetch Live to load from Buckeye.</td></tr>'}</tbody>
+      </table>
+    </div>${virtual.moreHtml}`;
+
+  // Wire up action-dependent field enable/disable
+  const actionsSelect = document.getElementById('accessActionsFilter');
+  if (actionsSelect) {
+    actionsSelect.addEventListener('change', function () {
+      const action = this.value;
+      const customerField = document.getElementById('accessCustomerFilter');
+      const ipField = document.getElementById('accessIpFilter');
+      if (!customerField || !ipField) return;
+      if (action === 'B' || action === 'I') {
+        customerField.disabled = true;
+        ipField.disabled = false;
+      } else if (action === 'C') {
+        customerField.disabled = false;
+        ipField.disabled = true;
+      } else {
+        customerField.disabled = false;
+        ipField.disabled = false;
+      }
+    });
+    actionsSelect.dispatchEvent(new Event('change'));
+  }
+}
+
+async function loadPlayerProfileAccessLogs() {
+  const actions = document.getElementById('accessActionsFilter')?.value || 'A';
+  const customerId = document.getElementById('accessCustomerFilter')?.value?.trim() || '';
+  const startInput = document.getElementById('accessStart')?.value || '';
+  const endInput = document.getElementById('accessEnd')?.value || '';
+  const ip = document.getElementById('accessIpFilter')?.value?.trim() || '';
+
+  // Convert YYYY-MM-DD to MM/DD/YYYY for Buckeye API
+  function fmtDate(d) {
+    if (!d) return '';
+    const [y, m, day] = d.split('-');
+    return `${m}/${day}/${y}`;
+  }
+  const start = fmtDate(startInput);
+  const end = fmtDate(endInput);
+
+  playerProfileState.accessLogFilters = { actions, customerId, start: startInput, end: endInput, ip };
+
+  const btn = document.getElementById('accessFetchBtn');
+  if (btn) { btn.textContent = 'Loading...'; btn.disabled = true; }
+
+  try {
+    const url = new URL(`${getApiBaseUrl()}/api/buckeye/web-log`);
+    if (customerId) url.searchParams.set('customerId', customerId);
+    if (start) url.searchParams.set('start', start);
+    if (end) url.searchParams.set('end', end);
+    url.searchParams.set('type', 'B');
+    url.searchParams.set('actions', actions);
+    if (ip) url.searchParams.set('ip', ip);
+
+    const res = await fetch(url.toString());
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    const novel = json.novel || {};
+    const rows = (json.data || []).map(row => {
+      const key = `${row.LoginID}|${row.IPAddress}`;
+      return {
+        login_id: row.LoginID,
+        ip_address: row.IPAddress,
+        access_datetime: row.AccessDateTime,
+        operation: row.Operation,
+        data: row.Data,
+        isNewIp: Boolean(novel[key]),
+      };
+    });
+    playerProfileState.accessLogLive = rows;
+    renderPlayerProfileAccess(playerProfileState.profile);
+  } catch (err) {
+    console.error('[Access Logs] Live fetch failed:', err);
+    alert('Failed to fetch access logs: ' + (err instanceof Error ? err.message : String(err)));
+  } finally {
+    if (btn) { btn.textContent = 'Fetch Live'; btn.disabled = false; }
+  }
 }
 
 function renderPlayerProfilePerformance(profile) {

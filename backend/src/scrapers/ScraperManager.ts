@@ -15,6 +15,8 @@ import {
   type BuckeyeManagerSnapshotResult,
   type BuckeyeTransactionRow,
   type BuckeyeWeeklyFigureOptions,
+  type BuckeyeWebLogOptions,
+  type BuckeyeWebLogRow,
 } from './BuckeyeAPI';
 import { LiveAgentTree } from './LiveAgentTree';
 import { evaluateWager, Alert } from '../risk/AlertEngine';
@@ -888,6 +890,39 @@ export class BuckeyeScraperManager {
     }
   }
 
+  async getWebLogLive(
+    options: BuckeyeWebLogOptions,
+    agentId?: string
+  ): Promise<{ data: BuckeyeWebLogRow[]; total: number; novel: Record<string, boolean> }> {
+    const instance = this.resolveAgentInstance(agentId);
+
+    if (!instance || !instance.api.isAuthenticated()) {
+      throw new Error('No active Buckeye agent available');
+    }
+
+    const resolvedAgentId = instance.credentials.agentId;
+    const rows = await instance.api.getWebLog(options);
+
+    // Novelty check: is this the first time we've seen (login_id, ip_address)?
+    const novel: Record<string, boolean> = {};
+    for (const row of rows) {
+      if (!row.LoginID || !row.IPAddress) continue;
+      const key = `${row.LoginID}|${row.IPAddress}`;
+      const existing = await this.db.get(
+        `SELECT 1 FROM access_logs WHERE login_id = ? AND ip_address = ? LIMIT 1`,
+        [row.LoginID, row.IPAddress]
+      );
+      novel[key] = !existing;
+    }
+
+    // Persist to access_logs and run pattern analysis
+    await this.patternService.persistAccessLogs(resolvedAgentId, rows, options.type || 'A');
+    const patterns = await this.patternService.analyzeAccessLogs(resolvedAgentId);
+    await this.patternService.persistPatterns(patterns);
+
+    return { data: rows, total: rows.length, novel };
+  }
+
   async persistAgentPerformanceReport(report: BuckeyeAgentPerformanceResult): Promise<void> {
     const rows = report.parsed?.rows || [];
     if (rows.length === 0) return;
@@ -1352,7 +1387,7 @@ export class BuckeyeScraperManager {
     };
   }
 
-  private resolveAgentInstance(agentId?: string): AgentInstance | undefined {
+  resolveAgentInstance(agentId?: string): AgentInstance | undefined {
     if (agentId) {
       const direct = this.agents.get(agentId);
       if (direct) return direct;
