@@ -48,6 +48,17 @@ export const registerAgentHierarchyRoutes = createRouteHandler('/api/agents/hier
   if (Array.isArray(persistedHierarchy?.GENERAL) && persistedHierarchy.GENERAL.length > 0) {
     return persistedHierarchy;
   }
+  const projectedHierarchy = await getAgentHierarchyTree(scraperManager.getDatabase());
+  if (Array.isArray(projectedHierarchy?.agents) && projectedHierarchy.agents.length > 0) {
+    return {
+      GENERAL: projectedHierarchy.agents.map(formatLegacyAgentHierarchyRow),
+      meta: {
+        ...projectedHierarchy.meta,
+        source: 'agent_hierarchy_projection',
+      },
+      source: 'agent_hierarchy_projection',
+    };
+  }
   const liveHierarchy = await scraperManager.getAgentHierarchy(agentId);
   if (Array.isArray(liveHierarchy?.GENERAL) && liveHierarchy.GENERAL.length > 0) {
     return liveHierarchy;
@@ -55,6 +66,32 @@ export const registerAgentHierarchyRoutes = createRouteHandler('/api/agents/hier
   const localHierarchy = await loadLocalAgentHierarchy();
   return localHierarchy.GENERAL.length > 0 ? localHierarchy : liveHierarchy;
 });
+
+function formatLegacyAgentHierarchyRow(agent: any): any {
+  const rates = agent?.rates || {};
+  return normalizeAgentNumbers({
+    AgentID: agent?.agentId,
+    SeqNumber: agent?.seqNumber,
+    Level: agent?.level,
+    AgentType: agent?.agentType,
+    Login: agent?.login || agent?.agentId,
+    ParentAgentID: agent?.parentAgentId || '',
+    ChildCount: agent?.childCount || 0,
+    PlayerCount: agent?.playerCount || 0,
+    HeadCountRateM: rates.HeadCountRateM ?? rates.headCount ?? 0,
+    InetHeadCountRateM: rates.InetHeadCountRateM ?? rates.inetHeadCount ?? 0,
+    CasinoHeadCountRateM: rates.CasinoHeadCountRateM ?? rates.casinoHeadCount ?? 0,
+    LiveBettingRateM: rates.LiveBettingRateM ?? rates.liveBetting ?? 0,
+    LiveBetting2RateM: rates.LiveBetting2RateM ?? rates.liveBetting2 ?? 0,
+    LiveCasinoRateM: rates.LiveCasinoRateM ?? rates.liveCasino ?? 0,
+    PropBuilderRateM: rates.PropBuilderRateM ?? rates.propBuilder ?? 0,
+    FlashBetsRate: rates.FlashBetsRate ?? rates.flashBets ?? 0,
+    ExtPropsRate: rates.ExtPropsRate ?? rates.extProps ?? 0,
+    CrashRate: rates.CrashRate ?? rates.crash ?? 0,
+    FantasyRate: rates.FantasyRate ?? rates.fantasy ?? 0,
+    AmigoTechRate: rates.AmigoTechRate ?? rates.amigoTech ?? 0,
+  });
+}
 
 export const registerAgentRefreshRoutes = createMethodRouteHandler(
   '/api/agents/refresh',

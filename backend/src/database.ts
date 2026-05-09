@@ -790,6 +790,7 @@ export async function migrateDatabase(db: any) {
         console.log(`📊 Migration: added ${name} to wagers`);
       }
     }
+    await removeLegacyWagerTypeConstraint(db);
 
     const patternColumns = await db.all(`PRAGMA table_info(detected_patterns)`);
     const patternColumnNames = new Set(patternColumns.map((c: any) => c.name));
@@ -1186,6 +1187,73 @@ export async function migrateDatabase(db: any) {
   } catch (err) {
     console.error('📊 Migration error:', err);
   }
+}
+
+async function removeLegacyWagerTypeConstraint(db: any): Promise<void> {
+  const row = await db.get<{ sql: string | null }>(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'wagers'`
+  );
+  if (!row?.sql || !row.sql.includes('wager_type IN')) return;
+
+  await db.exec('DROP TABLE IF EXISTS wagers_rebuilt');
+  await db.exec(`
+    CREATE TABLE wagers_rebuilt (
+      wager_number INTEGER PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      customer_id TEXT NOT NULL,
+      login TEXT NOT NULL,
+      wager_type TEXT,
+      amount_wagered INTEGER NOT NULL,
+      to_win_amount INTEGER NOT NULL,
+      volume_amount INTEGER NOT NULL,
+      insert_datetime TEXT NOT NULL,
+      ticket_writer TEXT NOT NULL,
+      short_desc TEXT NOT NULL,
+      vip TEXT NOT NULL,
+      agent_login TEXT NOT NULL,
+      sport TEXT,
+      parsed_game TEXT,
+      parsed_market TEXT,
+      parsed_side TEXT,
+      parsed_price REAL,
+      parsed_period TEXT,
+      matched_event_id TEXT,
+      pin_reference_json TEXT,
+      raw_json TEXT,
+      scraped_at TEXT NOT NULL
+    )
+  `);
+  await db.exec(`
+    INSERT OR REPLACE INTO wagers_rebuilt (
+      wager_number, agent_id, customer_id, login, wager_type, amount_wagered,
+      to_win_amount, volume_amount, insert_datetime, ticket_writer, short_desc,
+      vip, agent_login, sport, parsed_game, parsed_market, parsed_side,
+      parsed_price, parsed_period, matched_event_id, pin_reference_json, raw_json,
+      scraped_at
+    )
+    SELECT
+      wager_number, agent_id, customer_id, login, wager_type, amount_wagered,
+      to_win_amount, volume_amount, insert_datetime, ticket_writer, short_desc,
+      vip, agent_login, sport, parsed_game, parsed_market, parsed_side,
+      parsed_price, parsed_period, matched_event_id, pin_reference_json, raw_json,
+      scraped_at
+    FROM wagers
+  `);
+  await db.exec('DROP TABLE wagers');
+  await db.exec('ALTER TABLE wagers_rebuilt RENAME TO wagers');
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_wagers_agent ON wagers(agent_login);
+    CREATE INDEX IF NOT EXISTS idx_wagers_datetime ON wagers(insert_datetime);
+    CREATE INDEX IF NOT EXISTS idx_wagers_alert ON wagers(ticket_writer) WHERE ticket_writer = 'ALERT';
+    CREATE INDEX IF NOT EXISTS idx_wagers_sport ON wagers(sport);
+    CREATE INDEX IF NOT EXISTS idx_wagers_login_datetime ON wagers(login, insert_datetime DESC);
+    CREATE INDEX IF NOT EXISTS idx_wagers_agent_datetime ON wagers(agent_login, insert_datetime DESC);
+    CREATE INDEX IF NOT EXISTS idx_wagers_ticket_datetime ON wagers(ticket_writer, insert_datetime DESC);
+    CREATE INDEX IF NOT EXISTS idx_wagers_sport_datetime ON wagers(sport, insert_datetime DESC);
+    CREATE INDEX IF NOT EXISTS idx_wagers_event_time ON wagers(matched_event_id, insert_datetime DESC);
+    CREATE INDEX IF NOT EXISTS idx_wagers_game_side_time ON wagers(parsed_game, parsed_market, parsed_side, insert_datetime DESC);
+  `);
+  console.log('📊 Migration: rebuilt wagers without legacy wager_type CHECK constraint');
 }
 
 export async function seedBuckeyeSportTypes(db: Database): Promise<void> {
