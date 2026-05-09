@@ -1143,6 +1143,19 @@ const WAGER_TYPES = {
   'PROP': { label: 'Prop', color: '#d946ef' },
 };
 
+const WAGER_MARKETS = {
+  moneyline: { label: 'Moneyline', color: '#22c55e' },
+  spread: { label: 'Spread', color: '#06b6d4' },
+  total: { label: 'Total', color: '#f59e0b' },
+  prop: { label: 'Prop', color: '#d946ef' },
+  parlay: { label: 'Parlay', color: '#f59e0b' },
+  teaser: { label: 'Teaser', color: '#10b981' },
+  future: { label: 'Future', color: '#a855f7' },
+  custom: { label: 'Custom', color: '#6366f1' },
+  straight: { label: 'Straight', color: '#3b82f6' },
+  other: { label: 'Other', color: '#6b7280' },
+};
+
 // Prop bet detection patterns in ShortDesc
 const PROP_STATS = ['Points', 'Assists', 'Rebounds', 'Threes', 'Blocks', 'Steals', 'Rushing', 'Passing', 'Receiving', 'Touchdowns', 'Sacks', 'Interceptions', 'Field Goals', 'Hits', 'Runs', 'Home Runs', 'Strikeouts'];
 
@@ -1159,12 +1172,41 @@ function detectWagerType(wager) {
 
   // Also catch "O 23½" or "U 4½" patterns near player names (alternative prop format)
   const hasOverUnderPlayer = /[A-Za-z][A-Za-z\s'.-]{2,30}\s+[OU]\s*\d+½?/.test(desc);
+  const hasPlayerTotalPoints = /\bTotal Points\s*\/\s*[A-Za-z][A-Za-z\s'.-]+\s+(?:Over|Under|O|U)\s+\d/i.test(desc);
+  const hasSlashStatOverUnder = /\/\s*[A-Za-z0-9][^/]{2,40}\s+(?:Over|Under|O|U)\s+\d/i.test(desc);
 
-  if (hasPropPattern || hasOverUnderPlayer) {
+  if (hasPropPattern || hasOverUnderPlayer || hasPlayerTotalPoints || hasSlashStatOverUnder) {
     return 'PROP';
   }
 
   return raw;
+}
+
+function detectMarketType(wagerOrDesc) {
+  const desc = decodeEntities(typeof wagerOrDesc === 'string' ? wagerOrDesc : (wagerOrDesc?.ShortDesc || ''));
+  const raw = typeof wagerOrDesc === 'string' ? '' : (wagerOrDesc?.WagerType || '').toUpperCase();
+  const clean = desc.replace(/\s+/g, ' ');
+
+  if (raw === 'P' || /^P[.:]/i.test(clean) || /\s\/\s*Parlay\s\//i.test(clean)) return 'parlay';
+  if (raw === 'T' || /\s\/\s*Teaser\s\//i.test(clean)) return 'teaser';
+  if (raw === 'C' || /\s\/\s*Custom\s\//i.test(clean)) return 'custom';
+  if (/#.*Futures/i.test(clean) || /\bto win outright\b/i.test(clean)) return 'future';
+  if (detectWagerType(typeof wagerOrDesc === 'string' ? { ShortDesc: desc, WagerType: raw } : wagerOrDesc) === 'PROP') return 'prop';
+  if (/\b(Total Points|Player Points|Player Assists|Player Rebounds)\b/i.test(clean)) return 'prop';
+  if (/\b(Total|Total Runs|Total Goals)\b/i.test(clean) || /(?:^|[\s/])(Over|Under|O|U)\s+\d/i.test(clean)) return 'total';
+  if (/\b(Point spread|Run Line|Puck Line|Spread)\b/i.test(clean)) return 'spread';
+  if (/\bMoneyline\b/i.test(clean)) return 'moneyline';
+
+  const selection = parseSelection(desc);
+  if (selection && /\s[+-]\d{2,4}$/.test(selection) && !/\s[+-]\d+(?:\.|½)\d*\s+[+-]\d{2,4}$/.test(selection)) {
+    return 'moneyline';
+  }
+  if (/\bWinner\s*\((?:2|3)\s*way\)/i.test(clean)) return 'moneyline';
+  if (/^[MLS][.:](?:Basketball|Baseball|Hockey|Football|Soccer|Tennis|Golf|Martial Arts)\s+#\d+\s+.+\s[+-]\d{2,4}\s+-\s+For Game/i.test(clean)) return 'moneyline';
+  if (raw === 'S') return 'spread';
+  if (raw === 'L') return 'total';
+  if (raw === 'M') return 'straight';
+  return 'other';
 }
 
 // ==================== INIT ====================
@@ -1674,7 +1716,9 @@ function renderBuckeyeWagers() {
   const visibleRows = filtered.slice(0, TABLE_RENDER_LIMIT);
 
   tbody.innerHTML = visibleRows.map(w => {
-    const typeInfo = WAGER_TYPES[detectWagerType(w)] || { label: w.WagerType, color: '#6b7280' };
+    const rawTypeInfo = WAGER_TYPES[detectWagerType(w)] || { label: w.WagerType, color: '#6b7280' };
+    const marketKey = detectMarketType(w);
+    const typeInfo = WAGER_MARKETS[marketKey] || rawTypeInfo;
     const isAlert = w.TicketWriter === 'ALERT';
     const isLive = w.TicketWriter === 'GSLIVE';
     const rowClass = isAlert ? 'alert-row' : isLive ? 'gslive-row' : '';
@@ -1710,7 +1754,7 @@ function renderBuckeyeWagers() {
 
     return `<tr class="${rowClass} border-b transition-colors hover:bg-opacity-50" style="border-color:var(--border);" onclick="showWagerDetail(${w.WagerNumber})" title="${fullDesc.replace(/"/g, '&quot;')}">
       <td class="px-3 py-2 font-medium cursor-pointer hover:underline" style="color:var(--accent);" onclick="event.stopPropagation();viewPlayer('${w.Login}')">${w.Login}</td>
-      <td class="px-3 py-2 text-center"><span class="px-1.5 py-0.5 rounded text-xs font-bold" style="background:${typeInfo.color}22;color:${typeInfo.color};">${typeInfo.label}</span></td>
+      <td class="px-3 py-2 text-center"><span class="px-1.5 py-0.5 rounded text-xs font-bold" title="${rawTypeInfo.label}" style="background:${typeInfo.color}22;color:${typeInfo.color};">${typeInfo.label}</span></td>
       <td class="px-3 py-2 cursor-pointer hover:underline" onclick="event.stopPropagation();filterTickerByAgent('${w.AgentLogin}')">${w.AgentLogin}</td>
       <td class="px-3 py-2"><span class="px-1.5 py-0.5 rounded text-xs" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);">${sport}</span></td>
       <td class="px-3 py-2"><span class="px-1.5 py-0.5 rounded text-xs" style="background:var(--bg);color:var(--text-dim);border:1px solid var(--border);">${league || '—'}</span></td>
@@ -1998,6 +2042,10 @@ function getHeldRisk(w) {
 function parseSport(desc) {
   if (!desc) return 'Other';
   desc = decodeEntities(desc);
+  if (/^L[.:]LIVE\b/i.test(desc)) {
+    const liveSport = inferSportFromTeams(desc);
+    if (liveSport) return liveSport;
+  }
   // Pattern 1: GSLIVE format: "M.G123456 - Top Soccer - Player vs Player..."
   const gsliveMatch = desc.match(/^[A-Z][.:]G?\d+\s*-\s*(?:Top\s+)?([A-Za-z]+)/);
   if (gsliveMatch) return gsliveMatch[1];
@@ -2024,7 +2072,29 @@ function parseSport(desc) {
   return 'Other';
 }
 
+const LEAGUE_TEAM_HINTS = [
+  { league: 'WNBA', sport: 'Basketball', names: ['Seattle Storm', 'Golden State Valkyries', 'Minnesota Lynx', 'Las Vegas Aces', 'New York Liberty', 'Indiana Fever', 'Chicago Sky', 'Phoenix Mercury', 'Dallas Wings', 'Connecticut Sun', 'Atlanta Dream', 'Los Angeles Sparks', 'Washington Mystics'] },
+  { league: 'NBA', sport: 'Basketball', names: ['Lakers', 'Timberwolves', 'Spurs', 'Warriors', 'Celtics', 'Knicks', 'Nuggets', 'Mavericks', 'Suns', 'Clippers', 'Heat', 'Bucks', '76ers', 'Sixers', 'Thunder', 'Grizzlies', 'Pelicans', 'Kings', 'Jazz', 'Trail Blazers', 'Rockets', 'Hawks', 'Magic', 'Pacers', 'Cavaliers', 'Bulls', 'Nets', 'Hornets', 'Pistons', 'Raptors', 'Wizards'] },
+  { league: 'MLB', sport: 'Baseball', names: ['Diamondbacks', 'Mets', 'Giants', 'Pirates', 'Padres', 'Cardinals', 'Dodgers', 'Braves', 'Yankees', 'Red Sox', 'Cubs', 'White Sox', 'Phillies', 'Nationals', 'Marlins', 'Rays', 'Orioles', 'Blue Jays', 'Guardians', 'Tigers', 'Royals', 'Twins', 'Astros', 'Rangers', 'Mariners', 'Athletics', 'Angels', 'Rockies', 'Brewers', 'Reds'] },
+  { league: 'NHL', sport: 'Hockey', names: ['Ducks', 'Golden Knights', 'Rangers', 'Islanders', 'Devils', 'Flyers', 'Penguins', 'Bruins', 'Sabres', 'Maple Leafs', 'Canadiens', 'Senators', 'Red Wings', 'Blackhawks', 'Blues', 'Predators', 'Jets', 'Wild', 'Avalanche', 'Stars', 'Oilers', 'Flames', 'Canucks', 'Kraken', 'Sharks', 'Kings', 'Coyotes', 'Utah', 'Hurricanes', 'Capitals', 'Lightning', 'Panthers', 'Blue Jackets'] },
+  { league: 'NFL', sport: 'Football', names: ['Saints', 'Chiefs', 'Eagles', 'Cowboys', 'Giants', 'Jets', 'Patriots', 'Bills', 'Dolphins', 'Steelers', 'Ravens', 'Browns', 'Bengals', 'Texans', 'Colts', 'Titans', 'Jaguars', 'Broncos', 'Raiders', 'Chargers', 'Commanders', 'Packers', 'Bears', 'Lions', 'Vikings', 'Buccaneers', 'Falcons', 'Panthers', '49ers', 'Seahawks', 'Rams', 'Cardinals'] },
+];
+
+function inferLeagueFromTeams(desc) {
+  const haystack = decodeEntities(desc || '').toLowerCase();
+  for (const hint of LEAGUE_TEAM_HINTS) {
+    if (hint.names.some(name => haystack.includes(name.toLowerCase()))) return hint.league;
+  }
+  return '';
+}
+
+function inferSportFromTeams(desc) {
+  const league = inferLeagueFromTeams(desc);
+  return LEAGUE_TEAM_HINTS.find(h => h.league === league)?.sport || '';
+}
+
 function parseLeague(desc) {
+  desc = decodeEntities(desc || '');
   // Extract league from description
   const leagues = [
     { pattern: /\bNBA\b/i, name: 'NBA' },
@@ -2047,17 +2117,61 @@ function parseLeague(desc) {
     if (lg.pattern.test(desc)) return lg.name;
   }
 
+  const inferred = inferLeagueFromTeams(desc);
+  if (inferred) return inferred;
+
+  const rotation = desc.match(/^[A-Z][.:](?:Basketball|Baseball|Football|Hockey)\s+#(\d+)/i);
+  if (rotation) {
+    const num = Number(rotation[1]);
+    const sport = parseSport(desc);
+    if (sport === 'Basketball' && num >= 500 && num < 600) return 'NBA';
+    if (sport === 'Basketball' && num >= 600) return 'NCAA';
+    if (sport === 'Baseball' && num >= 900) return 'MLB';
+    if (sport === 'Hockey' && num >= 1) return 'NHL';
+  }
+
   const sport = parseSport(desc);
-  if (sport === 'Basketball') return 'NBA/NCAA';
-  if (sport === 'Baseball') return 'MLB/NCAA';
+  if (sport === 'Basketball') return 'Basketball';
+  if (sport === 'Baseball') return 'Baseball';
   if (sport === 'Hockey') return 'NHL';
   if (sport === 'Soccer') return 'INTL';
   return '';
 }
 
+function parseSelection(desc) {
+  if (!desc) return '';
+  desc = decodeEntities(desc).replace(/\s+/g, ' ').trim();
+
+  const slashParts = desc.split('/').map(p => p.trim()).filter(Boolean);
+  if (slashParts.length >= 2) {
+    const last = slashParts[slashParts.length - 1].replace(/\s+-\s+For Game.*$/i, '').trim();
+    if (last) return last;
+  }
+
+  let clean = desc.replace(/^[A-Z][.:]\s*/, '');
+  clean = clean.replace(/^G\d+\s*-\s*/, '');
+  clean = clean.replace(/\s+-\s+For\s+.*$/i, '');
+  clean = clean.replace(/\s+for\s+Game\s*$/i, '');
+  clean = clean.replace(/^#\d+\s+/, '');
+  clean = clean.replace(/^(?:Basketball|Baseball|Football|Hockey|Tennis|Soccer|Golf|Martial Arts|LIVE)\s+#\d+\s+/i, '');
+  clean = clean.replace(/^(?:Top\s+)?(?:Basketball|Baseball|Football|Hockey|Tennis|Soccer|Golf|Martial Arts)\s+-\s+/i, '');
+
+  const futures = clean.match(/-\s+([^#-]+?\s[+-]\d{2,4})$/);
+  if (futures) return futures[1].trim();
+
+  return clean.trim();
+}
+
 function parseDescription(desc) {
   if (!desc) return '';
   desc = decodeEntities(desc);
+
+  const selection = parseSelection(desc);
+  const market = detectMarketType(desc);
+  if (selection && ['moneyline', 'spread', 'total', 'prop', 'future'].includes(market)) {
+    const marketLabel = WAGER_MARKETS[market]?.label || 'Market';
+    return `${marketLabel}: ${selection}`.substring(0, 80);
+  }
 
   // Remove wager type prefix: M., P., L:, T., C., S., E.
   let clean = desc.replace(/^[A-Z][.:]\s*/, '');
