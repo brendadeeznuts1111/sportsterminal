@@ -1,7 +1,11 @@
 import { describe, test, expect } from 'bun:test';
 import { evaluateWager, evaluateWagers } from '../src/risk/AlertEngine';
 import { loadLocalAgentHierarchy } from '../src/api/helpers';
-import { parseWeeklyFigureSummary } from '../src/scrapers/BuckeyeAPI';
+import {
+  parseAgentPerformanceReport,
+  parseWeeklyFigureSummary,
+  sanitizeBuckeyeLogin,
+} from '../src/scrapers/BuckeyeAPI';
 import type { EnrichedWager } from '../src/risk/AlertEngine';
 
 describe('AlertEngine', () => {
@@ -464,6 +468,59 @@ describe('BuckeyeAPI weekly figure parser', () => {
   });
 });
 
+describe('BuckeyeAPI agent performance parser', () => {
+  test('normalizes customer performance rows and redacts login password fragments', () => {
+    const parsed = parseAgentPerformanceReport({
+      INFO: {
+        LIST: [
+          {
+            CustomerID: 'CF346     ',
+            AgentID: 'CHEDDFAM',
+            Login: 'CF346 (pw:secret)',
+            wagercount: 1,
+            Risk: 25.95,
+            ToWin: 79.14,
+            amountwon: 79.14,
+            amountlost: 0,
+            volume: 25.95,
+            net: 79.14,
+          },
+          {
+            CustomerID: 'CF303     ',
+            AgentID: 'CHEDDFAM',
+            Login: 'CF303',
+            wagercount: '2',
+            Risk: '33.5',
+            ToWin: 27.91,
+            amountwon: 0,
+            amountlost: 33.5,
+            volume: 27.91,
+            net: -33.5,
+          },
+        ],
+      },
+    });
+
+    expect(parsed.rows[0]).toEqual({
+      customerId: 'CF346',
+      agentId: 'CHEDDFAM',
+      login: 'CF346',
+      wagerCount: 1,
+      risk: 25.95,
+      toWin: 79.14,
+      amountWon: 79.14,
+      amountLost: 0,
+      volume: 25.95,
+      net: 79.14,
+    });
+    expect(parsed.rows[1].login).toBe('CF303');
+    expect(parsed.totals.wagerCount).toBe(3);
+    expect(parsed.totals.risk).toBe(59.45);
+    expect(parsed.totals.net).toBe(45.64);
+    expect(sanitizeBuckeyeLogin('CF999 (pw:anything)')).toBe('CF999');
+  });
+});
+
 describe('BuckeyeScraperManager manager snapshot', () => {
   test('returns unauthenticated response without an active Buckeye agent', async () => {
     const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
@@ -553,6 +610,103 @@ describe('BuckeyeScraperManager Buckeye agent performance report', () => {
 
     expect(calls).toEqual(['A2:04/28/2026:05/09/2026:CP']);
     expect(result.data[0].Agent).toBe('A2');
+  });
+
+  test('persists parsed Buckeye agent performance snapshots and checkpoint', async () => {
+    const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
+    const writes: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      run: async (sql: string, params: unknown[] = []) => {
+        writes.push({ sql, params });
+        return { lastID: 0, changes: 1 };
+      },
+    };
+    const manager = new BuckeyeScraperManager(db as any, () => {}, false);
+
+    (manager as any).agents.set('A1', {
+      api: {
+        isAuthenticated: () => true,
+        getAgentPerformanceReport: async () => ({
+          fetchedAt: '2026-05-09T12:00:00.000Z',
+          agentId: 'A1',
+          params: {
+            start: '04/28/2026',
+            end: '05/09/2026',
+            agentID: 'BILLY666',
+            type: 'CP',
+            freePlay: 'Y',
+            store: 'BILLY666',
+            sport: 'Basketball',
+            subsport: 'NBA',
+            period: '-1',
+            wagerType: '',
+            betType: '',
+            tipo: '0',
+            debug: '0',
+            operation: 'getAgentPerformance',
+            RRO: '1',
+            agentOwner: 'SHARPTOBBY',
+            agentSite: '1',
+            group: '',
+          },
+          parsed: {
+            rows: [
+              {
+                customerId: 'CF346',
+                agentId: 'CHEDDFAM',
+                login: 'CF346',
+                wagerCount: 1,
+                risk: 25.95,
+                toWin: 79.14,
+                amountWon: 79.14,
+                amountLost: 0,
+                volume: 25.95,
+                net: 79.14,
+              },
+            ],
+            totals: {
+              wagerCount: 1,
+              risk: 25.95,
+              toWin: 79.14,
+              amountWon: 79.14,
+              amountLost: 0,
+              volume: 25.95,
+              net: 79.14,
+            },
+          },
+          data: {
+            INFO: {
+              LIST: [
+                {
+                  CustomerID: 'CF346',
+                  AgentID: 'CHEDDFAM',
+                  Login: 'CF346',
+                },
+              ],
+            },
+          },
+          redactedFields: ['LIST[0].Login'],
+        }),
+      },
+    });
+
+    await manager.getBuckeyeAgentPerformanceReport('A1', {
+      start: '04/28/2026',
+      end: '05/09/2026',
+    });
+
+    const snapshotWrite = writes.find((write) => write.sql.includes('agent_performance_snapshots'));
+    const checkpointWrite = writes.find((write) => write.sql.includes('agent_performance'));
+
+    expect(snapshotWrite).toBeDefined();
+    expect(snapshotWrite!.params.slice(0, 5)).toEqual([
+      'BILLY666',
+      'CF346',
+      'CHEDDFAM',
+      'CF346',
+      'CP',
+    ]);
+    expect(checkpointWrite).toBeDefined();
   });
 });
 

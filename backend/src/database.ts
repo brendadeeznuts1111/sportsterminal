@@ -146,6 +146,34 @@ export async function initDatabase(): Promise<AppDatabase> {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS agent_performance_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL DEFAULT 'buckeye',
+      report_agent_id TEXT NOT NULL,
+      customer_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      login TEXT NOT NULL,
+      report_type TEXT NOT NULL,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      sport TEXT,
+      subsport TEXT,
+      period TEXT,
+      wager_type TEXT,
+      bet_type TEXT,
+      activity_tipo TEXT,
+      free_play TEXT,
+      wager_count INTEGER DEFAULT 0,
+      risk REAL DEFAULT 0,
+      to_win REAL DEFAULT 0,
+      amount_won REAL DEFAULT 0,
+      amount_lost REAL DEFAULT 0,
+      volume REAL DEFAULT 0,
+      net REAL DEFAULT 0,
+      pulled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      raw_json TEXT NOT NULL DEFAULT '{}'
+    );
+
     CREATE TABLE IF NOT EXISTS odds (
       id TEXT PRIMARY KEY,
       event_id TEXT NOT NULL,
@@ -226,6 +254,9 @@ export async function initDatabase(): Promise<AppDatabase> {
     CREATE INDEX IF NOT EXISTS idx_players_agent_login ON players(agent_login);
     CREATE INDEX IF NOT EXISTS idx_checkpoints_provider_entity ON ingestion_checkpoints(provider, entity_type);
     CREATE INDEX IF NOT EXISTS idx_buckeye_sport_types_label ON buckeye_sport_types(label);
+    CREATE INDEX IF NOT EXISTS idx_agent_perf_customer ON agent_performance_snapshots(customer_id, pulled_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_perf_agent ON agent_performance_snapshots(agent_id, pulled_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_perf_report ON agent_performance_snapshots(report_agent_id, start_date, end_date);
     CREATE INDEX IF NOT EXISTS idx_odds_event ON odds(event_id);
     CREATE INDEX IF NOT EXISTS idx_wagers_agent ON wagers(agent_login);
     CREATE INDEX IF NOT EXISTS idx_wagers_datetime ON wagers(insert_datetime);
@@ -461,6 +492,36 @@ export async function migrateDatabase(db: any) {
       )
     `);
 
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_performance_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider TEXT NOT NULL DEFAULT 'buckeye',
+        report_agent_id TEXT NOT NULL,
+        customer_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        login TEXT NOT NULL,
+        report_type TEXT NOT NULL,
+        start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,
+        sport TEXT,
+        subsport TEXT,
+        period TEXT,
+        wager_type TEXT,
+        bet_type TEXT,
+        activity_tipo TEXT,
+        free_play TEXT,
+        wager_count INTEGER DEFAULT 0,
+        risk REAL DEFAULT 0,
+        to_win REAL DEFAULT 0,
+        amount_won REAL DEFAULT 0,
+        amount_lost REAL DEFAULT 0,
+        volume REAL DEFAULT 0,
+        net REAL DEFAULT 0,
+        pulled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        raw_json TEXT NOT NULL DEFAULT '{}'
+      )
+    `);
+
     const agentColumns = await db.all(`PRAGMA table_info(agents)`);
     const agentColumnNames = new Set(agentColumns.map((c: any) => c.name));
     const agentAdds: Array<[string, string]> = [
@@ -518,7 +579,28 @@ export async function migrateDatabase(db: any) {
       CREATE INDEX IF NOT EXISTS idx_players_agent_login ON players(agent_login);
       CREATE INDEX IF NOT EXISTS idx_checkpoints_provider_entity ON ingestion_checkpoints(provider, entity_type);
       CREATE INDEX IF NOT EXISTS idx_buckeye_sport_types_label ON buckeye_sport_types(label);
+      CREATE INDEX IF NOT EXISTS idx_agent_perf_customer ON agent_performance_snapshots(customer_id, pulled_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_agent_perf_agent ON agent_performance_snapshots(agent_id, pulled_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_agent_perf_report ON agent_performance_snapshots(report_agent_id, start_date, end_date);
     `);
+    const wagerSeq = await db.get(`SELECT MAX(wager_number) as max_seq, COUNT(*) as row_count FROM wagers`);
+    if (wagerSeq?.max_seq) {
+      await db.run(
+        `INSERT INTO ingestion_checkpoints (provider, entity_type, last_seq, last_pull, metadata)
+         VALUES ('buckeye', 'wagers', ?, CURRENT_TIMESTAMP, ?)
+         ON CONFLICT(provider, entity_type) DO UPDATE SET
+          last_seq = MAX(COALESCE(ingestion_checkpoints.last_seq, 0), excluded.last_seq),
+          last_pull = excluded.last_pull,
+          metadata = excluded.metadata`,
+        [
+          Number(wagerSeq.max_seq),
+          JSON.stringify({
+            source: 'existing_wagers_table',
+            rowCount: Number(wagerSeq.row_count) || 0,
+          }),
+        ]
+      );
+    }
     await seedBuckeyeSportTypes(db);
   } catch (err) {
     console.error('📊 Migration error:', err);

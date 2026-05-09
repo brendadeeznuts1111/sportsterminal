@@ -1512,14 +1512,53 @@ document.addEventListener('DOMContentLoaded', () => {
     mergeAgentDelta(msg.payload || msg);
   });
 
-  wsClient.on('agent.update', (msg) => {
-    mergeAgentDelta(msg.payload || msg);
-  });
-
   wsClient.on('exposure.update', (msg) => {
     sectionCache.exposure.at = 0;
     scheduleRender('buckeye');
     if (currentSection === 'positions') fetchExposureData();
+  });
+
+  wsClient.on('auth_failed', (msg) => {
+    showToast(msg.message || 'Session expired. Please reconnect.', 'error');
+    wsClient.isAuthenticated = false;
+    updateConnectionStatus('disconnected');
+  });
+
+  wsClient.on('odds.movement', (msg) => {
+    const move = msg.payload || {};
+    if (move.eventId && move.book) {
+      currentMovementIndex[move.eventId] = currentMovementIndex[move.eventId] || {};
+      currentMovementIndex[move.eventId][move.book] = move;
+      if (currentSection === 'floor') renderOddsMatrix();
+    }
+  });
+
+  wsClient.on('odds.update', (msg) => {
+    sectionCache.odds.at = 0;
+    if (currentSection === 'floor') loadOddsData();
+  });
+
+  wsClient.on('token_refreshed', (msg) => {
+    if (msg.token) {
+      localStorage.setItem('wsToken', msg.token);
+    }
+  });
+
+  wsClient.on('token_refresh_error', (msg) => {
+    console.warn('[WS] Token refresh failed:', msg.message);
+  });
+
+  wsClient.on('betAction_error', (msg) => {
+    showToast(msg.message || 'Action failed', 'error');
+  });
+
+  wsClient.on('data_error', (msg) => {
+    console.warn('[WS] Data fetch error:', msg.message);
+    showToast('Failed to load data: ' + (msg.message || 'Unknown error'), 'warning');
+  });
+
+  wsClient.on('refresh_initiated', (msg) => {
+    console.log('[WS] Refresh initiated for', msg.agentId);
   });
 
   wsClient.on('pattern.detected', (msg) => {
@@ -1530,23 +1569,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (currentSection === 'patterns') loadPatterns(true);
     updatePatternBadge();
-  });
-
-  wsClient.on('patternUpdate', (msg) => {
-    const update = msg.payload || {};
-    if (update.agentLogin) {
-      const current = agentPatternCounts[update.agentLogin] || { pattern_count: 0, critical_count: 0 };
-      current.pattern_count = Number(current.pattern_count || 0) + Number(update.increment || 1);
-      current.critical_count = Number(current.critical_count || 0) + (update.severity === 'critical' ? 1 : 0);
-      current.last_detected_at = msg.timestamp || new Date().toISOString();
-      agentPatternCounts[update.agentLogin] = current;
-      if (currentSection === 'agentTree') {
-        renderAgentTree(agentTreeData);
-        requestAnimationFrame(() => pulseAgentPatternRow(update.agentLogin));
-      } else {
-        pulseAgentPatternRow(update.agentLogin);
-      }
-    }
   });
 
   wsClient.on('betAction', (msg) => {

@@ -213,7 +213,7 @@ export function registerBuckeyeRoutes(
           }
         }
 
-        return api.getAgentPerformanceReport({
+        const result = await api.getAgentPerformanceReport({
           ...resolveReportPreset(body.week, body.start, body.end),
           agentID: body.reportAgentId || body.agentId,
           type: body.type || 'CP',
@@ -230,6 +230,8 @@ export function registerBuckeyeRoutes(
           debug: body.debug ?? '0',
           agentOwner: body.agentOwner,
         });
+        await scraperManager.persistAgentPerformanceReport(result);
+        return result;
       }, corsHeaders);
     }
   }

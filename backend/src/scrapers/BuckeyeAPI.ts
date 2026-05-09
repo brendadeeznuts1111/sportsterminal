@@ -97,6 +97,19 @@ export interface BuckeyeAgentPerformanceOptions {
   agentOwner?: string;
 }
 
+export interface BuckeyeAgentPerformanceRow {
+  customerId: string;
+  agentId: string;
+  login: string;
+  wagerCount: number;
+  risk: number;
+  toWin: number;
+  amountWon: number;
+  amountLost: number;
+  volume: number;
+  net: number;
+}
+
 export interface BuckeyeAgentPerformanceResult {
   fetchedAt: string;
   agentId: string;
@@ -120,7 +133,20 @@ export interface BuckeyeAgentPerformanceResult {
     agentSite: string;
     group: string;
   };
+  parsed: {
+    rows: BuckeyeAgentPerformanceRow[];
+    totals: {
+      wagerCount: number;
+      risk: number;
+      toWin: number;
+      amountWon: number;
+      amountLost: number;
+      volume: number;
+      net: number;
+    };
+  };
   data: unknown;
+  redactedFields: string[];
 }
 
 export type BuckeyeManagerOperation =
@@ -646,6 +672,12 @@ export class BuckeyeAPI {
     if (group) {
       body.set('group', group);
     }
+    const data = await this.postForm(
+      `${this.baseUrl}/cloud/api/Manager/getAgentPerformance`,
+      body,
+      'getAgentPerformance'
+    );
+    const { sanitized, redactedFields } = sanitizeAgentPerformancePayload(data);
 
     return {
       fetchedAt: new Date().toISOString(),
@@ -670,7 +702,9 @@ export class BuckeyeAPI {
         agentSite: '1',
         group,
       },
-      data: await this.postForm(`${this.baseUrl}/cloud/api/Manager/getAgentPerformance`, body, 'getAgentPerformance'),
+      parsed: parseAgentPerformanceReport(sanitized),
+      data: sanitized,
+      redactedFields,
     };
   }
 
@@ -1211,6 +1245,42 @@ export function parseWeeklyFigureSummary(data: any): BuckeyeWeeklyFigureResult['
   };
 }
 
+export function parseAgentPerformanceReport(data: any): BuckeyeAgentPerformanceResult['parsed'] {
+  const rawRows = Array.isArray(data?.INFO?.LIST)
+    ? data.INFO.LIST
+    : Array.isArray(data?.LIST)
+      ? data.LIST
+      : [];
+  const rows = rawRows.map(normalizeAgentPerformanceRow);
+  const totals = rows.reduce(
+    (acc, row) => {
+      acc.wagerCount += row.wagerCount;
+      acc.risk += row.risk;
+      acc.toWin += row.toWin;
+      acc.amountWon += row.amountWon;
+      acc.amountLost += row.amountLost;
+      acc.volume += row.volume;
+      acc.net += row.net;
+      return acc;
+    },
+    {
+      wagerCount: 0,
+      risk: 0,
+      toWin: 0,
+      amountWon: 0,
+      amountLost: 0,
+      volume: 0,
+      net: 0,
+    }
+  );
+
+  return { rows, totals };
+}
+
+export function sanitizeBuckeyeLogin(value: string): string {
+  return value.replace(/\s*\(\s*pw\s*:[^)]+\)\s*/gi, '').trim();
+}
+
 export function parseBuckeyeAccountInfo(accountInfo: Record<string, unknown>): ParsedBuckeyeAccountInfo {
   const limits: Record<string, number> = {};
   const featureFlags: BuckeyeAccountFeatureFlag[] = [];
@@ -1252,6 +1322,65 @@ export function parseBuckeyeAccountInfo(accountInfo: Record<string, unknown>): P
     limits,
     featureFlags: featureFlags.sort((a, b) => a.key.localeCompare(b.key)),
   };
+}
+
+function normalizeAgentPerformanceRow(row: Record<string, unknown>): BuckeyeAgentPerformanceRow {
+  return {
+    customerId: stringValue(row.CustomerID).trim(),
+    agentId: stringValue(row.AgentID).trim(),
+    login: sanitizeBuckeyeLogin(stringValue(row.Login)),
+    wagerCount: numberValue(row.wagercount ?? row.WagerCount ?? row.wagerCount),
+    risk: numberValue(row.Risk ?? row.risk),
+    toWin: numberValue(row.ToWin ?? row.toWin),
+    amountWon: numberValue(row.amountwon ?? row.AmountWon ?? row.amountWon),
+    amountLost: numberValue(row.amountlost ?? row.AmountLost ?? row.amountLost),
+    volume: numberValue(row.volume ?? row.Volume),
+    net: numberValue(row.net ?? row.Net),
+  };
+}
+
+function sanitizeAgentPerformancePayload(data: unknown): {
+  sanitized: unknown;
+  redactedFields: string[];
+} {
+  if (!data || typeof data !== 'object') {
+    return { sanitized: data, redactedFields: [] };
+  }
+
+  const redactedFields: string[] = [];
+  const clone = Array.isArray(data)
+    ? [...data]
+    : { ...(data as Record<string, unknown>) };
+  const list = Array.isArray((clone as any)?.INFO?.LIST)
+    ? (clone as any).INFO.LIST
+    : Array.isArray((clone as any)?.LIST)
+      ? (clone as any).LIST
+      : null;
+
+  if (!list) {
+    return { sanitized: clone, redactedFields };
+  }
+
+  const sanitizedRows = list.map((row: unknown, index: number) => {
+    if (!row || typeof row !== 'object') return row;
+    const next = { ...(row as Record<string, unknown>) };
+    if (typeof next.Login === 'string') {
+      const sanitizedLogin = sanitizeBuckeyeLogin(next.Login);
+      if (sanitizedLogin !== next.Login) {
+        next.Login = sanitizedLogin;
+        redactedFields.push(`LIST[${index}].Login`);
+      }
+    }
+    return next;
+  });
+
+  if (Array.isArray((clone as any)?.INFO?.LIST)) {
+    (clone as any).INFO = { ...(clone as any).INFO, LIST: sanitizedRows };
+  } else if (Array.isArray((clone as any)?.LIST)) {
+    (clone as any).LIST = sanitizedRows;
+  }
+
+  return { sanitized: clone, redactedFields };
 }
 
 function sanitizeAccountInfo(accountInfo: Record<string, unknown>): {

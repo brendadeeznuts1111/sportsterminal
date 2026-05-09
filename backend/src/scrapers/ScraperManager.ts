@@ -9,6 +9,7 @@ import {
   BuckeyeAPI,
   BuckeyeCredentials,
   type BuckeyeAgentPerformanceOptions,
+  type BuckeyeAgentPerformanceResult,
   type BuckeyeManagerSnapshotResult,
   type BuckeyeWeeklyFigureOptions,
 } from './BuckeyeAPI';
@@ -24,6 +25,7 @@ interface AgentInstance {
   intervalId: ReturnType<typeof setInterval>;
   renewalId: ReturnType<typeof setInterval>;
   accessLogId?: ReturnType<typeof setInterval>;
+  performanceId?: ReturnType<typeof setInterval>;
   credentials: BuckeyeCredentials;
   lastPoll: number;
   errorCount: number;
@@ -34,6 +36,14 @@ interface AgentInstance {
   isPolling: boolean; // guard against concurrent polls
 }
 
+function getAgentPerformanceRawRows(data: unknown): unknown[] {
+  if (!data || typeof data !== 'object') return [];
+  const payload = data as any;
+  if (Array.isArray(payload?.INFO?.LIST)) return payload.INFO.LIST;
+  if (Array.isArray(payload?.LIST)) return payload.LIST;
+  return [];
+}
+
 export class BuckeyeScraperManager {
   private agents: Map<string, AgentInstance> = new Map();
   private db: Database;
@@ -41,6 +51,7 @@ export class BuckeyeScraperManager {
   private pollIntervalMs: number = 5000;
   private tokenRenewalMs: number = 15 * 60 * 1000; // 15 minutes
   private accessLogIntervalMs: number = 10 * 60 * 1000;
+  private performanceIntervalMs: number = 15 * 60 * 1000;
   private webhookService: WebhookService;
   private patternService: PatternService;
   private actionQueue: ActionQueue;
@@ -92,11 +103,13 @@ export class BuckeyeScraperManager {
     this.agents.set(agentId, instance);
     await this.initializeLiveAgentTree(agentId, instance);
     this.startAccessLogPolling(agentId, instance);
+    this.startPerformancePolling(agentId, instance);
     console.log(`[Manager] Started polling for ${agentId} every ${this.pollIntervalMs}ms`);
 
     // Fire first poll immediately (not via setImmediate to avoid microtask cascade)
     setTimeout(() => this.pollAgent(agentId), 0);
     setTimeout(() => this.refreshAccessLogs(agentId).catch(err => console.warn(`[Manager] Access log refresh failed for ${agentId}:`, err.message)), 1000);
+    setTimeout(() => this.refreshAgentPerformance(agentId).catch(err => console.warn(`[Manager] Agent performance refresh failed for ${agentId}:`, err.message)), 2000);
   }
 
   /**
@@ -137,11 +150,13 @@ export class BuckeyeScraperManager {
     this.agents.set(agentId, instance);
     await this.initializeLiveAgentTree(agentId, instance);
     this.startAccessLogPolling(agentId, instance);
+    this.startPerformancePolling(agentId, instance);
     console.log(`[Manager] Resumed session for ${agentId}`);
 
     // Fire first poll immediately
     setTimeout(() => this.pollAgent(agentId), 0);
     setTimeout(() => this.refreshAccessLogs(agentId).catch(err => console.warn(`[Manager] Access log refresh failed for ${agentId}:`, err.message)), 1000);
+    setTimeout(() => this.refreshAgentPerformance(agentId).catch(err => console.warn(`[Manager] Agent performance refresh failed for ${agentId}:`, err.message)), 2000);
     return true;
   }
 
@@ -163,6 +178,7 @@ export class BuckeyeScraperManager {
     clearInterval(instance.intervalId);
     clearInterval(instance.renewalId);
     if (instance.accessLogId) clearInterval(instance.accessLogId);
+    if (instance.performanceId) clearInterval(instance.performanceId);
     this.actionQueue.clearAgent(agentId);
     this.agents.delete(agentId);
     console.log(`[Manager] Stopped polling for ${agentId}`);
@@ -505,10 +521,71 @@ export class BuckeyeScraperManager {
     }
 
     try {
-      return await instance.api.getAgentPerformanceReport(options);
+      const result = await instance.api.getAgentPerformanceReport(options);
+      await this.persistAgentPerformanceReport(result);
+      return result;
     } catch (err: any) {
       console.error('[ScraperManager] getBuckeyeAgentPerformanceReport error:', err.message);
       return { data: null, error: err.message };
+    }
+  }
+
+  async persistAgentPerformanceReport(report: BuckeyeAgentPerformanceResult): Promise<void> {
+    const rows = report.parsed?.rows || [];
+    if (rows.length === 0) return;
+
+    const pulledAt = report.fetchedAt || new Date().toISOString();
+    const rawRows = getAgentPerformanceRawRows(report.data);
+
+    await this.db.run('BEGIN');
+    try {
+      for (const [index, row] of rows.entries()) {
+        await this.db.run(
+          `INSERT INTO agent_performance_snapshots
+            (provider, report_agent_id, customer_id, agent_id, login, report_type,
+             start_date, end_date, sport, subsport, period, wager_type, bet_type,
+             activity_tipo, free_play, wager_count, risk, to_win, amount_won,
+             amount_lost, volume, net, pulled_at, raw_json)
+           VALUES ('buckeye', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            report.params.agentID,
+            row.customerId,
+            row.agentId,
+            row.login,
+            report.params.type,
+            report.params.start,
+            report.params.end,
+            report.params.sport,
+            report.params.subsport,
+            report.params.period,
+            report.params.wagerType,
+            report.params.betType,
+            report.params.tipo,
+            report.params.freePlay,
+            row.wagerCount,
+            row.risk,
+            row.toWin,
+            row.amountWon,
+            row.amountLost,
+            row.volume,
+            row.net,
+            pulledAt,
+            JSON.stringify(rawRows[index] || row),
+          ]
+        );
+      }
+      await this.updateIngestionCheckpoint('agent_performance', Date.parse(pulledAt), {
+        reportAgentId: report.params.agentID,
+        start: report.params.start,
+        end: report.params.end,
+        type: report.params.type,
+        rowCount: rows.length,
+        redactedFields: report.redactedFields,
+      });
+      await this.db.run('COMMIT');
+    } catch (error) {
+      await this.db.run('ROLLBACK').catch(() => ({ lastID: 0, changes: 0 }));
+      throw error;
     }
   }
 
@@ -1103,6 +1180,68 @@ export class BuckeyeScraperManager {
         console.warn(`[Manager] Access log refresh failed for ${agentId}:`, err.message);
       });
     }, this.accessLogIntervalMs);
+  }
+
+  private startPerformancePolling(agentId: string, instance: AgentInstance): void {
+    if (instance.performanceId) clearInterval(instance.performanceId);
+    instance.performanceId = setInterval(() => {
+      this.refreshAgentPerformance(agentId).catch(err => {
+        console.warn(`[Manager] Agent performance refresh failed for ${agentId}:`, err.message);
+      });
+    }, this.performanceIntervalMs);
+  }
+
+  private async refreshAgentPerformance(agentId: string): Promise<{ rows: number; checkpointed: boolean }> {
+    const instance = this.agents.get(agentId);
+    if (!instance || !instance.api.isAuthenticated()) {
+      throw new Error(`Agent ${agentId} is not active`);
+    }
+
+    const { start, end } = this.getDefaultPerformanceWindow();
+    const result = await instance.api.getAgentPerformanceReport({
+      start,
+      end,
+      agentID: agentId,
+      type: 'CP',
+      freePlay: 'Y',
+      store: agentId,
+      sport: '',
+      subsport: '',
+      period: '-1',
+      wagerType: '',
+      betType: '',
+      tipo: '-1',
+      debug: '0',
+      agentOwner: agentId,
+    });
+    await this.persistAgentPerformanceReport(result);
+    this.broadcast({
+      type: 'agentPerformance.update',
+      timestamp: new Date().toISOString(),
+      agentId,
+      payload: {
+        rows: result.parsed.rows.length,
+        totals: result.parsed.totals,
+        start,
+        end,
+      },
+    });
+    return { rows: result.parsed.rows.length, checkpointed: result.parsed.rows.length > 0 };
+  }
+
+  private getDefaultPerformanceWindow(): { start: string; end: string } {
+    const end = new Date();
+    const start = new Date(end.getTime() - 14 * 24 * 60 * 60 * 1000);
+    return {
+      start: this.formatReportDate(start),
+      end: this.formatReportDate(end),
+    };
+  }
+
+  private formatReportDate(date: Date): string {
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${month}/${day}/${date.getFullYear()}`;
   }
 
   private async refreshAccessLogs(agentId: string): Promise<{ fetched: number; inserted: number; patterns: number }> {
