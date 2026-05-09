@@ -91,6 +91,10 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
     return registerHealthRoutes(url, request, deps.scraperManager);
   });
 
+  router.get('/api/health/system-status', async (url, request) => {
+    return registerHealthRoutes(url, request, deps.scraperManager);
+  });
+
   // API routes
   router.get('/api/stats', async (url, request) => {
     return registerWagerStatsRoutes(url, request, deps.scraperManager);

@@ -56,6 +56,26 @@ Server health check with uptime and active agent info.
 }
 ```
 
+### `GET /api/health/system-status`
+
+Consolidated System Status issue feed for operator bug/risk tracking. Rolls up scraper errors, action queue backlog, recent raw API failures, Player 360 source errors, offline odds books, and critical/high patterns.
+
+```json
+{
+  "status": "warning",
+  "generatedAt": "2026-05-09T23:35:00.000Z",
+  "summary": {
+    "activeAgents": 1,
+    "rawApiFailures24h": 0,
+    "playerSourceErrors": 0,
+    "issues": 0,
+    "critical": 0,
+    "warning": 0
+  },
+  "issues": []
+}
+```
+
 ### `GET /api/stats`
 
 Global aggregate statistics across all wagers.

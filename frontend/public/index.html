@@ -709,11 +709,18 @@
       <div class="flex items-center justify-between mb-4">
         <div>
           <h2 class="text-lg font-bold">System Status</h2>
-          <p class="text-xs mt-1" style="color:var(--text-dim);">Backend health, vaulted Buckeye ingestion, odds books, patterns, and action queues.</p>
+          <p class="text-xs mt-1" style="color:var(--text-dim);">Backend health, vaulted Buckeye ingestion, odds books, patterns, action queues, and bug/risk tracking.</p>
         </div>
         <button class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--accent);color:#fff;" onclick="loadStatusPage(true)">Refresh</button>
       </div>
       <div id="statusSummaryGrid" class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4"></div>
+      <div class="mb-4 rounded-lg border p-4" style="background:var(--panel);border-color:var(--border);">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-semibold">System Issues</h3>
+          <span id="statusIssuesSummary" class="text-xs" style="color:var(--text-dim);">Checking...</span>
+        </div>
+        <div id="statusIssuesList" class="space-y-2 text-xs"></div>
+      </div>
       <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <div class="rounded-lg border p-4" style="background:var(--panel);border-color:var(--border);">
           <h3 class="text-sm font-semibold mb-3">Buckeye Agents</h3>

@@ -15,6 +15,7 @@ describe('API route registration', () => {
     const routes: Array<[string, string]> = [
       ['GET', '/health'],
       ['GET', '/metrics'],
+      ['GET', '/api/health/system-status'],
       ['GET', '/api/stats'],
       ['GET', '/api/wagers'],
       ['GET', '/api/wagers/alerts'],

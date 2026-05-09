@@ -779,6 +779,7 @@ Health and metrics:
 | Route | Method | Meaning |
 |-------|--------|---------|
 | `/health` | GET | Backend health summary |
+| `/api/health/system-status` | GET | Consolidated System Status issue feed for scraper errors, action queues, raw API failures, Player 360 source errors, offline books, and critical patterns |
 | `/metrics` | GET | Scraper/action queue counters |
 
 Buckeye:

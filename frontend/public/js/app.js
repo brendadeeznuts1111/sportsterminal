@@ -3548,9 +3548,13 @@ async function loadStatusPage(force = false) {
   const booksEl = document.getElementById('statusBooksList');
   const countersEl = document.getElementById('statusCountersList');
   const queueEl = document.getElementById('statusQueueList');
-  if (!summary || !agentsEl || !booksEl || !countersEl || !queueEl) return;
+  const issuesEl = document.getElementById('statusIssuesList');
+  const issuesSummaryEl = document.getElementById('statusIssuesSummary');
+  if (!summary || !agentsEl || !booksEl || !countersEl || !queueEl || !issuesEl) return;
 
   summary.innerHTML = statusLoadingCards();
+  issuesEl.innerHTML = statusLoadingRow('Checking recent failures...');
+  if (issuesSummaryEl) issuesSummaryEl.textContent = 'Checking...';
   agentsEl.innerHTML = statusLoadingRow('Loading Buckeye agents...');
   booksEl.innerHTML = statusLoadingRow('Loading books...');
   countersEl.innerHTML = statusLoadingRow('Loading counters...');
@@ -3558,8 +3562,9 @@ async function loadStatusPage(force = false) {
 
   try {
     const player360Id = getStatusPlayerId();
-    const [healthRes, vaultRes, booksRes, patternsRes, player360Res] = await Promise.all([
+    const [healthRes, systemRes, vaultRes, booksRes, patternsRes, player360Res] = await Promise.all([
       fetch(`${getApiBaseUrl()}/health`),
+      fetch(`${getApiBaseUrl()}/api/health/system-status`),
       fetch(`${getApiBaseUrl()}/api/buckeye/vault-status`),
       fetch(`${getApiBaseUrl()}/api/books/status`),
       fetch(`${getApiBaseUrl()}/api/patterns/summary?sinceHours=24`),
@@ -3568,6 +3573,7 @@ async function loadStatusPage(force = false) {
 
     if (!healthRes.ok) throw new Error(`Health request failed: ${healthRes.status}`);
     const health = await healthRes.json();
+    const system = systemRes.ok ? await systemRes.json() : null;
     const vault = vaultRes.ok ? await vaultRes.json() : { available: false, agents: [] };
     const books = booksRes.ok ? await booksRes.json() : [];
     const patterns = patternsRes.ok ? await patternsRes.json() : { total: 0, bySeverity: {} };
@@ -3579,6 +3585,9 @@ async function loadStatusPage(force = false) {
     const onlineBooks = (Array.isArray(books) ? books : []).filter(book => book.status === 'online').length;
     const criticalPatterns = Number(patterns.bySeverity?.critical || 0);
     const statusOk = health.status === 'ok';
+    const systemIssues = system?.issues || [];
+    const criticalIssues = Number(system?.summary?.critical || 0);
+    const warningIssues = Number(system?.summary?.warning || 0);
     const player360Poll = player360?.freshness?.watermarks?.player360;
     const player360PollValue = player360Poll?.value || {};
     const coldBackfillLabel = player360PollValue.coldBackfillPlayers != null
@@ -3591,7 +3600,16 @@ async function loadStatusPage(force = false) {
       statusCard('Books', `${onlineBooks}/${Array.isArray(books) ? books.length : 0}`, 'online', onlineBooks > 0 ? 'var(--green)' : 'var(--yellow)'),
       statusCard('Patterns', String(patterns.total || 0), `${criticalPatterns} critical`, criticalPatterns > 0 ? 'var(--red)' : 'var(--green)'),
       statusCard('Player 360', player360 ? 'Mapped' : 'Issue', player360 ? `${player360.coverage?.missingSourceCount || 0} missing/probe gaps` : `${player360Id} unavailable`, player360 ? 'var(--green)' : 'var(--red)'),
+      statusCard('System Issues', String(systemIssues.length), `${criticalIssues} critical / ${warningIssues} warning`, criticalIssues > 0 ? 'var(--red)' : warningIssues > 0 ? 'var(--yellow)' : 'var(--green)'),
     ].join('');
+
+    issuesEl.innerHTML = renderStatusIssues(system);
+    if (issuesSummaryEl) {
+      issuesSummaryEl.textContent = system
+        ? `${system.status.toUpperCase()} · ${systemIssues.length} tracked issue${systemIssues.length === 1 ? '' : 's'}`
+        : 'System issue endpoint unavailable';
+      issuesSummaryEl.style.color = criticalIssues > 0 ? 'var(--red)' : warningIssues > 0 ? 'var(--yellow)' : 'var(--text-dim)';
+    }
 
     agentsEl.innerHTML = agents.length
       ? agents.map(agent => statusAgentRow(agent, player360)).join('')
@@ -3606,6 +3624,10 @@ async function loadStatusPage(force = false) {
       statusKeyValue('Wagers seen', counters.wagers_total || 0),
       statusKeyValue('Alerts triggered', counters.alerts_triggered_total || 0),
       statusKeyValue('Errors', counters.errors_total || 0),
+      ...(system ? [
+        statusKeyValue('Raw API failures 24h', `${system.summary?.rawApiFailures24h || 0}/${system.summary?.rawApiCalls24h || 0}`),
+        statusKeyValue('Player source errors', `${system.summary?.playerSourceErrors || 0}/${system.summary?.playerSourcesTracked || 0}`),
+      ] : []),
       statusKeyValue('WebSocket', wsClient?.isConnected ? 'connected' : 'offline'),
       ...(player360 ? [
         statusKeyValue('Player 360 player', player360.playerId),
@@ -3639,6 +3661,8 @@ async function loadStatusPage(force = false) {
     updateStatusBadge(statusOk, activeAgents, criticalPatterns);
   } catch (error) {
     summary.innerHTML = statusCard('Backend', 'Offline', error instanceof Error ? error.message : 'Status unavailable', 'var(--red)');
+    issuesEl.innerHTML = '<div style="color:var(--red);">Could not load system issues.</div>';
+    if (issuesSummaryEl) issuesSummaryEl.textContent = 'Unavailable';
     agentsEl.innerHTML = '<div style="color:var(--red);">Could not load status. Is the backend running?</div>';
     booksEl.innerHTML = '';
     countersEl.innerHTML = '';
@@ -3653,6 +3677,7 @@ function statusLoadingCards() {
     statusCard('Buckeye', 'Loading', '', 'var(--text-dim)'),
     statusCard('Books', 'Loading', '', 'var(--text-dim)'),
     statusCard('Patterns', 'Loading', '', 'var(--text-dim)'),
+    statusCard('System Issues', 'Loading', '', 'var(--text-dim)'),
   ].join('');
 }
 
@@ -3747,6 +3772,36 @@ function statusKeyValue(label, value) {
   </div>`;
 }
 
+function renderStatusIssues(system) {
+  if (!system) {
+    return '<div style="color:var(--yellow);">System issue rollup is unavailable. Check /api/health/system-status.</div>';
+  }
+  const issues = Array.isArray(system.issues) ? system.issues : [];
+  if (!issues.length) {
+    return '<div class="rounded border p-3" style="background:var(--bg);border-color:var(--border);color:var(--green);">No tracked system issues in the current window.</div>';
+  }
+  return issues.map((issue) => {
+    const color = issue.severity === 'critical' ? 'var(--red)' : issue.severity === 'warning' ? 'var(--yellow)' : 'var(--text-dim)';
+    const lastSeen = issue.lastSeen ? formatShortDateTime(issue.lastSeen) : '-';
+    return `<div class="rounded border p-3" style="background:var(--bg);border-color:var(--border);">
+      <div class="flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase" style="background:${color}22;color:${color};">${escapeHtml(issue.severity || 'info')}</span>
+          <span class="font-semibold truncate" style="color:var(--text);">${escapeHtml(issue.title || 'System issue')}</span>
+        </div>
+        <span class="font-mono text-[10px]" style="color:var(--text-dim);">${escapeHtml(lastSeen)}</span>
+      </div>
+      <div class="mt-1" style="color:var(--text-dim);">${escapeHtml(issue.detail || '')}</div>
+      <div class="mt-2 flex flex-wrap gap-2">
+        <span class="status-coverage-chip ${escapeHtml(issue.category || 'system')}">${escapeHtml(issue.category || 'system')}</span>
+        <span class="status-coverage-chip">${escapeHtml(issue.source || 'unknown')}</span>
+        ${issue.count != null ? `<span class="status-coverage-chip">count: ${Number(issue.count).toLocaleString()}</span>` : ''}
+      </div>
+      ${issue.action ? `<div class="mt-2 text-[11px]" style="color:var(--text);">${escapeHtml(issue.action)}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
 function formatUptime(seconds) {
   const total = Math.max(0, Math.floor(Number(seconds) || 0));
   const hours = Math.floor(total / 3600);
@@ -3778,6 +3833,7 @@ function updateStatusBadge(ok, activeAgents, criticalPatterns) {
 // ==================== API ENDPOINT STATUS ====================
 const API_ENDPOINTS = [
   { path: '/health', label: 'Health', group: 'System' },
+  { path: '/api/health/system-status', label: 'System Issues', group: 'System' },
   { path: '/api/stats', label: 'Stats', group: 'System' },
   { path: '/api/wagers?limit=1', label: 'Wagers', group: 'Data' },
   { path: '/api/wagers/alerts', label: 'Alerts', group: 'Data' },
