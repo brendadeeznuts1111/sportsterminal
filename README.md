@@ -76,6 +76,7 @@ JWT_SECRET=change-me-in-production-min-32-chars
 DATABASE_URL=sqlite:./data/terminal.db
 RATE_LIMIT_MAX=100            # Max HTTP requests per window per IP
 RATE_LIMIT_WINDOW_MS=60000    # Rate limit window in ms
+IDLE_TIMEOUT_MS=300000        # Stop scrapers after 5 min with zero WS clients (0 to disable)
 ```
 
 `DATABASE_URL` can be either `sqlite:./data/terminal.db` or `./data/terminal.db`; the backend normalizes both for Bun SQLite.
@@ -113,12 +114,27 @@ Expected health shape:
 ```json
 {
   "status": "ok",
+  "uptime": 123.45,
   "scrapers": {
     "activeAgents": 0,
-    "agents": []
+    "agents": [],
+    "actionQueue": { "totalQueued": 0, "queues": {} },
+    "counters": {
+      "wagers_total": 0,
+      "alerts_triggered_total": 0,
+      "errors_total": 0
+    }
   }
 }
 ```
+
+### Security
+
+- **JWT enforcement**: WebSocket connections require a valid HS256 JWT in production mode (`NODE_ENV=production`). Tokens are issued on successful Buckeye auth.
+- **Rate limiting**: All HTTP endpoints are rate-limited to 100 req/min per IP (configurable via `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS`).
+- **Idle shutdown**: Scrapers and odds poller stop after 5 minutes with zero WebSocket clients (configurable via `IDLE_TIMEOUT_MS`).
+- **Dev bypass**: Set `NODE_ENV=development` to disable all security checks.
+- **Token generation**: `bun run scripts/generate-jwt.ts <agentId>` creates tokens for testing.
 
 ## UI Map
 

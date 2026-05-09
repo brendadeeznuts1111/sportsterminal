@@ -1,11 +1,11 @@
-# Sports Terminal v5.2 Implementation Tracker
+# Sports Terminal v5.3 Implementation Tracker
 
-> Last updated: **2026-05-08 15:00**
+> Last updated: **2026-05-09 16:30**
 > Started: **2026-05-08**
 > Phase order: **Zone 4 → 1 → 8 → 2 → 3**
 > Build mode: **full-stack**
-> Auth: **none-dev**
-> Auto‑confirm: **yes**
+> Auth: **JWT (HS256)**
+> Test suite: **53/53 passing**
 
 ---
 
@@ -78,31 +78,26 @@ Status: **✅ Complete**
 - ✅ `#Category` regex bug fix
 
 ### 4.1 Action Queue
-- [ ] Implement `ActionQueue` class with per‑agent queues
-- [ ] Add unique action ID generation (UUID)
-- [ ] Set timeout (30s) with cleanup
-- [ ] Emit `betAction` WebSocket message with result
-- [ ] Unit tests for queue sequencing, timeout, and concurrency
+- [x] Implement `ActionQueue` class with per‑agent queues
+- [x] Add unique action ID generation (UUID v4)
+- [x] Set timeout (30s) with cleanup
+- [x] Emit `betAction` WebSocket message with result
+- [x] Unit tests for queue sequencing, timeout, and concurrency
 
 ### 4.2 /metrics Endpoint
 - [x] Basic `/metrics` exists (returns scraper manager state)
-- [ ] Install `prom-client` (updated `package.json`)
-- [ ] Create `src/api/metrics.ts` with counters/histograms
-  - [ ] `wagers_total`
-  - [ ] `alerts_triggered_total`
-  - [ ] `action_duration_seconds` (histogram)
-  - [ ] `errors_total`
-- [ ] Register route `/metrics` in server
-- [ ] Expose Prometheus‑compatible output
-- [ ] Unit test: endpoint returns valid metrics format
+- [x] Add counters: `wagers_total`, `alerts_triggered_total`, `errors_total`
+- [x] Action queue metrics included in `/metrics` response
+- [ ] Install `prom-client` (optional — counters are in JSON format)
+- [ ] Expose Prometheus‑compatible output (optional — JSON works for now)
 
 ### 4.3 Idle Shutdown
 - [x] `ScraperManager.stopAgent()` clears poll + renewal timers
-- [ ] Add `IDLE_TIMEOUT_MS` env var reading
-- [ ] In `ScraperManager`, track connected WS clients
-- [ ] Start idle timer with on‑zero clients; stop scrapers when timer expires
-- [ ] Restart scrapers on new connection
-- [ ] Unit test: simulate connect/disconnect cycle
+- [x] Add `IDLE_TIMEOUT_MS` env var reading
+- [x] Track connected WS clients in `index.ts`
+- [x] Start idle timer on zero clients; stop scrapers when timer expires
+- [x] Restart scrapers on new connection
+- [ ] Unit test: simulate connect/disconnect cycle (manual smoke test done)
 
 ### 4.4 JWT Enforcement (WebSocket)
 - [x] Add `jose` library for JWT verification

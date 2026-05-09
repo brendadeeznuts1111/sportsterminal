@@ -77,6 +77,28 @@ export class PatternService {
     }
 
     const crossAgents = new Set(sameSpot.map((row: any) => row.agent_login).filter(Boolean));
+    if (crossAgents.size >= 2 && sameSpot.length >= 3) {
+      patterns.push(this.pattern({
+        type: 'cross_agent_steam',
+        category: 'agents',
+        eventId,
+        parsed: correlation.parsed,
+        severity: crossAgents.size >= 3 ? 'critical' : 'warning',
+        score: Math.min(96, 70 + crossAgents.size * 6 + sameSpot.length),
+        description: `${crossAgents.size} agents steamed ${correlation.parsed.side} ${correlation.parsed.market} together.`,
+        detectedAt,
+        parts: ['cross-agent-steam', gameKey, correlation.parsed.market, correlation.parsed.side, minuteBucket(wagerTime, 10)],
+        details: {
+          wagerNumber: wager.WagerNumber,
+          agent: wager.AgentLogin,
+          agents: Array.from(crossAgents).slice(0, 12),
+          wagerCount: sameSpot.length,
+          windowMinutes: 10,
+          reasonCodes: ['two_plus_agents', 'same_game_side', 'steam_window'],
+          correlation,
+        },
+      }));
+    }
     if (crossAgents.size >= 3) {
       patterns.push(this.pattern({
         type: 'Cross-Agent Swarm',
@@ -100,8 +122,12 @@ export class PatternService {
     }
 
     await this.addLivePatterns(patterns, wager, correlation, detectedAt, wagerTime);
+    await this.addAgentReversalPattern(patterns, wager, correlation, detectedAt, wagerTime);
+    await this.addLateMoneyPattern(patterns, wager, correlation, detectedAt, wagerTime);
+    await this.addVelocityPattern(patterns, wager, correlation, detectedAt, wagerTime);
     await this.addPinPatterns(patterns, wager, correlation, detectedAt, wagerTime);
     await this.addSteamChasePattern(patterns, wager, correlation, detectedAt, wagerTime);
+    await this.applyOddsCorrelation(patterns, correlation, wagerTime);
 
     return patterns;
   }
@@ -199,8 +225,8 @@ export class PatternService {
 
       const result = await this.db.run(
         `INSERT OR IGNORE INTO detected_patterns
-          (id, event_id, type, market, side, severity, score, category, trigger_book, details_json, description, detected_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, event_id, type, market, side, severity, score, category, wager_number, agent_login, trigger_book, details_json, description, detected_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           pattern.id,
           pattern.eventId,
@@ -210,6 +236,8 @@ export class PatternService {
           pattern.severity,
           pattern.score,
           pattern.category,
+          pattern.wagerNumber || null,
+          pattern.agentLogin || null,
           pattern.triggerBook || null,
           JSON.stringify(pattern.details || {}),
           pattern.description,
@@ -219,15 +247,38 @@ export class PatternService {
 
       if (result.changes > 0) {
         inserted.push(pattern);
+        const participantAgents = getPatternAgents(pattern);
+        await this.persistPatternAgents(pattern.id, participantAgents);
         this.broadcast?.({
           type: 'pattern.detected',
           timestamp: new Date().toISOString(),
           payload: pattern,
         });
+        for (const agentLogin of participantAgents) {
+          this.broadcast?.({
+            type: 'patternUpdate',
+            timestamp: new Date().toISOString(),
+            payload: {
+              agentLogin,
+              increment: 1,
+              severity: pattern.severity,
+              type: pattern.type,
+            },
+          });
+        }
       }
     }
 
     return inserted;
+  }
+
+  private async persistPatternAgents(patternId: string, agents: string[]): Promise<void> {
+    for (const agent of agents) {
+      await this.db.run(
+        `INSERT OR IGNORE INTO pattern_agents (pattern_id, agent_login) VALUES (?, ?)`,
+        [patternId, agent]
+      );
+    }
   }
 
   private async addLivePatterns(
@@ -291,6 +342,186 @@ export class PatternService {
           },
         }));
       }
+    }
+  }
+
+  private async addAgentReversalPattern(
+    patterns: PatternInsert[],
+    wager: EnrichedWager,
+    correlation: WagerCorrelation,
+    detectedAt: string,
+    wagerTime: Date
+  ): Promise<void> {
+    const recent = await this.db.all(
+      `SELECT w.parsed_side, w.parsed_market, w.sport, w.wager_number, e.home_team, e.away_team
+       FROM wagers w
+       LEFT JOIN events e ON e.id = w.matched_event_id
+       WHERE w.agent_login = ? AND w.wager_number != ? AND w.sport = ? AND w.parsed_market = ?
+         AND w.parsed_side IS NOT NULL AND w.insert_datetime <= ?
+       ORDER BY insert_datetime DESC
+       LIMIT 5`,
+      [wager.AgentLogin, wager.WagerNumber, this.parseSport(wager.ShortDesc), correlation.parsed.market, wagerTime.toISOString()]
+    );
+    if (recent.length < 5) return;
+
+    const sides = recent
+      .map((row: any) => classifyComparableSide(row.parsed_side, row.parsed_market, row.home_team, row.away_team))
+      .filter(side => side && side !== 'unknown');
+    const counts = new Map<string, number>();
+    for (const side of sides) counts.set(side, (counts.get(side) || 0) + 1);
+    const majority = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0];
+    const currentEvent = correlation.match.eventId
+      ? await this.db.get<EventRow>('SELECT * FROM events WHERE id = ?', [correlation.match.eventId])
+      : null;
+    const currentSide = classifyComparableSide(
+      correlation.parsed.side,
+      correlation.parsed.market,
+      currentEvent?.home_team,
+      currentEvent?.away_team
+    );
+    if (!majority || majority[1] < 3 || !currentSide || majority[0] === currentSide) return;
+
+    patterns.push(this.pattern({
+      type: 'agent_reversal',
+      category: 'agents',
+      eventId: correlation.match.eventId || GLOBAL_EVENT_ID,
+      parsed: correlation.parsed,
+      severity: majority[1] >= 4 ? 'critical' : 'warning',
+      score: 68 + majority[1] * 6,
+      description: `${wager.AgentLogin} reversed from recent ${majority[0]} action to ${currentSide}.`,
+      detectedAt,
+      parts: ['agent-reversal', wager.AgentLogin, wager.WagerNumber],
+      details: {
+        wagerNumber: wager.WagerNumber,
+        agent: wager.AgentLogin,
+        currentSide,
+        priorMajoritySide: majority[0],
+        priorSampleSize: recent.length,
+        priorMajorityCount: majority[1],
+        reasonCodes: ['agent_side_reversal', 'last_five_sport_wagers'],
+        correlation,
+      },
+    }));
+  }
+
+  private async addLateMoneyPattern(
+    patterns: PatternInsert[],
+    wager: EnrichedWager,
+    correlation: WagerCorrelation,
+    detectedAt: string,
+    wagerTime: Date
+  ): Promise<void> {
+    if (!correlation.match.eventId) return;
+    const event = await this.db.get<EventRow>('SELECT * FROM events WHERE id = ?', [correlation.match.eventId]);
+    const start = event?.start_time ? parseDate(event.start_time) : null;
+    if (!start) return;
+    const minutesToStart = Math.round((start.getTime() - wagerTime.getTime()) / 60000);
+    if (minutesToStart < 0 || minutesToStart > 15) return;
+
+    const avgRow = await this.db.get<any>(
+      `SELECT AVG(amount_wagered) AS avg_amount, COUNT(*) AS count
+       FROM wagers
+       WHERE agent_login = ? AND sport = ? AND wager_number != ? AND insert_datetime < ?`,
+      [wager.AgentLogin, this.parseSport(wager.ShortDesc), wager.WagerNumber, wagerTime.toISOString()]
+    );
+    const avgAmount = Number(avgRow?.avg_amount || 0);
+    if (Number(avgRow?.count || 0) < 3 || wager.AmountWagered <= avgAmount) return;
+
+    const ratio = avgAmount > 0 ? wager.AmountWagered / avgAmount : 1;
+    patterns.push(this.pattern({
+      type: 'late_money',
+      category: 'agents',
+      eventId: correlation.match.eventId,
+      parsed: correlation.parsed,
+      severity: ratio >= 3 ? 'critical' : 'warning',
+      score: Math.min(96, 62 + Math.round(ratio * 10)),
+      description: `${wager.AgentLogin} placed above-average money ${minutesToStart}m before start.`,
+      detectedAt,
+      parts: ['late-money', wager.AgentLogin, wager.WagerNumber],
+      details: {
+        wagerNumber: wager.WagerNumber,
+        agent: wager.AgentLogin,
+        amount: wager.AmountWagered,
+        agentAverageAmount: avgAmount,
+        ratio,
+        minutesToStart,
+        eventStart: event.start_time,
+        reasonCodes: ['near_game_start', 'above_agent_average'],
+        correlation,
+      },
+    }));
+  }
+
+  private async addVelocityPattern(
+    patterns: PatternInsert[],
+    wager: EnrichedWager,
+    correlation: WagerCorrelation,
+    detectedAt: string,
+    wagerTime: Date
+  ): Promise<void> {
+    const hourStart = new Date(wagerTime);
+    hourStart.setMinutes(0, 0, 0);
+    const previousWindowStart = new Date(hourStart.getTime() - 24 * 60 * 60 * 1000);
+    const current = await this.db.get<any>(
+      `SELECT COUNT(*) AS count FROM wagers WHERE agent_login = ? AND insert_datetime >= ? AND insert_datetime <= ?`,
+      [wager.AgentLogin, hourStart.toISOString(), wagerTime.toISOString()]
+    );
+    const previous = await this.db.get<any>(
+      `SELECT COUNT(*) AS count FROM wagers WHERE agent_login = ? AND insert_datetime >= ? AND insert_datetime < ?`,
+      [wager.AgentLogin, previousWindowStart.toISOString(), hourStart.toISOString()]
+    );
+    const currentCount = Number(current?.count || 0);
+    const normalHourly = Number(previous?.count || 0) / 24;
+    if (currentCount < 6 || currentCount < Math.max(3, normalHourly * 3)) return;
+
+    patterns.push(this.pattern({
+      type: 'velocity_spike',
+      category: 'agents',
+      eventId: correlation.match.eventId || GLOBAL_EVENT_ID,
+      parsed: correlation.parsed,
+      severity: currentCount >= Math.max(12, normalHourly * 5) ? 'critical' : 'warning',
+      score: Math.min(98, 64 + Math.round(currentCount + normalHourly * 2)),
+      description: `${wager.AgentLogin} velocity spiked to ${currentCount} wagers this hour.`,
+      detectedAt,
+      parts: ['velocity-spike', wager.AgentLogin, minuteBucket(wagerTime, 60)],
+      details: {
+        wagerNumber: wager.WagerNumber,
+        agent: wager.AgentLogin,
+        currentHourCount: currentCount,
+        baselineHourlyCount: normalHourly,
+        reasonCodes: ['agent_velocity_spike', 'three_x_baseline'],
+        correlation,
+      },
+    }));
+  }
+
+  private async applyOddsCorrelation(
+    patterns: PatternInsert[],
+    correlation: WagerCorrelation,
+    wagerTime: Date
+  ): Promise<void> {
+    if (!correlation.match.eventId) return;
+    for (const pattern of patterns) {
+      const moves = await this.db.all(
+        `SELECT * FROM line_movements
+         WHERE event_id = ? AND market = ? AND ABS(delta) >= 10 AND recorded_at >= ? AND recorded_at <= ?
+         ORDER BY recorded_at DESC
+         LIMIT 5`,
+        [
+          correlation.match.eventId,
+          pattern.market,
+          new Date(wagerTime.getTime() - 2 * 60 * 1000).toISOString(),
+          new Date(wagerTime.getTime() + 2 * 60 * 1000).toISOString(),
+        ]
+      );
+      if (!moves.length) continue;
+      pattern.severity = 'critical';
+      pattern.score = Math.max(pattern.score, 92);
+      pattern.details = {
+        ...pattern.details,
+        oddsCorrelation: moves,
+        reasonCodes: Array.from(new Set([...(pattern.details.reasonCodes as string[] || []), 'odds_move_correlation'])),
+      };
     }
   }
 
@@ -619,6 +850,8 @@ export class PatternService {
       side: input.parsed.side || 'unknown',
       severity: input.severity,
       score: Math.max(1, Math.min(100, Math.round(input.score))),
+      wagerNumber: inferWagerNumber(input.details),
+      agentLogin: inferAgentLogin(input.details),
       triggerBook: input.triggerBook || null,
       details: input.details,
       description: input.description,
@@ -674,6 +907,53 @@ function parseDate(value: string | null | undefined): Date | null {
 
 function normalizeAccessDate(value: string): string {
   return parseDate(value)?.toISOString() || new Date().toISOString();
+}
+
+function inferWagerNumber(details: Record<string, unknown>): number | null {
+  const direct = Number(details.wagerNumber);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const first = Array.isArray(details.wagerNumbers) ? Number(details.wagerNumbers[0]) : NaN;
+  return Number.isFinite(first) && first > 0 ? first : null;
+}
+
+function inferAgentLogin(details: Record<string, unknown>): string | null {
+  if (typeof details.agent === 'string' && details.agent.trim()) return details.agent.trim();
+  if (Array.isArray(details.agents) && details.agents.length > 0) return String(details.agents[0]);
+  const correlation = details.correlation as any;
+  if (typeof correlation?.wager?.AgentLogin === 'string') return correlation.wager.AgentLogin;
+  return null;
+}
+
+function getPatternAgents(pattern: PatternInsert): string[] {
+  const agents = new Set<string>();
+  if (pattern.agentLogin) agents.add(pattern.agentLogin);
+  const details = pattern.details || {};
+  if (typeof details.agent === 'string' && details.agent.trim()) agents.add(details.agent.trim());
+  if (Array.isArray(details.agents)) {
+    for (const agent of details.agents) {
+      const normalized = String(agent || '').trim();
+      if (normalized) agents.add(normalized);
+    }
+  }
+  return Array.from(agents);
+}
+
+function classifyComparableSide(
+  side: string | null | undefined,
+  market: string | null | undefined,
+  homeTeam?: string | null,
+  awayTeam?: string | null
+): string | null {
+  const normalizedSide = normalizeName(side || '');
+  if (!normalizedSide || normalizedSide === 'unknown') return null;
+  if (market === 'total' || normalizedSide === 'over' || normalizedSide === 'under') {
+    return normalizedSide === 'under' ? 'under' : normalizedSide === 'over' ? 'over' : null;
+  }
+  const home = normalizeName(homeTeam || '');
+  const away = normalizeName(awayTeam || '');
+  if (home && (normalizedSide.includes(home) || home.includes(normalizedSide))) return 'home';
+  if (away && (normalizedSide.includes(away) || away.includes(normalizedSide))) return 'away';
+  return null;
 }
 
 function getComparablePinPrice(parsed: ParsedWager, pin: Record<string, unknown> | null): number | null {

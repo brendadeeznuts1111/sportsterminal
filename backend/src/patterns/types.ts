@@ -18,6 +18,8 @@ export interface PatternInsert {
   side: string;
   severity: Severity;
   score: number;
+  wagerNumber?: number | null;
+  agentLogin?: string | null;
   triggerBook?: string | null;
   details: Record<string, unknown>;
   description: string;

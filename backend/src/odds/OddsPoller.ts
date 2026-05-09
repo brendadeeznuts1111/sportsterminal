@@ -210,8 +210,8 @@ export class OddsPoller {
     for (const pattern of patterns) {
       const result = await this.db.run(
         `INSERT OR IGNORE INTO detected_patterns
-           (id, event_id, type, market, side, severity, score, category, trigger_book, details_json, description, detected_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, event_id, type, market, side, severity, score, category, wager_number, agent_login, trigger_book, details_json, description, detected_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           pattern.id,
           pattern.eventId,
@@ -221,6 +221,8 @@ export class OddsPoller {
           pattern.severity,
           pattern.score,
           'odds',
+          null,
+          null,
           pattern.triggerBook,
           JSON.stringify({ followedBy: pattern.followedBy }),
           pattern.description,
@@ -303,8 +305,10 @@ export class OddsPoller {
       params.push(filters.sport);
     }
     if (filters.agent && filters.agent !== 'all') {
-      where.push('(p.details_json LIKE ? OR p.details_json LIKE ? OR p.description LIKE ?)');
-      params.push(`%"agent":"${filters.agent}"%`, `%${filters.agent}%`, `%${filters.agent}%`);
+      where.push(`(p.agent_login = ? OR EXISTS (
+        SELECT 1 FROM pattern_agents pa WHERE pa.pattern_id = p.id AND pa.agent_login = ?
+      ) OR p.details_json LIKE ? OR p.description LIKE ?)`);
+      params.push(filters.agent, filters.agent, `%${filters.agent}%`, `%${filters.agent}%`);
     }
     if (filters.eventId) {
       where.push('p.event_id = ?');
@@ -371,6 +375,25 @@ export class OddsPoller {
     }
 
     return { sinceHours: hours, total, byType: totals, bySeverity: severity, byCategory: category, rows };
+  }
+
+  async getPatternAgentCounts(sinceHours: number = 24): Promise<any[]> {
+    const hours = Math.min(Math.max(sinceHours, 1), 168);
+    const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+    return this.db.all(
+      `SELECT
+         pa.agent_login AS agent,
+         COUNT(*) AS pattern_count,
+         SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) AS critical_count,
+         MAX(detected_at) AS last_detected_at
+       FROM detected_patterns
+       JOIN pattern_agents pa ON pa.pattern_id = detected_patterns.id
+       WHERE pa.agent_login IS NOT NULL AND pa.agent_login != '' AND detected_at >= ?
+       GROUP BY pa.agent_login
+       ORDER BY pattern_count DESC, last_detected_at DESC
+       LIMIT 500`,
+      [cutoff]
+    );
   }
 
   async getBookHealth(): Promise<any[]> {

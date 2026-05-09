@@ -10,6 +10,7 @@ import { getRateLimiter } from './api/rateLimiter';
 const PORT = parseInt(process.env.PORT || '3000');
 const HOST = process.env.HOST || '0.0.0.0';
 const JWT_SECRET = process.env.JWT_SECRET || 'change-me-in-production-min-32-chars';
+const IDLE_TIMEOUT_MS = parseInt(process.env.IDLE_TIMEOUT_MS || '300000', 10); // 5 min default
 
 // Initialize database and scraper
 let db: Database;
@@ -18,6 +19,8 @@ let oddsPoller: OddsPoller;
 
 // Connected WebSocket clients
 const wsClients = new Set<any>();
+let idleTimeout: ReturnType<typeof setTimeout> | null = null;
+let isIdleShutdown = false;
 
 function broadcast(msg: object) {
   const payload = JSON.stringify(msg);
@@ -29,6 +32,41 @@ function broadcast(msg: object) {
     } catch {
       // Ignore dead sockets
     }
+  }
+}
+
+function startIdleTimer() {
+  cancelIdleTimer();
+  if (IDLE_TIMEOUT_MS <= 0) return;
+  idleTimeout = setTimeout(() => {
+    console.log('[Idle] No clients connected — stopping scrapers');
+    isIdleShutdown = true;
+    for (const agentId of scraperManager.getAgentIds()) {
+      scraperManager.stopAgent(agentId);
+    }
+    oddsPoller.stop();
+  }, IDLE_TIMEOUT_MS);
+}
+
+function cancelIdleTimer() {
+  if (idleTimeout) {
+    clearTimeout(idleTimeout);
+    idleTimeout = null;
+  }
+}
+
+function onClientConnected() {
+  cancelIdleTimer();
+  if (isIdleShutdown) {
+    console.log('[Idle] Client reconnected — restarting odds poller');
+    oddsPoller.start();
+    isIdleShutdown = false;
+  }
+}
+
+function onClientDisconnected() {
+  if (wsClients.size === 0) {
+    startIdleTimer();
   }
 }
 
@@ -79,6 +117,7 @@ async function startServer() {
         console.log('[WS] Client connected');
         ws.data = { agentId: null, isAuthenticated: false };
         wsClients.add(ws);
+        onClientConnected();
       },
       message(ws, message) {
         handleWebSocketMessage(ws, message, scraperManager);
@@ -89,6 +128,7 @@ async function startServer() {
         if (ws.data?.agentId) {
           scraperManager.stopAgent(ws.data.agentId);
         }
+        onClientDisconnected();
       },
     },
     async fetch(request, server) {
@@ -290,6 +330,48 @@ async function handleWebSocketMessage(
             agentId: msg.agentId,
           })
         );
+        break;
+      }
+
+      case 'betAction': {
+        try {
+          if (!ws.data?.isAuthenticated || !ws.data?.agentId) {
+            throw new Error('Not authenticated');
+          }
+          if (msg.agentId !== ws.data.agentId) {
+            throw new Error('Agent mismatch');
+          }
+          if (msg.action !== 'accept' && msg.action !== 'decline') {
+            throw new Error('Invalid bet action');
+          }
+          const wagerNumber = Number(msg.wagerNumber);
+          if (!Number.isInteger(wagerNumber) || wagerNumber <= 0) {
+            throw new Error('Invalid wager number');
+          }
+          const actionId = await scraperManager.getActionQueue().enqueue(
+            ws.data.agentId,
+            wagerNumber,
+            msg.action,
+            msg.amount,
+            msg.reason
+          );
+          ws.send(
+            JSON.stringify({
+              type: 'betAction_queued',
+              actionId,
+              agentId: ws.data.agentId,
+              wagerNumber,
+              action: msg.action,
+            })
+          );
+        } catch (err) {
+          ws.send(
+            JSON.stringify({
+              type: 'betAction_error',
+              message: err instanceof Error ? err.message : 'Action failed',
+            })
+          );
+        }
         break;
       }
 

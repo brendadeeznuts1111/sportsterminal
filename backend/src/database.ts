@@ -258,12 +258,22 @@ export async function initDatabase(): Promise<AppDatabase> {
       severity TEXT CHECK(severity IN ('info','warning','critical')) NOT NULL,
       score INTEGER NOT NULL DEFAULT 0,
       category TEXT NOT NULL DEFAULT 'odds',
+      wager_number INTEGER,
+      agent_login TEXT,
       trigger_book TEXT,
       details_json TEXT NOT NULL DEFAULT '{}',
       description TEXT,
       detected_at TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (event_id) REFERENCES events(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS pattern_agents (
+      pattern_id TEXT NOT NULL,
+      agent_login TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (pattern_id, agent_login),
+      FOREIGN KEY (pattern_id) REFERENCES detected_patterns(id) ON DELETE CASCADE
     );
 
     -- Buckeye IP tracker / web access log rows
@@ -297,6 +307,9 @@ export async function initDatabase(): Promise<AppDatabase> {
 async function createPostMigrationIndexes(db: AppDatabase): Promise<void> {
   await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_detected_patterns_category ON detected_patterns(category, detected_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_detected_patterns_agent ON detected_patterns(agent_login, detected_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_detected_patterns_wager ON detected_patterns(wager_number);
+    CREATE INDEX IF NOT EXISTS idx_pattern_agents_agent ON pattern_agents(agent_login);
     CREATE INDEX IF NOT EXISTS idx_access_logs_ip_time ON access_logs(ip_address, access_datetime DESC);
     CREATE INDEX IF NOT EXISTS idx_access_logs_login_time ON access_logs(login_id, access_datetime DESC);
     CREATE INDEX IF NOT EXISTS idx_wagers_event_time ON wagers(matched_event_id, insert_datetime DESC);
@@ -347,6 +360,14 @@ export async function migrateDatabase(db: any) {
     if (!patternColumnNames.has('category')) {
       await db.exec(`ALTER TABLE detected_patterns ADD COLUMN category TEXT NOT NULL DEFAULT 'odds'`);
       console.log('📊 Migration: added category to detected_patterns');
+    }
+    if (!patternColumnNames.has('wager_number')) {
+      await db.exec(`ALTER TABLE detected_patterns ADD COLUMN wager_number INTEGER`);
+      console.log('📊 Migration: added wager_number to detected_patterns');
+    }
+    if (!patternColumnNames.has('agent_login')) {
+      await db.exec(`ALTER TABLE detected_patterns ADD COLUMN agent_login TEXT`);
+      console.log('📊 Migration: added agent_login to detected_patterns');
     }
   } catch (err) {
     console.error('📊 Migration error:', err);

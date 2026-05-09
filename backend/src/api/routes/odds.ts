@@ -53,6 +53,11 @@ export function registerOddsRoutes(
     return handleAsync(async () => oddsPoller.getPatternSummary(sinceHours), corsHeaders);
   }
 
+  if (url.pathname === '/api/patterns/agents') {
+    const sinceHours = clampInt(url.searchParams.get('sinceHours'), 24, 1, 168);
+    return handleAsync(async () => oddsPoller.getPatternAgentCounts(sinceHours), corsHeaders);
+  }
+
   if (url.pathname === '/api/books/status') {
     return handleAsync(async () => oddsPoller.getBookHealth(), corsHeaders);
   }

@@ -85,11 +85,20 @@ beforeEach(async () => {
       severity TEXT NOT NULL,
       score INTEGER NOT NULL DEFAULT 0,
       category TEXT NOT NULL DEFAULT 'odds',
+      wager_number INTEGER,
+      agent_login TEXT,
       trigger_book TEXT,
       details_json TEXT NOT NULL DEFAULT '{}',
       description TEXT,
       detected_at TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE pattern_agents (
+      pattern_id TEXT NOT NULL,
+      agent_login TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (pattern_id, agent_login)
     );
 
     CREATE TABLE access_logs (

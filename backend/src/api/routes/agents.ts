@@ -41,5 +41,10 @@ export function registerAgentRoutes(
     }, corsHeaders);
   }
 
+  // Buckeye IP access logs
+  if (url.pathname === '/api/agents/access-logs') {
+    return handleAsync(async () => scraperManager.getAccessLogs(), corsHeaders);
+  }
+
   return null;
 }

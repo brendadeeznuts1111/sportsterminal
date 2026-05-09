@@ -10,6 +10,7 @@ import { LiveAgentTree } from './LiveAgentTree';
 import { evaluateWager, Alert } from '../risk/AlertEngine';
 import { WebhookService } from '../services/WebhookService';
 import { PatternService } from '../patterns/PatternService';
+import { ActionQueue } from '../actions/ActionQueue';
 
 interface AgentInstance {
   api: BuckeyeAPI;
@@ -34,8 +35,12 @@ export class BuckeyeScraperManager {
   private accessLogIntervalMs: number = 10 * 60 * 1000;
   private webhookService: WebhookService;
   private patternService: PatternService;
+  private actionQueue: ActionQueue;
   private accountInfoCache: Map<string, { data: any; timestamp: number }> = new Map();
   private accountInfoCacheTtlMs: number = 5 * 60 * 1000;
+  private wagerCount: number = 0;
+  private alertCount: number = 0;
+  private errorCount: number = 0;
 
   private debugMode: boolean;
 
@@ -45,6 +50,7 @@ export class BuckeyeScraperManager {
     this.debugMode = debugMode;
     this.webhookService = new WebhookService(db);
     this.patternService = new PatternService(db, broadcast);
+    this.actionQueue = new ActionQueue(db, broadcast, 30_000, async (request) => this.executeBetAction(request));
   }
 
   /**
@@ -131,6 +137,10 @@ export class BuckeyeScraperManager {
     return this.agents.get(agentId);
   }
 
+  getAgentIds(): string[] {
+    return Array.from(this.agents.keys());
+  }
+
   /**
    * Stop polling for an agent.
    */
@@ -141,6 +151,7 @@ export class BuckeyeScraperManager {
     clearInterval(instance.intervalId);
     clearInterval(instance.renewalId);
     if (instance.accessLogId) clearInterval(instance.accessLogId);
+    this.actionQueue.clearAgent(agentId);
     this.agents.delete(agentId);
     console.log(`[Manager] Stopped polling for ${agentId}`);
   }
@@ -676,6 +687,38 @@ export class BuckeyeScraperManager {
     return this.webhookService;
   }
 
+  getActionQueue(): ActionQueue {
+    return this.actionQueue;
+  }
+
+  private async executeBetAction(request: {
+    id: string;
+    agentId: string;
+    wagerNumber: number;
+    action: 'accept' | 'decline';
+  }): Promise<any> {
+    const instance = this.agents.get(request.agentId);
+    if (!instance || !instance.api.isAuthenticated()) {
+      return {
+        id: request.id,
+        success: false,
+        action: request.action,
+        wagerNumber: request.wagerNumber,
+        message: 'Agent is not connected',
+        error: `Agent ${request.agentId} is not connected`,
+      };
+    }
+
+    return {
+      id: request.id,
+      success: false,
+      action: request.action,
+      wagerNumber: request.wagerNumber,
+      message: 'Bet action endpoint not configured',
+      error: 'Buckeye accept/decline endpoint is not configured yet',
+    };
+  }
+
   getMetrics(): any {
     return {
       activeAgents: this.agents.size,
@@ -685,6 +728,12 @@ export class BuckeyeScraperManager {
         errorCount: inst.errorCount,
         authenticated: inst.api.isAuthenticated(),
       })),
+      actionQueue: this.actionQueue.getMetrics(),
+      counters: {
+        wagers_total: this.wagerCount,
+        alerts_triggered_total: this.alertCount,
+        errors_total: this.errorCount,
+      },
     };
   }
 
@@ -735,6 +784,7 @@ export class BuckeyeScraperManager {
         const correlation = await this.persistWager(change.wager);
 
         if (change.type === 'new') {
+          this.wagerCount++;
           const patterns = await this.patternService.analyzeWager(change.wager, correlation);
           await this.patternService.persistPatterns(patterns);
 
@@ -753,6 +803,7 @@ export class BuckeyeScraperManager {
         for (const change of newChanges) {
           const alerts = evaluateWager(change.wager);
           for (const alert of alerts) {
+            this.alertCount++;
             await this.persistAlert(alert);
             instance.liveTree?.processAlert(change.wager.AgentLogin || change.wager.AgentID);
             this.broadcast({
@@ -775,6 +826,7 @@ export class BuckeyeScraperManager {
     } catch (error) {
       instance.errorCount++;
       instance.consecutiveErrors++;
+      this.errorCount++;
       console.error(`[Manager] Poll error for ${agentId}:`, error);
 
       // Backoff: increase poll interval on consecutive errors
