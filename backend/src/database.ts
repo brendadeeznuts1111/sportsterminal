@@ -423,10 +423,14 @@ export async function initDatabase(): Promise<AppDatabase> {
     CREATE INDEX IF NOT EXISTS idx_detected_patterns_type ON detected_patterns(type, detected_at DESC);
   `);
 
-  console.log('📊 Database tables created');
-  await migrateDatabase(db);
-  await createPostMigrationIndexes(db);
-  await seedBuckeyeSportTypes(db);
+    console.log('📊 Database tables created');
+    await migrateDatabase(db);
+    await createPostMigrationIndexes(db);
+    await seedBuckeyeSportTypes(db);
+  } else {
+    console.log('📊 Postgres mode — schema managed via migrations');
+  }
+
   return db;
 }
 
