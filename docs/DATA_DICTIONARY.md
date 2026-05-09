@@ -17,6 +17,8 @@ This is the single reference for Sports Terminal names: environment variables, O
 | `TOKEN_RENEWAL_MINUTES` | `15` | No | `ScraperManager` | Buckeye token renewal interval in minutes |
 | `ACCESS_LOG_INTERVAL_MS` | `600000` | No | `ScraperManager` | Buckeye `getWebLog` polling interval |
 | `AGENT_PERFORMANCE_INTERVAL_MS` | `900000` | No | `ScraperManager` | Buckeye `getAgentPerformance` polling interval |
+| `PLAYER360_INTERVAL_MS` | `600000` | No | `ScraperManager` | Hotset Player 360 refresh interval. Heavy sources are TTL-gated per player. |
+| `PLAYER360_MAX_PLAYERS_PER_POLL` | `50` | No | `ScraperManager` | Max hot players per agent refresh cycle; never a full customer scan. |
 | `ODDS_POLL_INTERVAL_MS` | `30000` | No | `OddsPoller` | Odds snapshot/movement polling interval |
 | `BOOK_HEALTH_INTERVAL_MS` | `60000` | No | `OddsPoller` | Book health polling interval |
 | `RATE_LIMIT_MAX` | `100` | No | `RateLimiter` | Max HTTP requests per client window |
@@ -82,9 +84,14 @@ Vault status APIs only expose presence flags:
 | `getWebLog` | `/qubic/api/Manager/getWebLog` | IP/access-log primary path |
 | `getWebLog` | `/cloud/api/Manager/getWebLog` | IP/access-log fallback path |
 | `getAgentPerformance` | `/cloud/api/Manager/getAgentPerformance` | Customer/sport/volume/graded performance |
+| `getPerformancePlayer` | `/cloud/api/Manager/getPerformancePlayer` | Player-specific performance, observed with `acc=<player/account>&period=0` |
+| `getTransactionList` | `/cloud/api/Manager/getTransactionList` | Player account ledger, observed with `acc=<player/account>&start=` |
+| `getTransactionHistory` | `/cloud/api/Manager/getTransactionHistory` | Date-windowed player transaction history, observed with `customerID`, `startDate`, `endDate`, transaction-type checkboxes, and `freeFlag=player` |
+| `getReportDeletedTransactions` | `/cloud/api/Manager/getReportDeletedTransactions` | Deleted player transaction report, observed with `customerID`, `startDate`, and `endDate` |
 | `getWeeklyFigureByAgentLite` | `/cloud/api/Manager/getWeeklyFigureByAgentLite` | Weekly summary |
 | `getSportsType` | `/cloud/api/Manager/getSportsType` | Sports type seed list |
 | `getAccountInfoOwner` | `/cloud/api/Manager/getAccountInfoOwner` | Account/owner metadata |
+| `getInfoPlayer` | `/cloud/api/Manager/getInfoPlayer` | Player profile/account payload candidate |
 | `getConfigWebReports` | `/cloud/api/Manager/getConfigWebReports` | Report config |
 | `getConfigWebReportsPending` | `/cloud/api/Manager/getConfigWebReportsPending` | Pending report config |
 | `getAuthorizations` | `/cloud/api/Manager/getAuthorizations` | Permission/capability metadata |
@@ -101,6 +108,110 @@ Common form fields:
 | `agentSite` | `1` | Buckeye site ID |
 | `operation` | `getBetTicker` | Buckeye operation name |
 | `RRO` | `1` | Required upstream flag |
+
+## Buckeye `getListAgenstByAgent`
+
+The upstream operation name is misspelled as `Agenst`; keep that spelling in request code.
+
+Observed request metadata:
+
+| Item | Value |
+|------|-------|
+| Method | `POST` |
+| Path | `/cloud/api/Manager/getListAgenstByAgent` |
+| Content type | `application/x-www-form-urlencoded; charset=UTF-8` |
+| Auth | `Authorization: Bearer <Buckeye JWT>` |
+| Cookie | `cf_clearance` required; `__cf_bm` included when present |
+| Browser hints | `X-Requested-With: XMLHttpRequest`, same-origin `Origin`/`Referer` |
+
+Request fields:
+
+| Field | Example | Meaning |
+|-------|---------|---------|
+| `agentID` | `BILLY666` | Authenticated/root agent |
+| `agentType` | `M` | Manager/downline tree mode |
+| `operation` | `getListAgenstByAgent` | Operation |
+| `RRO` | `1` | Required upstream flag |
+| `agentOwner` | `BILLY666` | Owner/root context |
+| `agentSite` | `1` | Site ID |
+
+Agent response fields:
+
+| Source Field | Local Column | Meaning |
+|--------------|--------------|---------|
+| `AgentID` | `agents.id` | Agent identifier, often padded upstream |
+| `Login` | `agents.login` | Agent login, trimmed locally |
+| `SeqNumber` | `agents.seq_number` | Upstream ordering key used to rebuild hierarchy |
+| `Level` | `agents.level`, `agents.tier` | Depth in the manager tree |
+| `AgentType` | `agents.agent_type` | Observed `M` manager and `A` agent |
+| `HeadCountRateM` | `agents.head_count_rate_m` | Head-count commission/rate |
+| `InetHeadCountRateM` | `agents.inet_head_count_rate_m` | Internet head-count commission/rate |
+| `CasinoHeadCountRateM` | `agents.casino_head_count_rate_m` | Casino head-count commission/rate |
+| `LiveBettingRateM` | `agents.live_betting_rate_m` | Live betting rate |
+| `LiveBetting2RateM` | `agents.live_betting2_rate_m` | Secondary live betting rate |
+| `LiveCasinoRateM` | `agents.live_casino_rate_m` | Live casino rate |
+| `PropBuilderRateM` | `agents.prop_builder_rate_m` | Prop builder rate |
+| `FlashBetsRate` | `agents.flash_bets_rate` | Flash bets rate |
+| `ExtPropsRate` | `agents.ext_props_rate` | Extended props rate |
+| `CrashRate` | `agents.crash_rate` | Crash product rate |
+| `FantasyRate` | `agents.fantasy_rate` | Fantasy product rate |
+| `AmigoTechRate` | `agents.amigo_tech_rate` | AmigoTech product rate |
+
+Customer seed response fields from local combined exports:
+
+| Source Field | Local Column | Meaning |
+|--------------|--------------|---------|
+| `customerID` | `players.raw_json.customerId`, fallback `players.id` | Customer/account ID, often padded |
+| `Login` | `players.login`, `players.id` | Player login |
+| `NameFirst` | `players.display_name`, `players.name` | Display name from Buckeye export |
+| `Agent` | `players.agent_login`, `players.agent_id` | Owning agent login |
+| `Password` | not stored | Sensitive upstream field; stripped during seed/backfill |
+
+Example redacted upstream shape:
+
+```json
+{
+  "GENERAL": [
+    {
+      "AgentID": "BILLY667  ",
+      "SeqNumber": 5735,
+      "Level": 1,
+      "AgentType": "A",
+      "Login": "BILLY667  ",
+      "HeadCountRateM": 1,
+      "InetHeadCountRateM": 0,
+      "CasinoHeadCountRateM": 0,
+      "LiveBettingRateM": 0,
+      "LiveBetting2RateM": 0,
+      "LiveCasinoRateM": 0,
+      "PropBuilderRateM": 0,
+      "FlashBetsRate": 0,
+      "ExtPropsRate": 0,
+      "CrashRate": 0,
+      "FantasyRate": 0,
+      "AmigoTechRate": 0
+    }
+  ],
+  "PLAYERS": [
+    {
+      "customerID": "CUST001   ",
+      "Login": "CUST001",
+      "NameFirst": "Customer Name",
+      "Password": "<redacted>",
+      "Agent": "BILLY667"
+    }
+  ]
+}
+```
+
+Seed/backfill behavior:
+
+| Source | Use |
+|--------|-----|
+| `docs/agentobject.md` | Ignored local agent-only capture |
+| `docs/agentslistharz.md` | Ignored local combined agent/customer capture |
+| `POST /api/agents/backfill/hierarchy` | Parses ignored seed files, upserts `agents` and sanitized `players`, and writes `ingestion_checkpoints` |
+| `GET /api/agents/hierarchy` | Returns database hierarchy first, live Buckeye hierarchy second, local seed fallback last |
 
 ## Buckeye `getBetTicker`
 
@@ -285,6 +396,143 @@ Grouping and week preset values:
 | `week` | `1` | Last Week |
 | `week` | `enter-dates` | Entered Dates |
 
+## Buckeye `getPerformancePlayer`
+
+Observed request fields:
+
+| Field | Example | Meaning |
+|-------|---------|---------|
+| `acc` | `BB1152` | Player/account identifier selected in Buckeye customer admin |
+| `period` | `0` | Performance period filter |
+| `operation` | `getPerformancePlayer` | Operation |
+| `RRO` | `1` | Required upstream flag |
+| `agentID` | `BILLY666` | Manager/root being queried |
+| `agentOwner` | `BILLY666` | Owner/master context |
+| `agentSite` | `1` | Site ID |
+
+Rows are normalized into `agent_performance_snapshots` with `report_type=getPerformancePlayer` for Player 360 risk/performance enrichment.
+
+## Buckeye `getTransactionList`
+
+Observed request fields:
+
+| Field | Example | Meaning |
+|-------|---------|---------|
+| `acc` | `BB1152` | Player/account identifier selected in Buckeye customer admin |
+| `start` | blank | Optional cursor/start parameter used by the Buckeye transaction module |
+| `operation` | `getTransactionList` | Operation |
+| `RRO` | `1` | Required upstream flag |
+| `agentID` | `BILLY666` | Manager/root being queried |
+| `agentOwner` | `BILLY666` | Owner/master context |
+| `agentSite` | `1` | Site ID |
+
+Response fields:
+
+| Source Field | Local Column | Meaning |
+|--------------|--------------|---------|
+| `DocumentNumber` | `document_number`, `id` | Buckeye ledger document number and stable local key |
+| `TranCode` | `tran_code` | Transaction code; observed `C` credit and `D` debit |
+| `TranType` | `tran_type` | Transaction type; observed `W` wager win and `L` wager loss |
+| `Amount` | `amount` | Amount in cents, normalized to dollars |
+| `Balance` | `balance` | Running balance in cents, normalized to dollars |
+| `HoldAmount` | `hold_amount` | Hold amount in cents, normalized to dollars |
+| `Description` | `description` | Human-readable ledger reason, used for category classification |
+| `TranDateTime` | `transaction_time` | Ledger event timestamp |
+| `GradeNum` | `grade_num` | Graded wager/document reference |
+| `EnteredBy` | `entered_by` | Source actor, often `Internet` |
+
+Category mapping:
+
+| Local Category | Rule |
+|----------------|------|
+| `wager_win` | Description contains `Wager Won` or similar bet-win text |
+| `wager_loss` | Description contains `Wager Loss` or similar bet-loss text |
+| `deposit` | Description/type contains deposit, wire, ACH, card, crypto, payment, or funding text |
+| `withdrawal` | Description/type contains withdrawal, payout, cash-out, or distribution text |
+| `hold` | Description/type contains hold text |
+| `adjustment` | Description/type contains adjustment, correction, or manual text |
+| `credit` / `debit` | Fallback from `TranCode=C` or `TranCode=D` |
+| `other` | No known mapping |
+
+Player 360 stores all rows in `player_transactions`. Only deposit-like rows are copied into `deposits`, so wager wins/losses remain ledger rows instead of becoming fake deposits.
+
+## Buckeye `getTransactionHistory`
+
+Request fields:
+
+| Field | Example | Meaning |
+|-------|---------|---------|
+| `customerID` | `BB1152` | Player/account identifier selected in Buckeye transaction history |
+| `startDate` | `2026-05-09` | Date-window start, `YYYY-MM-DD` |
+| `endDate` | `2026-05-09` | Date-window end, `YYYY-MM-DD` |
+| `deposits` | `checked` | Include deposit rows |
+| `withdrawals` | `checked` | Include withdrawal rows |
+| `adjustments` | `checked` | Include adjustment rows |
+| `transfers` | `checked` | Include transfer rows |
+| `fess` | `checked` | Include fee rows; upstream field name is misspelled |
+| `promotional` | `checked` | Include promotional rows |
+| `balances` | `checked` | Include balance rows |
+| `distribution` | `unchecked` | Distribution flag from Buckeye UI |
+| `freeFlag` | `player` | Player ledger scope |
+| `operation` | `getTransactionHistory` | Operation |
+| `RRO` | `1` | Required upstream flag |
+| `agentID` | `BILLY666` | Manager/root being queried |
+| `agentOwner` | `BILLY666` | Owner/master context |
+| `agentSite` | `1` | Site ID |
+
+Player 360 stores `getTransactionHistory` rows in the same `player_transactions` contract as `getTransactionList`. The parser accepts the confirmed `DocumentNumber`/`TranDateTime` shape and common history aliases such as `TransactionDateTime`, `TransactionDate`, `TransactionType`, `TransactionCode`, `Credit`, and `Debit`. The refresh is on-open/hotset only and must not be scheduled across the full 50k-customer archive.
+
+## Buckeye `getReportDeletedTransactions`
+
+Request fields:
+
+| Field | Example | Meaning |
+|-------|---------|---------|
+| `customerID` | `BILLY666` | Manager/root context observed from Buckeye; Player 360 filters returned rows to the selected account |
+| `startDate` | `2026-05-09` | Report start, `YYYY-MM-DD` |
+| `endDate` | `2026-05-09` | Report end, `YYYY-MM-DD` |
+| `operation` | `getReportDeletedTransactions` | Operation |
+| `RRO` | `1` | Required upstream flag |
+| `agentID` | `BILLY666` | Manager/root being queried |
+| `agentOwner` | `BILLY666` | Owner/master context |
+| `agentSite` | `1` | Site ID |
+
+Response fields:
+
+| Source Field | Local Field | Meaning |
+|--------------|-------------|---------|
+| `DocumentNumber` | `document_number`, `id=deleted-<DocumentNumber>` | Deleted report document number with local prefix to avoid active-ledger collisions |
+| `TranDateTime` | `transaction_time` | Original transaction timestamp |
+| `CustomerID` | `customer_id`, `login` | Player account |
+| `AgentId` | `agent_id`, `agent_login` | Immediate agent from deleted report |
+| `MasterAgentID` | `raw_json.MasterAgentID` | Master/root agent evidence |
+| `TranCode` / `TranType` | `tran_code` / `tran_type` | Credit/debit/type codes |
+| `Description` | `description`, `category` | Withdrawal/deposit/adjustment text, often includes Telegram Bot AID |
+| `Amount` | `amount` | Upstream cents normalized to dollars |
+| `DeletedBy` | `entered_by`, `raw_json.DeletedBy` | Operator/user that deleted the transaction |
+
+Player 360 stores deleted report rows in `player_transactions` and exposes source coverage as `deleted_transactions`. Rows remain heavy/on-open/hotset only, not a full-archive scheduled scan.
+
+## `player_source_status`
+
+Per-player source status used by `/api/v1/players/:id/intelligence-map`, the Player 360 Status tab, and the sidebar Status page. This table prevents heavy Buckeye endpoints from being polled for all archived players.
+
+| Column | Meaning |
+|--------|---------|
+| `customer_id`, `login`, `agent_id` | Player and agent identity for the mapped source. |
+| `source_key` | Stable local source name, such as `player_transactions`, `customer_snapshots`, or `teaser_profile`. |
+| `refresh_policy` | `live`, `hotset`, `on_open`, `daily`, `manual`, or `derived`. |
+| `ttl_seconds` | Freshness TTL used before another attempt is allowed. |
+| `scale_class` | `realtime`, `cheap`, `heavy`, or `manual`. |
+| `last_attempt_at` | Last time Sports Terminal attempted to refresh this source for this player. |
+| `last_success_at` | Last time the source produced trusted rows or a confirmed reusable payload. |
+| `last_error` | Most recent refresh error, if any. |
+| `next_refresh_at` | Next TTL-derived attempt time. |
+
+## Buckeye `getInfoPlayer`
+
+Observed after loading the Buckeye customer-admin player-info module. Player 360 probes it with `acc=<player/account>` and standard manager fields, then stores useful masked/account metadata in `customer_snapshots`.
+
 Response fields:
 
 | Source Field | Local Column | Meaning |
@@ -310,6 +558,10 @@ Snapshot context columns:
 | `sport`, `subsport`, `period`, `wager_type`, `bet_type`, `activity_tipo`, `free_play` | Request filters |
 | `pulled_at` | Backend pull timestamp |
 | `raw_json` | Full upstream row |
+
+## Buckeye `getTeaserProfile`
+
+Mapped as the Player 360 `teaser_profile` source. It uses the standard manager fields plus `acc=<player/account>`, but it remains a probe-only source until the real payload field contract is confirmed. The UI should show its status, TTL, last attempt, and next refresh in coverage tables, but must not fabricate teaser/account values.
 
 ## Buckeye `getSportsType`
 
@@ -421,7 +673,7 @@ Rugby, Soccer, Tennis, Virtual Sports
 | `request_params` | Redacted request/query parameters |
 | `status_code` | HTTP status code or synthetic error status |
 
-Raw API responses and request params are redacted before persistence. The v5.31 Performance Raw API Archive shows metadata by default and only returns `response_json` when `includeBody=1`; the UI renders that body as escaped text.
+Raw API responses and request params are redacted before persistence. The v5.32 Performance Raw API Archive shows metadata by default and only returns `response_json` when `includeBody=1`; the UI renders that body as escaped text.
 
 ### `wager_archive`
 

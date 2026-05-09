@@ -41,6 +41,7 @@ export interface ParsedLocalAgentExport {
     login: string;
     displayName: string;
     agentLogin: string;
+    seqNumber?: number;
   }>;
   meta: {
     source: string;
@@ -140,6 +141,7 @@ function buildParsedLocalAgentExport(agents: any[], players: any[], source: stri
         login,
         displayName: String(player?.NameFirst || '').trim(),
         agentLogin: agent,
+        seqNumber: Number(player?.SeqNumber) || undefined,
       });
     }
     if (!agent) continue;
@@ -149,24 +151,25 @@ function buildParsedLocalAgentExport(agents: any[], players: any[], source: stri
   const sortedAgents = [...agents].sort((a: any, b: any) => {
     return (Number(a?.SeqNumber) || 0) - (Number(b?.SeqNumber) || 0);
   });
-  const stack: Array<{ level: number; login: string }> = [];
+  const stack: Array<{ level: number; agentId: string }> = [];
   const childCounts = new Map<string, number>();
 
   const enriched = sortedAgents.map((agent: any) => {
     const login = String(agent?.Login || agent?.AgentID || '').trim();
+    const agentId = String(agent?.AgentID || login).trim();
     const level = Number(agent?.Level) || 1;
     while (stack.length > 0 && stack[stack.length - 1].level >= level) {
       stack.pop();
     }
-    const parentAgentId = stack[stack.length - 1]?.login || '';
+    const parentAgentId = stack[stack.length - 1]?.agentId || '';
     if (parentAgentId) {
       childCounts.set(parentAgentId, (childCounts.get(parentAgentId) || 0) + 1);
     }
-    stack.push({ level, login });
+    stack.push({ level, agentId });
 
     return {
       ...agent,
-      AgentID: String(agent?.AgentID || login).trim(),
+      AgentID: agentId,
       Login: login,
       ParentAgentID: parentAgentId,
       PlayerCount: playerCounts.get(login) || 0,
@@ -175,7 +178,7 @@ function buildParsedLocalAgentExport(agents: any[], players: any[], source: stri
 
   const enrichedWithCounts = enriched.map((agent) => ({
       ...agent,
-      ChildCount: childCounts.get(agent.Login) || 0,
+      ChildCount: childCounts.get(agent.AgentID) || 0,
   }));
 
   return {

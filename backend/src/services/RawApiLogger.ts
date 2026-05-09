@@ -170,8 +170,10 @@ export class RawApiLogger {
       this.flushTimer = undefined;
     }
 
-    const batch = this.queue.splice(0, this.batchSize);
-    if (batch.length === 0) return;
+    if (this.queue.length === 0) return;
+
+    // Copy batch without removing from queue until commit succeeds
+    const batch = this.queue.slice(0, this.batchSize);
 
     try {
       await this.db.run('BEGIN');
@@ -197,6 +199,8 @@ export class RawApiLogger {
         );
       }
       await this.db.run('COMMIT');
+      // Only remove from queue after successful commit
+      this.queue.splice(0, batch.length);
     } catch (error) {
       try {
         await this.db.run('ROLLBACK');
@@ -204,6 +208,8 @@ export class RawApiLogger {
         // Ignore rollback failures.
       }
       console.error('[RawApiLogger] Failed to flush raw API logs:', error);
+      // Re-queue failed batch at front for retry
+      this.queue.unshift(...batch);
     } finally {
       if (this.queue.length > 0) {
         this.scheduleFlush();

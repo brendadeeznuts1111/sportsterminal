@@ -330,6 +330,58 @@ export function registerBuckeyeRoutes(
     }
   }
 
+  // Player-specific performance (getPerformancePlayer)
+  if (url.pathname === '/api/buckeye/player-performance') {
+    if (request.method === 'GET') {
+      const acc = url.searchParams.get('acc') || '';
+      const period = url.searchParams.get('period') || '0';
+      const agentId = url.searchParams.get('agentId') || undefined;
+      if (!acc) throw new Error('acc parameter is required');
+      return handleAsync(async () => scraperManager.getBuckeyePlayerPerformance(acc, period, agentId), corsHeaders);
+    }
+    if (request.method === 'POST') {
+      return handleAsync(async () => {
+        const body = await readJsonBody(request);
+        if (!body.acc) throw new Error('acc is required');
+        return scraperManager.getBuckeyePlayerPerformance(body.acc, body.period ?? '0', body.agentId);
+      }, corsHeaders);
+    }
+  }
+
+  // Player-specific info snapshot (getInfoPlayer)
+  if (url.pathname === '/api/buckeye/player-info') {
+    if (request.method === 'GET') {
+      const customerId = url.searchParams.get('customerId') || '';
+      const agentId = url.searchParams.get('agentId') || undefined;
+      if (!customerId) throw new Error('customerId parameter is required');
+      return handleAsync(async () => scraperManager.getBuckeyePlayerInfo(customerId, agentId), corsHeaders);
+    }
+    if (request.method === 'POST') {
+      return handleAsync(async () => {
+        const body = await readJsonBody(request);
+        if (!body.customerId) throw new Error('customerId is required');
+        return scraperManager.getBuckeyePlayerInfo(body.customerId, body.agentId);
+      }, corsHeaders);
+    }
+  }
+
+  // Player-specific transaction ledger (getTransactionList)
+  if (url.pathname === '/api/buckeye/player-transactions') {
+    if (request.method === 'GET') {
+      const customerId = url.searchParams.get('customerId') || '';
+      const agentId = url.searchParams.get('agentId') || undefined;
+      if (!customerId) throw new Error('customerId parameter is required');
+      return handleAsync(async () => scraperManager.getBuckeyePlayerTransactions(customerId, agentId), corsHeaders);
+    }
+    if (request.method === 'POST') {
+      return handleAsync(async () => {
+        const body = await readJsonBody(request);
+        if (!body.customerId) throw new Error('customerId is required');
+        return scraperManager.getBuckeyePlayerTransactions(body.customerId, body.agentId);
+      }, corsHeaders);
+    }
+  }
+
   if (url.pathname === '/api/buckeye/access-logs') {
     if (request.method === 'GET') {
       const limit = clampInt(url.searchParams.get('limit'), 200, 1, 500);
@@ -342,6 +394,12 @@ export function registerBuckeyeRoutes(
         return scraperManager.forceAccessLogRefresh(body.agentId);
       }, corsHeaders);
     }
+  }
+
+  // Buckeye players list (getPlayers)
+  if (url.pathname === '/api/buckeye/players-list' && request.method === 'GET') {
+    const agentId = url.searchParams.get('agentId') || undefined;
+    return handleAsync(async () => scraperManager.getBuckeyePlayersList(agentId), corsHeaders);
   }
 
   // Test Buckeye login (no polling — just validate credentials)

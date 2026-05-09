@@ -13,6 +13,46 @@ export function registerAnalyticsRoutes(
 ): Response | Promise<Response> | null {
   const db = scraperManager.getDatabase();
 
+  // Health check for data pipeline
+  if (url.pathname === '/api/health/data-pipeline' && request.method === 'GET') {
+    return handleAsync(async () => {
+      const rawLogs = await db.get<{ count: number; lastAt: string | null }>(
+        `SELECT COUNT(*) as count, MAX(fetched_at) as lastAt FROM raw_api_logs WHERE endpoint = 'getBetTicker'`
+      );
+      const weeklyCount = await db.get<{ count: number }>(
+        `SELECT COUNT(*) as count FROM weekly_figures`
+      );
+      const masterCount = await db.get<{ count: number }>(
+        `SELECT COUNT(*) as count FROM master_snapshots`
+      );
+      const wagersWithRaw = await db.get<{ count: number; total: number }>(
+        `SELECT COUNT(*) as total, COUNT(raw_json) as count FROM wagers`
+      );
+      const perfCount = await db.get<{ count: number }>(
+        `SELECT COUNT(*) as count FROM agent_performance_snapshots`
+      );
+      const accessCount = await db.get<{ count: number }>(
+        `SELECT COUNT(*) as count FROM access_logs`
+      );
+      const activeAgents = scraperManager.getAgentIds();
+      return {
+        pipeline: {
+          rawApiLogs: { getBetTickerCount: rawLogs?.count || 0, lastFetchedAt: rawLogs?.lastAt || null },
+          weeklyFigures: { count: weeklyCount?.count || 0 },
+          masterSnapshots: { count: masterCount?.count || 0 },
+          wagers: { total: wagersWithRaw?.total || 0, withRawJson: wagersWithRaw?.count || 0 },
+          agentPerformance: { count: perfCount?.count || 0 },
+          accessLogs: { count: accessCount?.count || 0 },
+        },
+        agents: {
+          active: activeAgents,
+          count: activeAgents.length,
+        },
+        timestamp: new Date().toISOString(),
+      };
+    });
+  }
+
   // Analytics endpoints for the Performance tab
   if (url.pathname === '/api/analytics/raw-logs' && request.method === 'GET') {
     return handleAsync(async () => {

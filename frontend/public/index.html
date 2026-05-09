@@ -6,11 +6,12 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>Sports Terminal v5.31 — Buckeye PPH Integration</title>
+<title>Sports Terminal v5.32 — Buckeye PPH Integration</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/css/terminal.css?v=5.31">
+<link rel="stylesheet" href="/css/terminal.css?v=5.32.10">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 </head>
 <body class="flex flex-col h-screen">
 
@@ -20,7 +21,7 @@
     <div class="flex items-center gap-2">
       <div class="w-7 h-7 rounded flex items-center justify-center font-bold text-sm" style="background:var(--accent);color:#fff;">S</div>
       <span class="font-bold text-sm tracking-wide" style="color:var(--accent);">SPORTS TERMINAL</span>
-      <span class="text-xs px-2 py-0.5 rounded-full" style="background:var(--accent);color:#fff;">v5.31</span>
+      <span class="text-xs px-2 py-0.5 rounded-full" style="background:var(--accent);color:#fff;">v5.32</span>
     </div>
     <div class="h-6 w-px" style="background:var(--border);"></div>
     <div class="hidden xl:flex items-center gap-2 text-xs">
@@ -740,6 +741,28 @@
         </div>
         <div id="apiEndpointList" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs"></div>
       </div>
+
+      <!-- Player 360 Status -->
+      <div class="mt-4 rounded-lg border p-4" style="background:var(--panel);border-color:var(--border);">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-semibold">Player 360° Command Center</h3>
+          <span class="text-xs" id="player360Summary" style="color:var(--text-dim);">Checking...</span>
+        </div>
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-4">
+          <div>
+            <h4 class="text-xs font-semibold uppercase tracking-wider mb-2" style="color:var(--text-dim);">Profile Model</h4>
+            <div id="player360Model" class="space-y-1.5 text-xs"></div>
+          </div>
+          <div>
+            <h4 class="text-xs font-semibold uppercase tracking-wider mb-2" style="color:var(--text-dim);">Data Sources</h4>
+            <div id="player360Sources" class="space-y-1.5 text-xs"></div>
+          </div>
+        </div>
+        <div>
+          <h4 class="text-xs font-semibold uppercase tracking-wider mb-2" style="color:var(--text-dim);">Endpoint Health</h4>
+          <div id="player360Endpoints" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5 text-xs"></div>
+        </div>
+      </div>
     </div>
 
     <div id="performanceSection" class="section-content flex-1 overflow-y-auto p-4 hidden">
@@ -1046,18 +1069,83 @@
 
     <!-- SECTION: Player Search -->
     <div id="playerSearchSection" class="section-content flex-1 overflow-y-auto p-4 hidden">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="text-lg font-bold">Player Search</h2>
-        <div class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs" style="background:var(--bg);border:1px solid var(--border);">
-          <svg class="w-3.5 h-3.5" style="color:var(--text-dim);" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-          <input id="playerSearchInput" type="text" placeholder="Search player by login..." class="bg-transparent border-none outline-none text-xs w-48" style="color:var(--text);" oninput="searchPlayers()">
+      <div class="flex items-center justify-between gap-3 mb-4">
+        <div>
+          <h2 class="text-lg font-bold">Player Search</h2>
+          <div id="playerSearchMeta" class="text-xs mt-1" style="color:var(--text-dim);">Search archived wagers by player, agent, and date.</div>
         </div>
+        <button type="button" class="px-3 py-1.5 rounded text-xs font-semibold" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onclick="loadPlayerSearch(true)">Refresh</button>
+      </div>
+      <div class="player-search-toolbar mb-3">
+        <label class="player-filter-control player-filter-control-wide">
+          <span>Player</span>
+          <input id="playerSearchInput" type="text" placeholder="Login or customer ID" list="playerSearchSuggestions" oninput="searchPlayers()">
+          <datalist id="playerSearchSuggestions"></datalist>
+        </label>
+        <label class="player-filter-control">
+          <span>Agent</span>
+          <select id="playerAgentFilter" onchange="loadPlayerSearch(true)"><option value="">All agents</option></select>
+        </label>
+        <label class="player-filter-control">
+          <span>From</span>
+          <input id="playerFromFilter" type="date" onchange="loadPlayerSearch(true)">
+        </label>
+        <label class="player-filter-control">
+          <span>To</span>
+          <input id="playerToFilter" type="date" onchange="loadPlayerSearch(true)">
+        </label>
       </div>
       <div class="rounded-lg border overflow-hidden" style="background:var(--panel);border-color:var(--border);">
         <table class="w-full text-xs">
-          <thead><tr style="background:var(--bg);"><th class="text-left px-3 py-2">Player</th><th class="text-left px-3 py-2">Agent</th><th class="text-center px-3 py-2">Wagers</th><th class="text-right px-3 py-2">Volume</th><th class="text-right px-3 py-2">Risk</th><th class="text-center px-3 py-2">Actions</th></tr></thead>
+          <thead><tr style="background:var(--bg);"><th class="text-left px-3 py-2 sortable-th" data-player-sort="player">Player</th><th class="text-left px-3 py-2 sortable-th" data-player-sort="agent">Agent</th><th class="text-center px-3 py-2 sortable-th" data-player-sort="wagers">Wagers</th><th class="text-right px-3 py-2 sortable-th" data-player-sort="volume">Volume</th><th class="text-right px-3 py-2 sortable-th" data-player-sort="risk">Risk</th><th class="text-center px-3 py-2 sortable-th" data-player-sort="last">Last</th><th class="text-center px-3 py-2">Actions</th></tr></thead>
           <tbody id="playerSearchTable"></tbody>
         </table>
+      </div>
+    </div>
+
+    <div id="playerProfileModal" class="player-profile-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="playerProfileTitle" aria-describedby="playerProfileSubhead">
+      <div class="player-profile-shell">
+        <div class="player-profile-header">
+          <div class="player-profile-heading">
+            <div class="text-xs uppercase tracking-wider" style="color:var(--text-dim);">Player Profile</div>
+            <h2 id="playerProfileTitle" class="text-xl font-bold mt-1">Player</h2>
+            <div id="playerProfileSubhead" class="text-xs mt-1" style="color:var(--text-dim);">Loading archive profile</div>
+          </div>
+          <div class="player-profile-actions">
+            <button id="playerProfileDocsBtn" type="button" class="profile-header-action" onclick="openPlayerProfileDocs()">Docs</button>
+            <a id="playerExportWagersBtn" class="profile-header-action" href="#" onclick="return exportPlayerProfileCsv('wagers')">Export Wagers</a>
+            <a id="playerExportAccessBtn" class="profile-header-action" href="#" onclick="return exportPlayerProfileCsv('access')">Export Access</a>
+            <button type="button" class="profile-header-action profile-header-close" onclick="closePlayerProfileModal()">Close</button>
+          </div>
+        </div>
+        <div class="player-profile-tabs" role="tablist" aria-label="Player 360 sections">
+          <button type="button" role="tab" aria-selected="true" aria-controls="playerProfileOverview" class="player-profile-tab active" data-player-profile-tab="overview" onclick="setPlayerProfileTab('overview')">Overview</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="playerProfileWagers" class="player-profile-tab" data-player-profile-tab="wagers" onclick="setPlayerProfileTab('wagers')">Wager History</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="playerProfileAccess" class="player-profile-tab" data-player-profile-tab="access" onclick="setPlayerProfileTab('access')">Access Logs</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="playerProfilePerformance" class="player-profile-tab" data-player-profile-tab="performance" onclick="setPlayerProfileTab('performance')">Performance</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="playerProfileDeposits" class="player-profile-tab" data-player-profile-tab="deposits" onclick="setPlayerProfileTab('deposits')">Deposits</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="playerProfileTransactions" class="player-profile-tab" data-player-profile-tab="transactions" onclick="setPlayerProfileTab('transactions')">Transactions</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="playerProfileAccount" class="player-profile-tab" data-player-profile-tab="account" onclick="setPlayerProfileTab('account')">Account</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="playerProfileAgent" class="player-profile-tab" data-player-profile-tab="agent" onclick="setPlayerProfileTab('agent')">Agent Hierarchy</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="playerProfileLinks" class="player-profile-tab" data-player-profile-tab="links" onclick="setPlayerProfileTab('links')">Links</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="playerProfileNotes" class="player-profile-tab" data-player-profile-tab="notes" onclick="setPlayerProfileTab('notes')">Notes</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="playerProfileStatus" class="player-profile-tab" data-player-profile-tab="status" onclick="setPlayerProfileTab('status')">Status</button>
+        </div>
+        <div class="player-profile-body">
+          <div id="playerProfileLiveRegion" class="sr-only" aria-live="polite"></div>
+          <div id="playerProfileOverview" class="player-profile-panel" role="tabpanel"></div>
+          <div id="playerProfileWagers" class="player-profile-panel hidden" role="tabpanel" aria-hidden="true"></div>
+          <div id="playerProfileAccess" class="player-profile-panel hidden" role="tabpanel" aria-hidden="true"></div>
+          <div id="playerProfilePerformance" class="player-profile-panel hidden" role="tabpanel" aria-hidden="true"></div>
+          <div id="playerProfileDeposits" class="player-profile-panel hidden" role="tabpanel" aria-hidden="true"></div>
+          <div id="playerProfileTransactions" class="player-profile-panel hidden" role="tabpanel" aria-hidden="true"></div>
+          <div id="playerProfileAccount" class="player-profile-panel hidden" role="tabpanel" aria-hidden="true"></div>
+          <div id="playerProfileAgent" class="player-profile-panel hidden" role="tabpanel" aria-hidden="true"></div>
+          <div id="playerProfileLinks" class="player-profile-panel hidden" role="tabpanel" aria-hidden="true"></div>
+          <div id="playerProfileNotes" class="player-profile-panel hidden" role="tabpanel" aria-hidden="true"></div>
+          <div id="playerProfileStatus" class="player-profile-panel hidden" role="tabpanel" aria-hidden="true"></div>
+          <div id="playerProfileDocs" class="player-profile-panel hidden" role="tabpanel" aria-hidden="true"></div>
+        </div>
       </div>
     </div>
 
@@ -1247,7 +1335,6 @@
   <div class="tooltip-content" id="globalTooltipContent"></div>
 </div>
 
-<script type="module" src="/js/app.js?v=5.31"></script>
+<script type="module" src="/js/app.js?v=5.32.10"></script>
 </body>
 </html>
-

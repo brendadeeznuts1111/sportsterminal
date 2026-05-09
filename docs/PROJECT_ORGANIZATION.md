@@ -103,6 +103,6 @@ Before ending a substantial task:
 
 ## Naming and Versioning
 
-- Use v5.31 for the current always-on ingestion/status/pattern/raw-API visibility baseline.
+- Use v5.32 for the current always-on ingestion/status/pattern/raw-API visibility baseline and Player 360 real-data contract map.
 - Keep future speculative work out of the current tracker unless it is an explicit next step.
 - Prefer concrete route/table/function names in docs over broad labels.

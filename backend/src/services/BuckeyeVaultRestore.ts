@@ -34,6 +34,8 @@ export async function restoreBuckeyeAgentsFromVault(
       }
 
       if (saved.password) {
+        // Clear stale token so startAgent performs a fresh login
+        delete (credentials as any).token;
         await scraperManager.startAgent(saved.agentId, credentials);
         result.restored.push(saved.agentId);
         continue;

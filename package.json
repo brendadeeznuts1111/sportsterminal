@@ -1,7 +1,7 @@
 {
   "name": "sportsterminal",
   "version": "0.2.0",
-  "description": "Sports Terminal v5.31 - Always-on Buckeye ingestion, raw API observability, odds grid, patterns, and risk management",
+  "description": "Sports Terminal v5.32 - Player 360 real-data contracts, coverage mapping, Buckeye ingestion, odds grid, patterns, and risk management",
   "type": "module",
   "private": true,
   "workspaces": [
@@ -15,6 +15,7 @@
     "serve": "bun run scripts/serve-frontend.ts",
     "db:reset": "rm -f backend/data/terminal.db && echo 'Database reset. Run bun run dev to recreate.'",
     "db:migrate": "bun run --cwd backend scripts/migrate.ts",
+    "probe:player360": "bun run --cwd backend scripts/probe-player360.ts",
     "backfill:hierarchy": "bun run --cwd backend scripts/backfill-hierarchy.ts",
     "status": "bun run scripts/status.js",
     "stop": "bun run scripts/stop.js",

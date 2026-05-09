@@ -150,13 +150,111 @@ export interface BuckeyeAgentPerformanceResult {
   redactedFields: string[];
 }
 
-export type BuckeyeManagerOperation =
+export interface BuckeyePlayerPerformanceOptions {
+  acc?: string;
+  period?: string | number;
+  agentID?: string;
+  agentOwner?: string;
+}
+
+export interface BuckeyeDepositRow {
+  id: string;
+  customerId: string;
+  login: string;
+  agentId: string;
+  agentLogin: string;
+  amount: number;
+  currency: string;
+  method: string;
+  ipAddress: string;
+  status: string;
+  transactionTime: string;
+  raw: Record<string, unknown>;
+}
+
+export interface BuckeyeDepositsResult {
+  fetchedAt: string;
+  agentId: string;
+  customerId: string;
+  operation?: string;
+  rows: BuckeyeDepositRow[];
+  data?: unknown;
+  unavailable?: string;
+}
+
+export type BuckeyeTransactionCategory =
+  | 'deposit'
+  | 'withdrawal'
+  | 'wager_win'
+  | 'wager_loss'
+  | 'credit'
+  | 'debit'
+  | 'hold'
+  | 'adjustment'
+  | 'other';
+
+export interface BuckeyeTransactionRow {
+  id: string;
+  customerId: string;
+  login: string;
+  agentId: string;
+  agentLogin: string;
+  documentNumber: string;
+  tranCode: string;
+  tranType: string;
+  amount: number;
+  balance: number;
+  holdAmount: number;
+  gradeNum: string;
+  description: string;
+  enteredBy: string;
+  category: BuckeyeTransactionCategory;
+  transactionTime: string;
+  raw: Record<string, unknown>;
+}
+
+export interface BuckeyeTransactionListResult {
+  fetchedAt: string;
+  agentId: string;
+  customerId: string;
+  operation: 'getTransactionList' | 'getTransactionHistory' | 'getReportDeletedTransactions';
+  rows: BuckeyeTransactionRow[];
+  data?: unknown;
+}
+
+export interface BuckeyeCustomerSnapshot {
+  customerId: string;
+  login: string;
+  agentId: string;
+  agentLogin: string;
+  kycLevel: string;
+  vipStatus: string;
+  emailMasked: string;
+  phoneMasked: string;
+  currency: string;
+  source: string;
+  raw: Record<string, unknown>;
+}
+
+export interface BuckeyeCustomerSnapshotResult {
+  fetchedAt: string;
+  agentId: string;
+  customerId: string;
+  operation?: string;
+  snapshot?: BuckeyeCustomerSnapshot;
+  data?: unknown;
+  unavailable?: string;
+}
+
+export type BuckeyeKnownManagerOperation =
   | 'getConfigWebReports'
   | 'getConfigWebReportsPending'
   | 'getSportsType'
   | 'getAuthorizations'
   | 'getMessage'
   | 'getNewEmailsCount';
+
+export type BuckeyeManagerOperation = BuckeyeKnownManagerOperation | (string & {});
 
 export interface BuckeyeManagerSnapshotResult {
   fetchedAt: string;
@@ -538,7 +636,53 @@ export class BuckeyeAPI {
     }
 
     const data = await response.json();
-    this.log('getAgentHierarchy returned', data?.GENERAL?.length || 0, 'agents');
+    this.log('getAgentHierarchy returned', data?.GENERAL?.length || 0, 'agents,', data?.PLAYERS?.length || 0, 'players');
+    return data;
+  }
+
+  /**
+   * Fetch player/customer list from the Manager API.
+   * Returns { LIST: [...] } with customerID, Login, NameFirst, Password, Agent.
+   */
+  async getPlayersList(): Promise<any> {
+    if (!this.loggedIn) {
+      throw new Error('Not authenticated. Call login() first.');
+    }
+
+    const body = new URLSearchParams({
+      agentID: this.agentId,
+      agentType: 'M',
+      operation: 'getPlayers',
+      RRO: '1',
+      agentOwner: this.agentId,
+      agentSite: '1',
+    });
+
+    const response = await fetch(`${this.baseUrl}/cloud/api/Manager/getPlayers`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Authorization': `Bearer ${this.token}`,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Origin': this.baseUrl,
+        'Referer': `${this.baseUrl}/manager.html`,
+        ...(this.cfCookie ? { 'Cookie': this.cfCookie } : {}),
+      },
+      body,
+    });
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        this.loggedIn = false;
+      }
+      const text = await response.text().catch(() => '');
+      throw new Error(`getPlayersList failed: ${response.status} ${response.statusText} - ${text.substring(0, 200)}`);
+    }
+
+    const data = await response.json();
+    this.log('getPlayersList returned', data?.LIST?.length || 0, 'players');
     return data;
   }
 
@@ -725,6 +869,64 @@ export class BuckeyeAPI {
     };
   }
 
+  async getPerformancePlayer(
+    accountId: string,
+    options: BuckeyePlayerPerformanceOptions = {}
+  ): Promise<BuckeyeAgentPerformanceResult> {
+    if (!this.loggedIn) {
+      throw new Error('Not authenticated. Call login() first.');
+    }
+
+    const acc = (options.acc || accountId).trim().toUpperCase();
+    const agentID = (options.agentID || this.agentId).trim().toUpperCase();
+    const agentOwner = (options.agentOwner || this.agentId).trim().toUpperCase();
+    const period = String(options.period ?? 0);
+    const body = new URLSearchParams({
+      acc,
+      period,
+      operation: 'getPerformancePlayer',
+      RRO: '1',
+      agentID,
+      agentOwner,
+      agentSite: '1',
+    });
+
+    const data = await this.postForm(
+      `${this.baseUrl}/cloud/api/Manager/getPerformancePlayer`,
+      body,
+      'getPerformancePlayer'
+    );
+    const { sanitized, redactedFields } = sanitizeAgentPerformancePayload(data);
+
+    return {
+      fetchedAt: new Date().toISOString(),
+      agentId: this.agentId,
+      params: {
+        start: '',
+        end: '',
+        agentID,
+        type: 'player',
+        freePlay: '',
+        store: acc,
+        sport: '',
+        subsport: '',
+        period,
+        wagerType: '',
+        betType: '',
+        tipo: '',
+        debug: '0',
+        operation: 'getPerformancePlayer',
+        RRO: '1',
+        agentOwner,
+        agentSite: '1',
+        group: '',
+      },
+      parsed: parsePlayerPerformanceReport(sanitized, { acc, agentID }),
+      data: sanitized,
+      redactedFields,
+    };
+  }
+
   async getConfigWebReports(): Promise<unknown> {
     return this.postManagerOperation('getConfigWebReports');
   }
@@ -747,6 +949,217 @@ export class BuckeyeAPI {
 
   async getNewEmailsCount(): Promise<unknown> {
     return this.postManagerOperation('getNewEmailsCount', { acc: this.agentId });
+  }
+
+  async getCustomerDeposits(customerId: string, options: {
+    start?: string;
+    end?: string;
+  } = {}): Promise<BuckeyeDepositsResult> {
+    const normalizedCustomerId = customerId.trim();
+    const fetchedAt = new Date().toISOString();
+    const end = normalizeReportDate(options.end || fetchedAt);
+    const start = normalizeReportDate(options.start || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
+    const endIso = normalizeIsoReportDate(options.end || fetchedAt);
+    const startIso = normalizeIsoReportDate(options.start || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
+    const operations = [
+      'getCustomerDeposits',
+      'getDepositHistory',
+      'getCustomerTransactions',
+      'getTransactionHistory',
+      'getTransactions',
+      'getTransactionList',
+    ];
+
+    let lastError = '';
+    for (const operation of operations) {
+      try {
+        const data = await this.postManagerOperation(
+          operation,
+          operation === 'getTransactionHistory'
+            ? buildTransactionHistoryExtra(normalizedCustomerId, startIso, endIso)
+            : {
+                customerID: normalizedCustomerId,
+                customerId: normalizedCustomerId,
+                login: normalizedCustomerId,
+                acc: normalizedCustomerId,
+                start,
+                end,
+              }
+        );
+        const rows = extractBuckeyeRows(data)
+          .filter(isDepositLikeRow)
+          .map((row) => normalizeDepositRow(row, {
+            operation,
+            customerId: normalizedCustomerId,
+            agentId: this.agentId,
+          }))
+          .filter((row) => row.transactionTime);
+
+        if (rows.length || payloadLooksUseful(data)) {
+          return {
+            fetchedAt,
+            agentId: this.agentId,
+            customerId: normalizedCustomerId,
+            operation,
+            rows,
+            data,
+          };
+        }
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    return {
+      fetchedAt,
+      agentId: this.agentId,
+      customerId: normalizedCustomerId,
+      rows: [],
+      unavailable: lastError || 'No Buckeye customer deposit endpoint returned data',
+    };
+  }
+
+  async getTransactionHistory(customerId: string, options: {
+    startDate?: string;
+    endDate?: string;
+  } = {}): Promise<BuckeyeTransactionListResult> {
+    const normalizedCustomerId = customerId.trim();
+    const fetchedAt = new Date().toISOString();
+    const today = new Date().toISOString();
+    const data = await this.postManagerOperation(
+      'getTransactionHistory',
+      buildTransactionHistoryExtra(
+        normalizedCustomerId,
+        normalizeIsoReportDate(options.startDate || today),
+        normalizeIsoReportDate(options.endDate || today)
+      )
+    );
+    const rows = parseTransactionList(data, {
+      customerId: normalizedCustomerId,
+      agentId: this.agentId,
+      operation: 'getTransactionHistory',
+    });
+
+    return {
+      fetchedAt,
+      agentId: this.agentId,
+      customerId: normalizedCustomerId,
+      operation: 'getTransactionHistory',
+      rows,
+      data,
+    };
+  }
+
+  async getReportDeletedTransactions(customerId: string, options: {
+    startDate?: string;
+    endDate?: string;
+    reportCustomerId?: string;
+  } = {}): Promise<BuckeyeTransactionListResult> {
+    const normalizedCustomerId = customerId.trim();
+    const fetchedAt = new Date().toISOString();
+    const today = new Date().toISOString();
+    const data = await this.postManagerOperation('getReportDeletedTransactions', {
+      customerID: (options.reportCustomerId || this.agentId).trim(),
+      startDate: normalizeIsoReportDate(options.startDate || today),
+      endDate: normalizeIsoReportDate(options.endDate || today),
+    });
+    const rows = parseTransactionList(data, {
+      customerId: normalizedCustomerId,
+      agentId: this.agentId,
+      operation: 'getReportDeletedTransactions',
+    });
+
+    return {
+      fetchedAt,
+      agentId: this.agentId,
+      customerId: normalizedCustomerId,
+      operation: 'getReportDeletedTransactions',
+      rows,
+      data,
+    };
+  }
+
+  async getTransactionList(customerId: string, options: {
+    start?: string;
+  } = {}): Promise<BuckeyeTransactionListResult> {
+    const normalizedCustomerId = customerId.trim();
+    const fetchedAt = new Date().toISOString();
+    const data = await this.postManagerOperation('getTransactionList', {
+      acc: normalizedCustomerId,
+      start: options.start || '',
+    });
+    const rows = parseTransactionList(data, {
+      customerId: normalizedCustomerId,
+      agentId: this.agentId,
+      operation: 'getTransactionList',
+    });
+
+    return {
+      fetchedAt,
+      agentId: this.agentId,
+      customerId: normalizedCustomerId,
+      operation: 'getTransactionList',
+      rows,
+      data,
+    };
+  }
+
+  async getTeaserProfile(customerId: string): Promise<unknown> {
+    const normalizedCustomerId = customerId.trim();
+    return this.postManagerOperation('getTeaserProfile', {
+      customerID: normalizedCustomerId,
+      customerId: normalizedCustomerId,
+      login: normalizedCustomerId,
+      acc: normalizedCustomerId,
+    });
+  }
+
+  async getCustomerSnapshot(customerId: string): Promise<BuckeyeCustomerSnapshotResult> {
+    const normalizedCustomerId = customerId.trim();
+    const fetchedAt = new Date().toISOString();
+    const operations = [
+      'getInfoPlayer',
+      'getCustomerInfo',
+      'getCustomerDetails',
+      'getCustomerProfile',
+      'getCustomer',
+    ];
+
+    let lastError = '';
+    for (const operation of operations) {
+      try {
+        const data = await this.postManagerOperation(operation, {
+          customerID: normalizedCustomerId,
+          customerId: normalizedCustomerId,
+          login: normalizedCustomerId,
+          acc: normalizedCustomerId,
+        });
+        const row = extractBuckeyeRows(data)[0] || objectPayload(data);
+        if (row) {
+          return {
+            fetchedAt,
+            agentId: this.agentId,
+            customerId: normalizedCustomerId,
+            operation,
+            snapshot: normalizeCustomerSnapshot(row, {
+              operation,
+              customerId: normalizedCustomerId,
+              agentId: this.agentId,
+            }),
+            data,
+          };
+        }
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    return {
+      fetchedAt,
+      agentId: this.agentId,
+      customerId: normalizedCustomerId,
+      unavailable: lastError || 'No Buckeye customer-info endpoint returned data',
+    };
   }
 
   async getManagerSnapshot(): Promise<BuckeyeManagerSnapshotResult> {
@@ -1298,6 +1711,44 @@ export function parseAgentPerformanceReport(data: any): BuckeyeAgentPerformanceR
   return { rows, totals };
 }
 
+export function parsePlayerPerformanceReport(
+  data: any,
+  context: { acc: string; agentID: string }
+): BuckeyeAgentPerformanceResult['parsed'] {
+  const rawRows = extractBuckeyeRows(data);
+  const rows = (rawRows.length ? rawRows : [objectPayload(data)])
+    .filter(isPlainRecord)
+    .map((row) => normalizeAgentPerformanceRow({
+      ...row,
+      CustomerID: (row as Record<string, unknown>).CustomerID || (row as Record<string, unknown>).customerID || context.acc,
+      Login: (row as Record<string, unknown>).Login || (row as Record<string, unknown>).login || context.acc,
+      AgentID: (row as Record<string, unknown>).AgentID || (row as Record<string, unknown>).agentID || context.agentID,
+    }));
+  const totals = rows.reduce(
+    (acc, row) => {
+      acc.wagerCount += row.wagerCount;
+      acc.risk += row.risk;
+      acc.toWin += row.toWin;
+      acc.amountWon += row.amountWon;
+      acc.amountLost += row.amountLost;
+      acc.volume += row.volume;
+      acc.net += row.net;
+      return acc;
+    },
+    {
+      wagerCount: 0,
+      risk: 0,
+      toWin: 0,
+      amountWon: 0,
+      amountLost: 0,
+      volume: 0,
+      net: 0,
+    }
+  );
+
+  return { rows, totals };
+}
+
 export function sanitizeBuckeyeLogin(value: string): string {
   return value.replace(/\s*\(\s*pw\s*:[^)]+\)\s*/gi, '').trim();
 }
@@ -1448,6 +1899,298 @@ function numberValue(value: unknown): number {
   return typeof value === 'number' ? value : Number(value) || 0;
 }
 
+function extractBuckeyeRows(data: unknown): Record<string, unknown>[] {
+  const candidates = [
+    data,
+    (data as any)?.INFO?.LIST,
+    (data as any)?.LIST?.ARRAY,
+    (data as any)?.LIST,
+    (data as any)?.data,
+    (data as any)?.Data,
+    (data as any)?.results,
+    (data as any)?.Rows,
+    (data as any)?.rows,
+    (data as any)?.transactions,
+    (data as any)?.deposits,
+  ];
+
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      return candidate.filter(isPlainRecord) as Record<string, unknown>[];
+    }
+  }
+
+  const object = objectPayload(data);
+  return object ? [object] : [];
+}
+
+function objectPayload(data: unknown): Record<string, unknown> | null {
+  const candidates = [
+    (data as any)?.accountInfo,
+    (data as any)?.customerInfo,
+    (data as any)?.customer,
+    (data as any)?.profile,
+    (data as any)?.INFO,
+    data,
+  ];
+  for (const candidate of candidates) {
+    if (isPlainRecord(candidate) && !Array.isArray((candidate as any).LIST)) {
+      return candidate as Record<string, unknown>;
+    }
+  }
+  return null;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function payloadLooksUseful(data: unknown): boolean {
+  if (Array.isArray(data)) return true;
+  if (!isPlainRecord(data)) return false;
+  const keys = Object.keys(data);
+  return keys.some((key) => !/^(success|code|message|error)$/i.test(key));
+}
+
+function isDepositLikeRow(row: Record<string, unknown>): boolean {
+  const text = [
+    row.Type,
+    row.type,
+    row.TransactionType,
+    row.transactionType,
+    row.Method,
+    row.method,
+    row.Description,
+    row.description,
+    row.Operation,
+    row.operation,
+  ].map(stringValue).join(' ').toLowerCase();
+
+  if (/withdraw|payout/.test(text)) return false;
+  return !text || /deposit|transaction|credit|cash|card|wire|crypto|bitcoin|btc|ach|zelle|venmo|paypal/.test(text);
+}
+
+function normalizeDepositRow(row: Record<string, unknown>, context: {
+  operation: string;
+  customerId: string;
+  agentId: string;
+}): BuckeyeDepositRow {
+  const transactionId = firstString(row, [
+    'ID',
+    'Id',
+    'id',
+    'TransactionID',
+    'transactionID',
+    'TransactionId',
+    'Reference',
+    'reference',
+    'Confirmation',
+    'confirmation',
+  ]);
+  const customerId = firstString(row, ['CustomerID', 'customerID', 'customer_id', 'customerId', 'Account', 'account'])
+    || context.customerId;
+  const login = sanitizeBuckeyeLogin(firstString(row, ['Login', 'login', 'CustomerLogin', 'customerLogin']) || customerId);
+  const transactionTime = normalizeUnknownDate(firstString(row, [
+    'TransactionTime',
+    'transactionTime',
+    'DateTime',
+    'dateTime',
+    'Date',
+    'date',
+    'CreatedAt',
+    'createdAt',
+    'InsertedAt',
+    'insertedAt',
+  ]));
+  const amount = firstNumber(row, ['Amount', 'amount', 'TransactionAmount', 'transactionAmount', 'Credit', 'credit', 'Deposit', 'deposit']);
+  const raw = { ...row, sourceOperation: context.operation };
+
+  return {
+    id: transactionId || stableBuckeyeId([context.operation, context.agentId, customerId, login, transactionTime, String(amount), JSON.stringify(row)]),
+    customerId,
+    login,
+    agentId: firstString(row, ['AgentID', 'agentID', 'agent_id', 'agentId']) || context.agentId,
+    agentLogin: firstString(row, ['AgentLogin', 'agentLogin', 'agent_login']) || context.agentId,
+    amount,
+    currency: firstString(row, ['Currency', 'currency', 'CurrencyCode', 'currencyCode']) || 'USD',
+    method: firstString(row, ['Method', 'method', 'PaymentMethod', 'paymentMethod', 'Processor', 'processor', 'Type', 'type']),
+    ipAddress: firstString(row, ['IPAddress', 'IP', 'ip', 'ipAddress', 'IP_Address', 'IpAddress']),
+    status: firstString(row, ['Status', 'status', 'Result', 'result']) || 'captured',
+    transactionTime,
+    raw,
+  };
+}
+
+function normalizeTransactionRow(row: Record<string, unknown>, context: {
+  operation: string;
+  customerId: string;
+  agentId: string;
+}): BuckeyeTransactionRow {
+  const documentNumber = firstString(row, ['DocumentNumber', 'documentNumber', 'DocNo', 'docNo', 'DocumentNo', 'documentNo', 'DocumentID', 'documentID', 'ID', 'id']);
+  const transactionTime = normalizeUnknownDate(firstString(row, [
+    'TranDateTime',
+    'tranDateTime',
+    'TransactionDateTime',
+    'transactionDateTime',
+    'TransactionTime',
+    'transactionTime',
+    'TransactionDate',
+    'transactionDate',
+    'TranDate',
+    'tranDate',
+    'DateTime',
+    'dateTime',
+    'Date',
+    'date',
+  ]));
+  const customerId = firstString(row, ['CustomerID', 'customerID', 'customer_id', 'customerId', 'Customer', 'customer', 'Account', 'account', 'acc'])
+    || context.customerId;
+  const login = sanitizeBuckeyeLogin(firstString(row, ['Login', 'login', 'CustomerLogin', 'customerLogin']) || customerId);
+  const tranCode = firstString(row, ['TranCode', 'tranCode', 'TransactionCode', 'transactionCode', 'Code', 'code']);
+  const tranType = firstString(row, ['TranType', 'tranType', 'TransactionType', 'transactionType', 'Type', 'type']);
+  const description = firstString(row, ['Description', 'description', 'Desc', 'desc', 'Details', 'details']);
+  const amount = normalizeTransactionAmount(firstNumber(row, ['Amount', 'amount', 'TransactionAmount', 'transactionAmount', 'Credit', 'credit', 'Debit', 'debit']));
+  const balance = normalizeTransactionAmount(firstNumber(row, ['Balance', 'balance']));
+  const holdAmount = normalizeTransactionAmount(firstNumber(row, ['HoldAmount', 'holdAmount']));
+  const category = classifyTransaction({ tranCode, tranType, description, amount });
+  const raw = { ...row, sourceOperation: context.operation };
+
+  return {
+    id: context.operation === 'getReportDeletedTransactions' && documentNumber
+      ? `deleted-${documentNumber}`
+      : documentNumber || stableBuckeyeId([context.operation, context.agentId, customerId, login, transactionTime, String(amount), JSON.stringify(row)]),
+    customerId,
+    login,
+    agentId: firstString(row, ['AgentID', 'AgentId', 'agentID', 'agentId', 'agent_id']) || context.agentId,
+    agentLogin: firstString(row, ['AgentLogin', 'AgentId', 'agentLogin', 'agent_login', 'MasterAgentID', 'masterAgentID']) || context.agentId,
+    documentNumber,
+    tranCode,
+    tranType,
+    amount,
+    balance,
+    holdAmount,
+    gradeNum: firstString(row, ['GradeNum', 'gradeNum']),
+    description,
+    enteredBy: firstString(row, ['EnteredBy', 'enteredBy', 'DeletedBy', 'deletedBy']),
+    category,
+    transactionTime,
+    raw,
+  };
+}
+
+export function parseTransactionList(data: unknown, context: {
+  customerId: string;
+  agentId: string;
+  operation?: string;
+}): BuckeyeTransactionRow[] {
+  return extractBuckeyeRows(data)
+    .map((row) => normalizeTransactionRow(row, {
+      operation: context.operation || 'getTransactionList',
+      customerId: context.customerId,
+      agentId: context.agentId,
+    }))
+    .filter((row) => row.transactionTime);
+}
+
+function normalizeTransactionAmount(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return value / 100;
+}
+
+function classifyTransaction(input: {
+  tranCode: string;
+  tranType: string;
+  description: string;
+  amount: number;
+}): BuckeyeTransactionCategory {
+  const text = `${input.tranCode} ${input.tranType} ${input.description}`.toLowerCase();
+  if (/wager\s+won|bet\s+won/.test(text)) return 'wager_win';
+  if (/wager\s+loss|bet\s+loss/.test(text)) return 'wager_loss';
+  if (/deposit|cash\s*in|fund|payment|wire|ach|card|crypto|bitcoin|btc|zelle|venmo|paypal/.test(text)) return 'deposit';
+  if (/withdraw|payout|cash\s*out|distribution/.test(text)) return 'withdrawal';
+  if (/hold/.test(text)) return 'hold';
+  if (/adjust|correction|manual/.test(text)) return 'adjustment';
+  if (input.tranCode.toUpperCase() === 'C') return 'credit';
+  if (input.tranCode.toUpperCase() === 'D') return 'debit';
+  return 'other';
+}
+
+function normalizeCustomerSnapshot(row: Record<string, unknown>, context: {
+  operation: string;
+  customerId: string;
+  agentId: string;
+}): BuckeyeCustomerSnapshot {
+  const customerId = firstString(row, ['customerID', 'CustomerID', 'customer_id', 'customerId', 'Account', 'account'])
+    || context.customerId;
+  const login = sanitizeBuckeyeLogin(firstString(row, ['Login', 'login', 'CustomerLogin', 'customerLogin']) || customerId);
+  return {
+    customerId,
+    login,
+    agentId: firstString(row, ['AgentID', 'agentID', 'agent_id', 'agentId']) || context.agentId,
+    agentLogin: firstString(row, ['AgentLogin', 'agentLogin', 'agent_login', 'Office', 'office']) || context.agentId,
+    kycLevel: firstString(row, ['KYCLevel', 'kycLevel', 'KycLevel', 'KYC', 'kyc', 'DocumentStatus', 'documentStatus']),
+    vipStatus: firstString(row, ['VIPStatus', 'vipStatus', 'VipStatus', 'VIP', 'vip', 'Tier', 'tier', 'PlayerType', 'playerType']),
+    emailMasked: maskEmail(firstString(row, ['Email', 'email', 'EmailAddress', 'emailAddress'])),
+    phoneMasked: maskPhone(firstString(row, ['Phone', 'phone', 'PhoneNumber', 'phoneNumber', 'SMSPhoneNumber', 'smsPhoneNumber'])),
+    currency: firstString(row, ['Currency', 'currency', 'CurrencyCode', 'currencyCode']),
+    source: context.operation,
+    raw: { ...row, sourceOperation: context.operation },
+  };
+}
+
+function firstString(row: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = stringValue(row[key]).trim();
+    if (value) return value;
+  }
+  return '';
+}
+
+function firstNumber(row: Record<string, unknown>, keys: string[]): number {
+  for (const key of keys) {
+    const value = row[key];
+    if (value == null || value === '') continue;
+    const numeric = typeof value === 'number' ? value : Number(String(value).replace(/[$,]/g, ''));
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return 0;
+}
+
+function normalizeUnknownDate(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const dotNet = trimmed.match(/\/Date\((\d+)\)\//);
+  if (dotNet) {
+    const parsed = Number(dotNet[1]);
+    if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
+  }
+  const date = parseWebLogDate(trimmed);
+  return date ? date.toISOString() : trimmed;
+}
+
+function maskEmail(value: string): string {
+  const [name, domain] = value.split('@');
+  if (!name || !domain) return value ? 'REDACTED' : '';
+  const head = name.slice(0, 1);
+  return `${head}${'*'.repeat(Math.max(2, name.length - 1))}@${domain}`;
+}
+
+function maskPhone(value: string): string {
+  const digits = value.replace(/\D/g, '');
+  if (!digits) return '';
+  const tail = digits.slice(-4);
+  return `${'*'.repeat(Math.max(3, digits.length - 4))}${tail}`;
+}
+
+function stableBuckeyeId(parts: string[]): string {
+  const text = parts.join('|');
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+  }
+  return `buckeye-${Math.abs(hash).toString(36)}`;
+}
+
 export function buildWebLogBody(agentId: string, options: BuckeyeWebLogOptions): URLSearchParams {
   validateWebLogRange(options);
   return new URLSearchParams({
@@ -1523,6 +2266,31 @@ function normalizeReportDate(value: string): string {
   const mm = String(date.getMonth() + 1).padStart(2, '0');
   const dd = String(date.getDate()).padStart(2, '0');
   return `${mm}/${dd}/${date.getFullYear()}`;
+}
+
+function normalizeIsoReportDate(value: string): string {
+  const date = parseWebLogDate(value);
+  if (!date) return value;
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${mm}-${dd}`;
+}
+
+function buildTransactionHistoryExtra(customerId: string, startDate: string, endDate: string): Record<string, string> {
+  return {
+    customerID: customerId,
+    startDate,
+    endDate,
+    deposits: 'checked',
+    withdrawals: 'checked',
+    adjustments: 'checked',
+    transfers: 'checked',
+    fess: 'checked',
+    promotional: 'checked',
+    balances: 'checked',
+    distribution: 'unchecked',
+    freeFlag: 'player',
+  };
 }
 
 function validateReportDateRange(start: string, end: string): void {

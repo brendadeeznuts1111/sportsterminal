@@ -31,6 +31,12 @@ function broadcast(msg: object) {
   for (const client of wsClients) {
     try {
       if (client.readyState === 1) {
+        const subscribedPlayers = client.data?.playerSubscriptions as Set<string> | undefined;
+        if (subscribedPlayers?.size && (msg as any).type === 'wager.new') {
+          const wager = (msg as any).payload || {};
+          const playerId = String(wager.CustomerID || wager.customer_id || wager.Login || wager.login || '');
+          if (!playerId || !subscribedPlayers.has(playerId)) continue;
+        }
         client.send(payload);
       }
     } catch {
@@ -111,6 +117,7 @@ async function startServer() {
   const server = serve({
     port: PORT,
     hostname: HOST,
+    idleTimeout: 30,
     websocket: {
       perMessageDeflate: true, // Built-in compression for WS messages
       open(ws) {
@@ -336,6 +343,25 @@ async function handleWebSocketMessage(
             })
           );
         }
+        break;
+      }
+
+      case 'player.subscribe': {
+        const playerId = String(msg.playerId || msg.customerId || msg.login || '').trim();
+        if (!playerId) {
+          ws.send(JSON.stringify({ type: 'error', message: 'player.subscribe requires playerId' }));
+          return;
+        }
+        ws.data.playerSubscriptions = ws.data.playerSubscriptions || new Set<string>();
+        ws.data.playerSubscriptions.add(playerId);
+        ws.send(JSON.stringify({ type: 'player.subscribed', playerId }));
+        break;
+      }
+
+      case 'player.unsubscribe': {
+        const playerId = String(msg.playerId || msg.customerId || msg.login || '').trim();
+        if (playerId && ws.data.playerSubscriptions) ws.data.playerSubscriptions.delete(playerId);
+        ws.send(JSON.stringify({ type: 'player.unsubscribed', playerId }));
         break;
       }
 

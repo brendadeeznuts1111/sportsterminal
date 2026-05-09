@@ -97,6 +97,10 @@ export async function initDatabase(): Promise<AppDatabase> {
   if (db.getDialect() === 'sqlite') {
     // Enable foreign keys for SQLite
     await db.exec('PRAGMA foreign_keys = ON');
+    // Enable WAL mode for better concurrent read/write performance
+    await db.exec('PRAGMA journal_mode = WAL');
+    // Increase busy timeout to 30 seconds to reduce SQLITE_BUSY errors
+    await db.exec('PRAGMA busy_timeout = 30000');
   }
 
   // Create tables (SQLite-compatible; Postgres will use its own migration path)
@@ -143,6 +147,7 @@ export async function initDatabase(): Promise<AppDatabase> {
       login TEXT,
       display_name TEXT,
       agent_login TEXT,
+      seq_number INTEGER,
       net_pnl REAL DEFAULT 0,
       ytd_pnl REAL DEFAULT 0,
       exposure REAL DEFAULT 0,
@@ -154,6 +159,54 @@ export async function initDatabase(): Promise<AppDatabase> {
       FOREIGN KEY (agent_id) REFERENCES agents(id)
     );
 
+    CREATE TABLE IF NOT EXISTS agent_hierarchy (
+      agent_id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL DEFAULT 'buckeye',
+      login TEXT NOT NULL,
+      display_name TEXT,
+      parent_agent_id TEXT,
+      level INTEGER,
+      agent_type TEXT,
+      seq_number INTEGER,
+      child_count INTEGER DEFAULT 0,
+      player_count INTEGER DEFAULT 0,
+      head_count_rate_m REAL DEFAULT 0,
+      inet_head_count_rate_m REAL DEFAULT 0,
+      casino_head_count_rate_m REAL DEFAULT 0,
+      live_betting_rate_m REAL DEFAULT 0,
+      live_betting2_rate_m REAL DEFAULT 0,
+      live_casino_rate_m REAL DEFAULT 0,
+      prop_builder_rate_m REAL DEFAULT 0,
+      flash_bets_rate REAL DEFAULT 0,
+      ext_props_rate REAL DEFAULT 0,
+      crash_rate REAL DEFAULT 0,
+      fantasy_rate REAL DEFAULT 0,
+      amigo_tech_rate REAL DEFAULT 0,
+      raw_json TEXT,
+      last_refreshed DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS player_agent_map (
+      player_id TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'buckeye',
+      player_login TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      agent_login TEXT,
+      source TEXT NOT NULL DEFAULT 'hierarchy_backfill',
+      linked_accounts_json TEXT,
+      last_refreshed DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (provider, player_id)
+    );
+  `);
+
+  // Migration: add seq_number to players if missing (pre-2026-05-09 schema)
+  try {
+    await db.exec('ALTER TABLE players ADD COLUMN seq_number INTEGER');
+  } catch {
+    // Column already exists — safe to ignore
+  }
+
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS ingestion_checkpoints (
       provider TEXT NOT NULL,
       entity_type TEXT NOT NULL,
@@ -244,6 +297,119 @@ export async function initDatabase(): Promise<AppDatabase> {
       agent_id TEXT NOT NULL,
       recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       performance_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS deposits (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL DEFAULT 'buckeye',
+      customer_id TEXT NOT NULL,
+      login TEXT,
+      agent_id TEXT,
+      agent_login TEXT,
+      amount REAL NOT NULL DEFAULT 0,
+      currency TEXT,
+      method TEXT,
+      ip_address TEXT,
+      status TEXT,
+      transaction_time TEXT NOT NULL,
+      pulled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      raw_json TEXT NOT NULL DEFAULT '{}'
+    );
+
+    CREATE TABLE IF NOT EXISTS player_transactions (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL DEFAULT 'buckeye',
+      customer_id TEXT NOT NULL,
+      login TEXT,
+      agent_id TEXT,
+      agent_login TEXT,
+      document_number TEXT,
+      tran_code TEXT,
+      tran_type TEXT,
+      amount REAL NOT NULL DEFAULT 0,
+      balance REAL,
+      hold_amount REAL,
+      grade_num TEXT,
+      description TEXT,
+      entered_by TEXT,
+      category TEXT NOT NULL DEFAULT 'other',
+      transaction_time TEXT NOT NULL,
+      pulled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      raw_json TEXT NOT NULL DEFAULT '{}'
+    );
+
+    CREATE TABLE IF NOT EXISTS customer_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL DEFAULT 'buckeye',
+      customer_id TEXT NOT NULL,
+      login TEXT,
+      agent_id TEXT,
+      agent_login TEXT,
+      kyc_level TEXT,
+      vip_status TEXT,
+      email_masked TEXT,
+      phone_masked TEXT,
+      currency TEXT,
+      source TEXT NOT NULL DEFAULT 'probe',
+      snapshot_time TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      raw_json TEXT NOT NULL DEFAULT '{}'
+    );
+
+    CREATE TABLE IF NOT EXISTS player_source_status (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL DEFAULT 'buckeye',
+      customer_id TEXT NOT NULL,
+      login TEXT,
+      agent_id TEXT,
+      source_key TEXT NOT NULL,
+      refresh_policy TEXT NOT NULL,
+      ttl_seconds INTEGER NOT NULL DEFAULT 0,
+      scale_class TEXT NOT NULL,
+      last_attempt_at TEXT,
+      last_success_at TEXT,
+      last_error TEXT,
+      next_refresh_at TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(provider, customer_id, source_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS player_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL DEFAULT 'buckeye',
+      player_a TEXT NOT NULL,
+      player_b TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0,
+      evidence_json TEXT NOT NULL DEFAULT '{}',
+      detected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      status TEXT NOT NULL DEFAULT 'active',
+      UNIQUE(provider, player_a, player_b, reason)
+    );
+
+    CREATE TABLE IF NOT EXISTS player_flags (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL DEFAULT 'buckeye',
+      customer_id TEXT NOT NULL,
+      flag_type TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'info',
+      label TEXT NOT NULL,
+      details TEXT,
+      created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      resolved_at TEXT,
+      status TEXT NOT NULL DEFAULT 'active'
+    );
+
+    CREATE TABLE IF NOT EXISTS player_notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL DEFAULT 'buckeye',
+      customer_id TEXT NOT NULL,
+      note_type TEXT NOT NULL DEFAULT 'general',
+      body TEXT NOT NULL,
+      created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT,
+      archived_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS scheduler_state (
@@ -388,6 +554,17 @@ export async function initDatabase(): Promise<AppDatabase> {
     CREATE INDEX IF NOT EXISTS idx_wager_archive_agent_time ON wager_archive(agent_login, insert_date_time);
     CREATE INDEX IF NOT EXISTS idx_wager_archive_customer ON wager_archive(customer_id);
     CREATE INDEX IF NOT EXISTS idx_wager_archive_ingested ON wager_archive(ingested_at);
+    CREATE INDEX IF NOT EXISTS idx_deposits_customer_time ON deposits(customer_id, transaction_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_deposits_ip_time ON deposits(ip_address, transaction_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_player_transactions_customer_time ON player_transactions(customer_id, transaction_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_player_transactions_category_time ON player_transactions(category, transaction_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_customer_snapshots_customer_time ON customer_snapshots(customer_id, snapshot_time DESC);
+    CREATE INDEX IF NOT EXISTS idx_player_source_status_customer ON player_source_status(customer_id, source_key);
+    CREATE INDEX IF NOT EXISTS idx_player_source_status_next ON player_source_status(agent_id, next_refresh_at);
+    CREATE INDEX IF NOT EXISTS idx_player_links_a ON player_links(player_a, detected_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_player_links_b ON player_links(player_b, detected_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_player_flags_customer ON player_flags(customer_id, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_player_notes_customer ON player_notes(customer_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_master_snapshots_time ON master_snapshots(timestamp);
     CREATE INDEX IF NOT EXISTS idx_weekly_figures_agent_week ON weekly_figures(agent_id, week_start_date);
     CREATE INDEX IF NOT EXISTS idx_agent_performance_agent_time ON agent_performance(agent_id, recorded_at);
@@ -778,6 +955,133 @@ export async function migrateDatabase(db: any) {
       )
     `);
 
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS deposits (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL DEFAULT 'buckeye',
+        customer_id TEXT NOT NULL,
+        login TEXT,
+        agent_id TEXT,
+        agent_login TEXT,
+        amount REAL NOT NULL DEFAULT 0,
+        currency TEXT,
+        method TEXT,
+        ip_address TEXT,
+        status TEXT,
+        transaction_time TEXT NOT NULL,
+        pulled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        raw_json TEXT NOT NULL DEFAULT '{}'
+      );
+
+      CREATE TABLE IF NOT EXISTS player_transactions (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL DEFAULT 'buckeye',
+        customer_id TEXT NOT NULL,
+        login TEXT,
+        agent_id TEXT,
+        agent_login TEXT,
+        document_number TEXT,
+        tran_code TEXT,
+        tran_type TEXT,
+        amount REAL NOT NULL DEFAULT 0,
+        balance REAL,
+        hold_amount REAL,
+        grade_num TEXT,
+        description TEXT,
+        entered_by TEXT,
+        category TEXT NOT NULL DEFAULT 'other',
+        transaction_time TEXT NOT NULL,
+        pulled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        raw_json TEXT NOT NULL DEFAULT '{}'
+      );
+
+      CREATE TABLE IF NOT EXISTS customer_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider TEXT NOT NULL DEFAULT 'buckeye',
+        customer_id TEXT NOT NULL,
+        login TEXT,
+        agent_id TEXT,
+        agent_login TEXT,
+        kyc_level TEXT,
+        vip_status TEXT,
+        email_masked TEXT,
+        phone_masked TEXT,
+        currency TEXT,
+        source TEXT NOT NULL DEFAULT 'probe',
+        snapshot_time TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        raw_json TEXT NOT NULL DEFAULT '{}'
+      );
+
+      CREATE TABLE IF NOT EXISTS player_source_status (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider TEXT NOT NULL DEFAULT 'buckeye',
+        customer_id TEXT NOT NULL,
+        login TEXT,
+        agent_id TEXT,
+        source_key TEXT NOT NULL,
+        refresh_policy TEXT NOT NULL,
+        ttl_seconds INTEGER NOT NULL DEFAULT 0,
+        scale_class TEXT NOT NULL,
+        last_attempt_at TEXT,
+        last_success_at TEXT,
+        last_error TEXT,
+        next_refresh_at TEXT,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(provider, customer_id, source_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS player_links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider TEXT NOT NULL DEFAULT 'buckeye',
+        player_a TEXT NOT NULL,
+        player_b TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        confidence REAL NOT NULL DEFAULT 0,
+        evidence_json TEXT NOT NULL DEFAULT '{}',
+        detected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        status TEXT NOT NULL DEFAULT 'active',
+        UNIQUE(provider, player_a, player_b, reason)
+      );
+
+      CREATE TABLE IF NOT EXISTS player_flags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider TEXT NOT NULL DEFAULT 'buckeye',
+        customer_id TEXT NOT NULL,
+        flag_type TEXT NOT NULL,
+        severity TEXT NOT NULL DEFAULT 'info',
+        label TEXT NOT NULL,
+        details TEXT,
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        resolved_at TEXT,
+        status TEXT NOT NULL DEFAULT 'active'
+      );
+
+      CREATE TABLE IF NOT EXISTS player_notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider TEXT NOT NULL DEFAULT 'buckeye',
+        customer_id TEXT NOT NULL,
+        note_type TEXT NOT NULL DEFAULT 'general',
+        body TEXT NOT NULL,
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT,
+        archived_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_deposits_customer_time ON deposits(customer_id, transaction_time DESC);
+      CREATE INDEX IF NOT EXISTS idx_deposits_ip_time ON deposits(ip_address, transaction_time DESC);
+      CREATE INDEX IF NOT EXISTS idx_player_transactions_customer_time ON player_transactions(customer_id, transaction_time DESC);
+      CREATE INDEX IF NOT EXISTS idx_player_transactions_category_time ON player_transactions(category, transaction_time DESC);
+      CREATE INDEX IF NOT EXISTS idx_customer_snapshots_customer_time ON customer_snapshots(customer_id, snapshot_time DESC);
+      CREATE INDEX IF NOT EXISTS idx_player_source_status_customer ON player_source_status(customer_id, source_key);
+      CREATE INDEX IF NOT EXISTS idx_player_source_status_next ON player_source_status(agent_id, next_refresh_at);
+      CREATE INDEX IF NOT EXISTS idx_player_links_a ON player_links(player_a, detected_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_player_links_b ON player_links(player_b, detected_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_player_flags_customer ON player_flags(customer_id, status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_player_notes_customer ON player_notes(customer_id, created_at DESC);
+    `);
+
     const agentColumns = await db.all(`PRAGMA table_info(agents)`);
     const agentColumnNames = new Set(agentColumns.map((c: any) => c.name));
     const agentAdds: Array<[string, string]> = [
@@ -827,12 +1131,17 @@ export async function migrateDatabase(db: any) {
     }
 
     await db.exec(`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_provider_login_unique ON agents(provider, login);
+      DROP INDEX IF EXISTS idx_agents_provider_login_unique;
+      CREATE INDEX IF NOT EXISTS idx_agents_provider_login ON agents(provider, login);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_players_provider_login_unique ON players(provider, login);
       CREATE INDEX IF NOT EXISTS idx_agents_parent ON agents(parent_agent_id);
       CREATE INDEX IF NOT EXISTS idx_agents_seq ON agents(seq_number);
       CREATE INDEX IF NOT EXISTS idx_players_agent_id ON players(agent_id);
       CREATE INDEX IF NOT EXISTS idx_players_agent_login ON players(agent_login);
+      CREATE INDEX IF NOT EXISTS idx_agent_hierarchy_parent ON agent_hierarchy(provider, parent_agent_id);
+      CREATE INDEX IF NOT EXISTS idx_agent_hierarchy_level ON agent_hierarchy(provider, level);
+      CREATE INDEX IF NOT EXISTS idx_player_agent_map_agent ON player_agent_map(provider, agent_id);
+      CREATE INDEX IF NOT EXISTS idx_player_agent_map_login ON player_agent_map(provider, player_login);
       CREATE INDEX IF NOT EXISTS idx_checkpoints_provider_entity ON ingestion_checkpoints(provider, entity_type);
       CREATE INDEX IF NOT EXISTS idx_buckeye_sport_types_label ON buckeye_sport_types(label);
       CREATE INDEX IF NOT EXISTS idx_raw_logs_endpoint_time ON raw_api_logs(endpoint, fetched_at);

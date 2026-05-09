@@ -1,4 +1,4 @@
-# Buckeye PPH Backend v5.31 - Integration Scope
+# Buckeye PPH Backend v5.32 - Integration Scope
 
 ## Executive Summary
 
@@ -28,9 +28,16 @@ All Manager/System endpoints are under `https://fantasy402.com` unless overridde
 | Access logs | `getWebLog` | POST | `/qubic/api/Manager/getWebLog` | Primary path for Buckeye IP/access tools |
 | Access logs | `getWebLog` | POST | `/cloud/api/Manager/getWebLog` | Fallback path |
 | Performance | `getAgentPerformance` | POST | `/cloud/api/Manager/getAgentPerformance` | Customer/sport/volume/graded report rows |
+| Player performance | `getPerformancePlayer` | POST | `/cloud/api/Manager/getPerformancePlayer` | Player-specific performance, observed with `acc=<player/account>&period=0` |
+| Transactions | `getTransactionList` | POST | `/cloud/api/Manager/getTransactionList` | Player account ledger, observed with `acc=<player/account>&start=` |
+| Transactions | `getTransactionHistory` | POST | `/cloud/api/Manager/getTransactionHistory` | Date-windowed transaction ledger, observed with `customerID`, `startDate`, `endDate`, and transaction-type checkboxes |
+| Transactions | `getReportDeletedTransactions` | POST | `/cloud/api/Manager/getReportDeletedTransactions` | Deleted transaction report, observed with `customerID`, `startDate`, and `endDate` |
+| Player 360 backfill | Local `wager_archive` cohort | Internal | `PLAYER360_COLD_BACKFILL_PER_POLL` | Slowly selects archived cold customers for heavy-source refresh without scanning all customers through Buckeye |
 | Weekly figures | `getWeeklyFigureByAgentLite` | POST | `/cloud/api/Manager/getWeeklyFigureByAgentLite` | This week, active, today summary |
 | Sports | `getSportsType` | POST | `/cloud/api/Manager/getSportsType` | Sports list seeding |
 | Account | `getAccountInfoOwner` | POST | `/cloud/api/Manager/getAccountInfoOwner` | Owner/account context |
+| Player account | `getInfoPlayer` | POST | `/cloud/api/Manager/getInfoPlayer` | Player profile/account payload candidate |
+| Player account | `getTeaserProfile` | POST | `/cloud/api/Manager/getTeaserProfile` | Mapped Player 360 probe; fields are not trusted until payload shape is confirmed |
 | Config | `getConfigWebReports` | POST | `/cloud/api/Manager/getConfigWebReports` | Report config context |
 | Config | `getConfigWebReportsPending` | POST | `/cloud/api/Manager/getConfigWebReportsPending` | Pending report config |
 | Config | `getAuthorizations` | POST | `/cloud/api/Manager/getAuthorizations` | Feature/permission context |
@@ -47,6 +54,117 @@ Authentication generally needs:
 - `agentID`, `agentOwner`, `agentSite=1`, `operation`, and `RRO=1` form fields
 
 ---
+
+## Agent and Customer Seed Source
+
+Buckeye exposes the manager downline through the upstream misspelled operation `getListAgenstByAgent`. The observed browser request on May 9, 2026 was:
+
+```text
+POST https://fantasy402.com/cloud/api/Manager/getListAgenstByAgent
+Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+Authorization: Bearer <Buckeye JWT>
+Cookie: cf_clearance=<redacted>; __cf_bm=<redacted>
+X-Requested-With: XMLHttpRequest
+Origin: https://fantasy402.com
+Referer: https://fantasy402.com/manager.html?v=<cache-buster>
+```
+
+Minimum observed form:
+
+```text
+agentID=<agent>
+agentType=M
+operation=getListAgenstByAgent
+RRO=1
+agentOwner=<owner-or-agent>
+agentSite=1
+```
+
+The backend already calls this through `BuckeyeAPI.getAgentHierarchy()`. `/api/agents/hierarchy` intentionally uses this order:
+
+1. Persisted Buckeye `agents` rows from the local database.
+2. Live `getListAgenstByAgent` when an authenticated Buckeye session is active.
+3. Ignored local seed exports in `docs/agentobject.md` or `docs/agentslistharz.md`.
+
+This keeps the downline and player/customer seed available without calling Buckeye every page load. Run `POST /api/agents/backfill/hierarchy` to parse the ignored seed files and upsert agents/players into the database.
+
+Raw local customer exports can include a `Password` field. The parser strips that field and stores only `customerId`, `login`, `displayName`, and `agentLogin` in `players.raw_json`. Do not commit raw captures, Buckeye JWTs, Cloudflare cookies, or customer passwords.
+
+Example redacted response shape:
+
+```json
+{
+  "GENERAL": [
+    {
+      "AgentID": "BILLY667  ",
+      "SeqNumber": 5735,
+      "Level": 1,
+      "AgentType": "A",
+      "Login": "BILLY667  ",
+      "HeadCountRateM": 1,
+      "InetHeadCountRateM": 0,
+      "CasinoHeadCountRateM": 0,
+      "LiveBettingRateM": 0,
+      "LiveBetting2RateM": 0,
+      "LiveCasinoRateM": 0,
+      "PropBuilderRateM": 0,
+      "FlashBetsRate": 0,
+      "ExtPropsRate": 0,
+      "CrashRate": 0,
+      "FantasyRate": 0,
+      "AmigoTechRate": 0
+    },
+    {
+      "AgentID": "NOLAWOLF  ",
+      "SeqNumber": 5736,
+      "Level": 1,
+      "AgentType": "M",
+      "Login": "NOLAWOLF  ",
+      "HeadCountRateM": 0,
+      "InetHeadCountRateM": 0,
+      "CasinoHeadCountRateM": 0,
+      "LiveBettingRateM": 0,
+      "LiveBetting2RateM": 0,
+      "LiveCasinoRateM": 0,
+      "PropBuilderRateM": 0,
+      "FlashBetsRate": 0,
+      "ExtPropsRate": 0,
+      "CrashRate": 0,
+      "FantasyRate": 0,
+      "AmigoTechRate": 0
+    }
+  ],
+  "PLAYERS": [
+    {
+      "customerID": "CUST001   ",
+      "Login": "CUST001",
+      "NameFirst": "Customer Name",
+      "Password": "<redacted>",
+      "Agent": "BILLY667"
+    }
+  ]
+}
+```
+
+Persisted local shape after backfill:
+
+```json
+{
+  "GENERAL": [
+    {
+      "AgentID": "BILLY667",
+      "SeqNumber": 5735,
+      "Level": 1,
+      "AgentType": "A",
+      "Login": "BILLY667",
+      "ParentAgentID": "",
+      "PlayerCount": 12,
+      "ChildCount": 0
+    }
+  ],
+  "source": "database"
+}
+```
 
 ## Authentication and Vault Model
 
@@ -236,6 +354,130 @@ Important fields:
 | `tipo` | Activity filter. `-1` all action, `0` sports, `4` live betting, other values for casino/racebook/poker/etc. |
 | `debug` | Debug flag, observed `0` |
 
+### `getPerformancePlayer`
+
+Observed player-performance form:
+
+```text
+acc=BB1152
+period=0
+operation=getPerformancePlayer
+RRO=1
+agentID=BILLY666
+agentOwner=BILLY666
+agentSite=1
+```
+
+Player 360 uses this as the primary player-specific performance source and persists normalized rows into `agent_performance_snapshots` with `report_type=getPerformancePlayer`. Broader `getAgentPerformance` reports remain useful for agent/customer context when the player route is unavailable.
+
+### `getTransactionList`
+
+Observed from the Buckeye customer-admin transaction module:
+
+```text
+acc=BB1152
+start=
+operation=getTransactionList
+RRO=1
+agentID=BILLY666
+agentOwner=BILLY666
+agentSite=1
+```
+
+Confirmed response rows:
+
+```json
+{
+  "DocumentNumber": 618181248,
+  "TranCode": "C",
+  "TranType": "W",
+  "Amount": 450000,
+  "Description": "Wager Won",
+  "TranDateTime": "2022-04-30 22:17:29.480",
+  "HoldAmount": 0,
+  "GradeNum": 525520121,
+  "EnteredBy": "Internet",
+  "Balance": 450000
+}
+```
+
+Player 360 persists these rows into `player_transactions` and normalizes amount-like fields from cents to dollars. The UI treats this as the account ledger: wager wins/losses, credits/debits, balance movement, document numbers, and grade references. It only promotes rows into `deposits` when the description/type looks deposit-like, so `Wager Won` and `Wager Loss` rows are not displayed as deposits.
+
+### `getTransactionHistory`
+
+Observed from the Buckeye transaction-history screen:
+
+```text
+agentID=BILLY666
+customerID=BILLY666
+startDate=2026-05-09
+endDate=2026-05-09
+deposits=checked
+withdrawals=checked
+adjustments=checked
+transfers=checked
+fess=checked
+promotional=checked
+balances=checked
+distribution=unchecked
+freeFlag=player
+operation=getTransactionHistory
+RRO=1
+agentOwner=BILLY666
+agentSite=1
+```
+
+Player 360 treats this as a second heavy ledger source with the same 6-hour on-open TTL as `getTransactionList`. Rows are merged into `player_transactions`, de-duped by document/time/amount/category, and classified with the same rules. This endpoint is useful for deposits, withdrawals, fees, promotional entries, balance rows, and same-day deltas without scanning all 50k customers.
+
+### `getReportDeletedTransactions`
+
+Observed from the Buckeye deleted-transaction report:
+
+```text
+customerID=BB1152
+startDate=2026-05-09
+endDate=2026-05-09
+operation=getReportDeletedTransactions
+RRO=1
+agentID=BILLY666
+agentOwner=BILLY666
+agentSite=1
+```
+
+Confirmed row shape:
+
+```json
+{
+  "DocumentNumber": 1008087067,
+  "TranDateTime": "2026-05-07 12:33:59.483",
+  "CustomerID": "CMM335    ",
+  "AgentId": "BMM218A   ",
+  "MasterAgentID": "COOPMA",
+  "TranCode": "D",
+  "TranType": "D",
+  "Description": "Customer Withdrawal pp via Telegram Bot (AID: ...)",
+  "Amount": 1005000,
+  "DeletedBy": "SUSHIMATFD"
+}
+```
+
+Player 360 calls this with the manager/root value observed in Buckeye, stores matching player rows in `player_transactions` with `raw_json.sourceOperation=getReportDeletedTransactions`, and prefixes local IDs as `deleted-<DocumentNumber>`. This keeps deleted withdrawals/deposits/adjustments visible without overwriting active ledger entries that share the same document number.
+
+### `getInfoPlayer`
+
+Observed after loading the Buckeye customer-admin player-info module:
+
+```text
+acc=<player/account>
+operation=getInfoPlayer
+RRO=1
+agentID=<manager>
+agentOwner=<manager>
+agentSite=1
+```
+
+Player 360 probes this first for account/profile snapshots before falling back to generic customer-info candidates.
+
 Confirmed response row:
 
 ```json
@@ -252,6 +494,21 @@ Confirmed response row:
   "net": 79.14
 }
 ```
+
+### `getTeaserProfile`
+
+Observed in the Buckeye customer-admin player-info module sequence. Player 360 maps this operation as a probe source with the same player/account form fields:
+
+```text
+acc=<player/account>
+operation=getTeaserProfile
+RRO=1
+agentID=<manager>
+agentOwner=<manager>
+agentSite=1
+```
+
+This operation is tracked in `/api/v1/players/:id/intelligence-map` as `teaser_profile` with `refreshPolicy=on_open`, `ttlSeconds=86400`, and `scaleClass=heavy`. It is not yet promoted into rendered account fields or persisted profile columns until a real payload shape is confirmed.
 
 ### `getSportsType`
 

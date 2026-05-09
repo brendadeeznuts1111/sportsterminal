@@ -1,5 +1,23 @@
 # Changelog
 
+## v5.32 — 2026-05-09
+
+### Added
+- Player 360 Status tab now renders the live `/api/v1/players/:id/intelligence-map` contract, endpoint checks, source freshness, coverage gaps, and contract mismatches.
+- Field-level Player 360 contract mapping for Overview, Wager History, Access Logs, Performance, Deposits, Account, Links, Notes, Status, and Docs.
+- Real API-only Player 360 profile hydration: profile modal failures now show an explicit API error instead of fabricating local mock profile rows.
+- Player hash restore for `#player=:id` so direct profile URLs reopen the live modal after refresh.
+- Buckeye `getPerformancePlayer`, `getTransactionHistory`, `getReportDeletedTransactions`, and `getInfoPlayer` are now first-class Player 360 source candidates.
+- Player 360 now has a tiny cold-backfill cohort sourced from local `wager_archive`, allowing archived customers to be seeded gradually without polling every heavy Buckeye endpoint for all customers.
+
+### Changed
+- Player 360 source statuses now reflect per-player row coverage. `wager_archive` is `live` only when archived rows exist for that player.
+- Player performance enrichment now prefers `getPerformancePlayer` with `acc=<player/account>&period=0`, while broader `getAgentPerformance` remains a fallback.
+- Transaction ledger refresh now combines `getTransactionList`, date-windowed `getTransactionHistory`, and deleted-report `getReportDeletedTransactions`, keeping all three behind the Player 360 heavy-source TTL.
+- Player 360 status/watermarks now expose hot-player and cold-backfill counts so operators can track database fill progress from the UI.
+- Sidebar Player 360 status no longer uses static “live” fallback source rows when the intelligence-map endpoint is unavailable.
+- Frontend cache-busting and visible release labels now point to v5.32.
+
 ## v5.31 — 2026-05-09
 
 ### Added

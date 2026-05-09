@@ -3,10 +3,13 @@ import { evaluateWager, evaluateWagers } from '../src/risk/AlertEngine';
 import { loadLocalAgentHierarchy } from '../src/api/helpers';
 import {
   parseAgentPerformanceReport,
+  parsePlayerPerformanceReport,
+  parseTransactionList,
   parseWeeklyFigureSummary,
   sanitizeBuckeyeLogin,
 } from '../src/scrapers/BuckeyeAPI';
 import type { EnrichedWager } from '../src/risk/AlertEngine';
+import { classifyPlayer360Freshness } from '../src/player360/policies';
 
 describe('AlertEngine', () => {
   test('evaluates high volume wager as critical', () => {
@@ -518,6 +521,214 @@ describe('BuckeyeAPI agent performance parser', () => {
     expect(parsed.totals.risk).toBe(59.45);
     expect(parsed.totals.net).toBe(45.64);
     expect(sanitizeBuckeyeLogin('CF999 (pw:anything)')).toBe('CF999');
+  });
+});
+
+describe('BuckeyeAPI player performance parser', () => {
+  test('normalizes getPerformancePlayer object payload with account fallback', () => {
+    const parsed = parsePlayerPerformanceReport(
+      {
+        INFO: {
+          Risk: 1500,
+          ToWin: 1200,
+          volume: 1500,
+          net: -300,
+        },
+      },
+      { acc: 'BB1152', agentID: 'BILLY666' }
+    );
+
+    expect(parsed.rows[0]).toMatchObject({
+      customerId: 'BB1152',
+      login: 'BB1152',
+      agentId: 'BILLY666',
+      risk: 1500,
+      toWin: 1200,
+      volume: 1500,
+      net: -300,
+    });
+  });
+});
+
+describe('BuckeyeAPI transaction list parser', () => {
+  test('normalizes getTransactionList ledger rows without treating wagers as deposits', () => {
+    const rows = parseTransactionList(
+      {
+        LIST: [
+          {
+            DocumentNumber: 618181248,
+            TranCode: 'C',
+            TranType: 'W',
+            Amount: 450000,
+            Balance: 450000,
+            Description: 'Wager Won',
+            TranDateTime: '2022-04-30 22:17:29.480',
+            HoldAmount: 0,
+            GradeNum: 525520121,
+            EnteredBy: 'Internet',
+          },
+          {
+            DocumentNumber: 618276317,
+            TranCode: 'D',
+            TranType: 'L',
+            Amount: 62500,
+            Balance: 387500,
+            Description: 'Wager Loss',
+            TranDateTime: '2022-05-01 16:21:00.910',
+            HoldAmount: 0,
+            GradeNum: 525591931,
+            EnteredBy: 'Internet',
+          },
+        ],
+      },
+      { customerId: 'BB1152', agentId: 'BILLY666' }
+    );
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      id: '618181248',
+      customerId: 'BB1152',
+      login: 'BB1152',
+      tranCode: 'C',
+      tranType: 'W',
+      amount: 4500,
+      balance: 4500,
+      gradeNum: '525520121',
+      category: 'wager_win',
+    });
+    expect(rows[1].amount).toBe(625);
+    expect(rows[1].category).toBe('wager_loss');
+  });
+
+  test('normalizes getTransactionHistory aliases into the same ledger contract', () => {
+    const rows = parseTransactionList(
+      {
+        LIST: [
+          {
+            DocumentNo: 'H-1001',
+            TransactionCode: 'C',
+            TransactionType: 'DEP',
+            Credit: 125000,
+            Balance: 225000,
+            Details: 'Wire Deposit',
+            TransactionDateTime: '2026-05-09 11:05:00',
+            Customer: 'BB1152',
+          },
+          {
+            DocumentNo: 'H-1002',
+            TransactionCode: 'D',
+            TransactionType: 'FEE',
+            Debit: 5000,
+            Balance: 220000,
+            Details: 'Account fee',
+            TransactionDate: '2026-05-09',
+          },
+        ],
+      },
+      { customerId: 'BB1152', agentId: 'BILLY666', operation: 'getTransactionHistory' }
+    );
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      id: 'H-1001',
+      customerId: 'BB1152',
+      login: 'BB1152',
+      tranCode: 'C',
+      tranType: 'DEP',
+      amount: 1250,
+      balance: 2250,
+      category: 'deposit',
+    });
+    expect(rows[0].raw.sourceOperation).toBe('getTransactionHistory');
+    expect(rows[1].amount).toBe(50);
+    expect(rows[1].category).toBe('debit');
+  });
+
+  test('normalizes deleted transaction report rows without colliding with active ledger rows', () => {
+    const rows = parseTransactionList(
+      {
+        LIST: [
+          {
+            DocumentNumber: 1008087067,
+            TranDateTime: '2026-05-07 12:33:59.483',
+            CustomerID: 'CMM335    ',
+            AgentId: 'BMM218A   ',
+            MasterAgentID: 'COOPMA',
+            TranCode: 'D',
+            TranType: 'D',
+            Description: 'Customer Withdrawal pp via Telegram Bot (AID: 69fcbef632e128957ffff331)',
+            Amount: 1005000,
+            DeletedBy: 'SUSHIMATFD',
+          },
+        ],
+      },
+      { customerId: 'CMM335', agentId: 'BILLY666', operation: 'getReportDeletedTransactions' }
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: 'deleted-1008087067',
+      customerId: 'CMM335',
+      login: 'CMM335',
+      agentId: 'BMM218A',
+      agentLogin: 'BMM218A',
+      amount: 10050,
+      enteredBy: 'SUSHIMATFD',
+      category: 'withdrawal',
+    });
+    expect(rows[0].raw.sourceOperation).toBe('getReportDeletedTransactions');
+  });
+});
+
+describe('Player 360 refresh policy classification', () => {
+  test('keeps live wager archive fresh when rows exist', () => {
+    expect(classifyPlayer360Freshness({
+      status: 'live',
+      rowCount: 1,
+      ttlSeconds: 0,
+      lastSeen: '2026-05-09T12:00:00.000Z',
+      refreshPolicy: 'live',
+    })).toBe('fresh');
+  });
+
+  test('marks stale transaction ledger when TTL expires', () => {
+    expect(classifyPlayer360Freshness({
+      status: 'live',
+      rowCount: 4,
+      ttlSeconds: 6 * 60 * 60,
+      lastSuccessAt: '2026-05-09T00:00:00.000Z',
+      refreshPolicy: 'on_open',
+      nowMs: new Date('2026-05-09T07:00:00.000Z').getTime(),
+    })).toBe('stale');
+  });
+
+  test('keeps missing account and teaser profile probes as probe after attempt', () => {
+    for (const source of ['customer_snapshots', 'teaser_profile']) {
+      expect(classifyPlayer360Freshness({
+        status: 'probe',
+        rowCount: 0,
+        ttlSeconds: 24 * 60 * 60,
+        lastAttemptAt: '2026-05-09T00:00:00.000Z',
+        refreshPolicy: 'on_open',
+      }), source).toBe('probe');
+    }
+  });
+
+  test('probe endpoints use last attempt TTL instead of refreshing every profile open', async () => {
+    const { shouldRefreshPlayer360Source } = await import('../src/player360/policies');
+    const nowMs = new Date('2026-05-09T12:00:00.000Z').getTime();
+
+    expect(shouldRefreshPlayer360Source({
+      ttlSeconds: 24 * 60 * 60,
+      lastAttemptAt: '2026-05-09T11:30:00.000Z',
+      nowMs,
+    })).toBe(false);
+
+    expect(shouldRefreshPlayer360Source({
+      ttlSeconds: 24 * 60 * 60,
+      lastAttemptAt: '2026-05-08T11:00:00.000Z',
+      nowMs,
+    })).toBe(true);
   });
 });
 

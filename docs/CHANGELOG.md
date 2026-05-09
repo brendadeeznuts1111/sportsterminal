@@ -1,6 +1,26 @@
 # Changelog
 
-## Unreleased - v5.31
+## Unreleased - v5.32
+
+### Added
+
+- **Player 360 real-data contract map** — `/api/v1/players/:id/intelligence-map` now includes field-level UI mappings, source freshness, endpoint coverage, explicit contract mismatches, and real/probe/missing status for each profile source.
+- **Player 360 Status/Docs hardening** — the modal Status and Docs panels now render the live intelligence-map payload and no longer fill missing sources with static live rows.
+- **Player 360 hybrid hotset refresh** — heavy Buckeye sources now expose per-player TTL, policy, scale class, last attempt, last success, and next refresh metadata instead of encouraging all-player polling.
+- **Player 360 cold backfill cohort** — each background Player 360 poll now can pick a tiny archived-customer cohort from local `wager_archive` so ledger/account/performance coverage fills gradually across cold customers without a 50k-customer Buckeye sweep.
+- **Real API-only Player 360 profile hydration** — profile endpoint failures show an API error and retry path instead of generating a local mock profile from already-loaded wagers.
+- **Confirmed Buckeye player endpoints** — `getPerformancePlayer`, `getTransactionList`, `getTransactionHistory`, `getReportDeletedTransactions`, `getInfoPlayer`, and mapped-probe `getTeaserProfile` are now tracked as Player 360 source candidates.
+
+### Changed
+
+- Player 360 source status is per-player: `wager_archive` is live only when archive rows exist for that player; deposits and customer snapshots remain probe/missing until rows or validated probes exist.
+- Profile Tab Coverage now shows the weakest required source timestamp as Recent Update plus the refresh-policy summary for each tab.
+- Player performance enrichment now probes `getPerformancePlayer` with `acc=<player/account>&period=0` before relying on broader agent-performance rows.
+- Transaction ledger refresh now merges `getTransactionList`, `getTransactionHistory`, and `getReportDeletedTransactions` under the same 6-hour on-open/hotset policy, with same-day history and deleted rows classified into the ledger/deposit contract.
+- Player 360 watermarks and status now include hot player count plus cold-backfill count/limit so operators can see whether database seeding is progressing.
+- v5.32 frontend assets use the new cache-busting version label.
+
+## v5.31
 
 ### Added
 

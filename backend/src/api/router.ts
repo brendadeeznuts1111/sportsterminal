@@ -18,10 +18,29 @@ import {
   registerAgentPerformanceRoutes,
   registerAgentDownlineRoutes,
   registerAgentHierarchyRoutes,
+  registerAgentHierarchyTreeRoutes,
+  registerAgentRefreshRoutes,
+  registerAgentProfileRoutes,
+  registerAgentPlayersRoutes,
   registerAgentBackfillRoutes,
   registerAgentAccessLogRoutes,
 } from './routes/agents';
 import {
+  registerPlayerSearchRoutes,
+  registerPlayerProfileRoutes,
+  registerPlayerAgentContextRoutes,
+  registerPlayerIntelligenceMapRoutes,
+  registerPlayerDepositsRoutes,
+  registerPlayerTransactionsRoutes,
+  registerPlayerAccountSnapshotsRoutes,
+  registerPlayerLinksRoutes,
+  registerPlayerLinkCheckRoutes,
+  registerPlayerFlagsRoutes,
+  registerPlayerFlagCreateRoutes,
+  registerPlayerFlagResolveRoutes,
+  registerPlayerNotesRoutes,
+  registerPlayerNoteCreateRoutes,
+  registerPlayerExportRoutes,
   registerPlayerDetailsRoutes,
   registerPlayerWagersRoutes,
   registerPlayerPnlRoutes,
@@ -100,6 +119,14 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
     return registerAgentHierarchyRoutes(url, request, deps.scraperManager);
   });
 
+  router.get('/api/agents/hierarchy/tree', async (url, request) => {
+    return registerAgentHierarchyTreeRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/agents/refresh', async (url, request) => {
+    return registerAgentRefreshRoutes(url, request, deps.scraperManager);
+  });
+
   router.post('/api/agents/backfill/hierarchy', async (url, request) => {
     return registerAgentBackfillRoutes(url, request, deps.scraperManager);
   });
@@ -114,6 +141,78 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
 
   router.get('/api/agents/:agentId/exposure', async (url, request) => {
     return registerAgentExposureRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/agents/:agentId/players', async (url, request) => {
+    return registerAgentPlayersRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/agents/:agentId', async (url, request) => {
+    return registerAgentProfileRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/players/search', async (url, request) => {
+    return registerPlayerSearchRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/players/:playerId/profile', async (url, request) => {
+    return registerPlayerProfileRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/players/:playerId/agent-context', async (url, request) => {
+    return registerPlayerAgentContextRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/players/:playerId/intelligence-map', async (url, request) => {
+    return registerPlayerIntelligenceMapRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/players/:playerId/deposits', async (url, request) => {
+    return registerPlayerDepositsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/players/:playerId/transactions', async (url, request) => {
+    return registerPlayerTransactionsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/players/:playerId/account-snapshots', async (url, request) => {
+    return registerPlayerAccountSnapshotsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/players/:playerId/links', async (url, request) => {
+    return registerPlayerLinksRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/players/:playerId/links/check', async (url, request) => {
+    return registerPlayerLinkCheckRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/players/:playerId/flags', async (url, request) => {
+    return registerPlayerFlagsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/players/:playerId/flags', async (url, request) => {
+    return registerPlayerFlagCreateRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/players/:playerId/flags/:flagId/resolve', async (url, request) => {
+    return registerPlayerFlagResolveRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/players/:playerId/notes', async (url, request) => {
+    return registerPlayerNotesRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/players/:playerId/notes', async (url, request) => {
+    return registerPlayerNoteCreateRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/players/:playerId/export/wagers', async (url, request) => {
+    return registerPlayerExportRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/players/:playerId/export/access-logs', async (url, request) => {
+    return registerPlayerExportRoutes(url, request, deps.scraperManager);
   });
 
   router.get('/api/players/:playerId/details', async (url, request) => {
@@ -244,6 +343,34 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
     return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
   });
 
+  router.get('/api/buckeye/player-performance', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+
+  router.post('/api/buckeye/player-performance', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+
+  router.get('/api/buckeye/player-info', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+
+  router.post('/api/buckeye/player-info', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+
+  router.get('/api/buckeye/player-transactions', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+
+  router.post('/api/buckeye/player-transactions', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+
+  router.get('/api/buckeye/players-list', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+
   router.post('/api/connect', async (url, request) => {
     return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
   });
@@ -312,12 +439,28 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
     return registerAnalyticsRoutes(url, request, deps.scraperManager);
   });
 
+  router.get('/api/health/data-pipeline', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
   router.get('/api/performance/:agentId', async (url, request, params) => {
     return registerPerformanceRoutes(url, request, deps, params);
   });
 
   router.delete('/api/performance/:agentId', async (url, request, params) => {
     return registerPerformanceRoutes(url, request, deps, params);
+  });
+
+  // Versioned API bridge. The SPA probes /api/v1 first while the existing route
+  // handlers remain mounted at /api for compatibility with older terminals.
+  router.all('/api/v1/*', async (url, request) => {
+    const normalized = new URL(url);
+    if (normalized.pathname === '/api/v1/agents/hierarchy') {
+      normalized.pathname = '/api/agents/hierarchy/tree';
+    } else {
+      normalized.pathname = normalized.pathname.replace(/^\/api\/v1/, '/api');
+    }
+    return router.dispatch(new Request(normalized.toString(), request));
   });
 
   // Static files (last resort)

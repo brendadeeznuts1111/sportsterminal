@@ -13,6 +13,49 @@ let autoScroll = true;
 let incomingBets = [];
 let renderFrameId = null;
 const TABLE_RENDER_LIMIT = 150;
+const FactoryWager = window.FactoryWager || {
+  state: {},
+  timers: {},
+  charts: {},
+};
+FactoryWager.state.playerSearch = FactoryWager.state.playerSearch || {
+  query: '',
+  agent: '',
+  from: '',
+  to: '',
+  sort: 'volume',
+  players: [],
+  agents: [],
+  loading: false,
+};
+FactoryWager.state.playerProfile = FactoryWager.state.playerProfile || {
+  playerId: null,
+  profile: null,
+  intelligenceMap: null,
+  docsLoading: false,
+  statusLoading: false,
+  statusMap: null,
+  statusEndpointChecks: [],
+  tab: 'overview',
+  wagerPage: 1,
+  wagerPageSize: 25,
+  charts: {},
+  virtualLimits: { wagers: 75, access: 100, deposits: 100, transactions: 100, notes: 100 },
+  liveRegionMessage: '',
+  agentFilter: '',
+};
+FactoryWager.state.ws = FactoryWager.state.ws || {
+  subscribedPlayerId: null,
+  lastEventAt: null,
+};
+FactoryWager.state.ui = FactoryWager.state.ui || {
+  searchDebounceMs: 300,
+};
+FactoryWager.utils = FactoryWager.utils || {};
+FactoryWager.actions = FactoryWager.actions || {};
+window.FactoryWager = FactoryWager;
+const playerSearchState = FactoryWager.state.playerSearch;
+const playerProfileState = FactoryWager.state.playerProfile;
 const CACHE_TTL = {
   odds: 30000,
   webhooks: 15000,
@@ -354,6 +397,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const playerSearchTable = document.getElementById('playerSearchTable');
   if (playerSearchTable) playerSearchTable.addEventListener('click', handlePlayerSearchClick);
+  document.querySelectorAll('[data-player-sort]').forEach(th => {
+    th.addEventListener('click', () => {
+      playerSearchState.sort = th.dataset.playerSort || 'volume';
+      loadPlayerSearch(true);
+    });
+  });
+  window.addEventListener('popstate', (event) => {
+    if (playerProfileState.playerId) {
+      closePlayerProfileModal(false);
+      event.preventDefault();
+    }
+  });
 
   const buckeyeWagerTable = document.getElementById('buckeyeWagerTable');
   if (buckeyeWagerTable) buckeyeWagerTable.addEventListener('click', handleBuckeyeWagerTableClick);
@@ -389,7 +444,17 @@ document.addEventListener('DOMContentLoaded', () => {
       sectionCache.exposure.at = 0;
       updateBuckeyeStats();
       recordPerformanceWager(wager);
+      handlePlayerProfileLiveWager(wager);
       scheduleRender('buckeye');
+    }
+  });
+
+  wsClient.on('player360.update', (msg) => {
+    const activePlayer = playerProfileState.playerId;
+    if (!activePlayer) return;
+    const touchedPlayers = msg?.payload?.players || [];
+    if (!touchedPlayers.length || touchedPlayers.includes(activePlayer)) {
+      refreshOpenPlayerProfile(activePlayer);
     }
   });
 
@@ -564,8 +629,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === '4') switchSection('buckeye', getSidebarButton('buckeye'));
     if (e.key === '5') switchSection('agentNetwork', getSidebarButton('agentNetwork'));
     if (e.key === '6') switchSection('playerSearch', getSidebarButton('playerSearch'));
+    if (e.key === '7' && e.ctrlKey && playerProfileState.playerId) { e.preventDefault(); setPlayerProfileTab('agent'); return; }
     if (e.key === '7') switchSection('performance', getSidebarButton('performance'));
-    if (e.key === 'Escape') { closeTradeModal(); closeAuthModal(); }
+    if (e.key === 'Escape') { closePlayerProfileModal(); closeTradeModal(); closeAuthModal(); }
     if (e.key === '/' && e.ctrlKey) { e.preventDefault(); document.getElementById('globalSearch').focus(); }
   });
 
@@ -573,6 +639,11 @@ document.addEventListener('DOMContentLoaded', () => {
   loadPersistedWagers(true).then(() => {
     scheduleRender('all');
     updateBuckeyeStats();
+    loadPlayerSearch();
+    const initialPlayerId = getHashPlayerId();
+    if (initialPlayerId && !playerProfileState.playerId) {
+      openPlayerProfileModal(initialPlayerId);
+    }
   });
 });
 
@@ -587,6 +658,9 @@ function updateWSStatus(connected) {
       statusEl.style.background = 'rgba(16,185,129,0.1)';
       statusEl.style.borderColor = 'rgba(16,185,129,0.3)';
       statusEl.innerHTML = '<div class="w-2 h-2 rounded-full pulse-dot" style="background:var(--green);"></div><span>WS Live</span>';
+      if (FactoryWager.state.ws.subscribedPlayerId) {
+        wsClient.send({ type: 'player.subscribe', playerId: FactoryWager.state.ws.subscribedPlayerId });
+      }
     } else {
       statusEl.style.color = 'var(--text-dim)';
       statusEl.style.background = 'var(--bg)';
@@ -924,7 +998,7 @@ function switchSection(section, btn) {
       refreshAgentDownline();
       break;
     case 'playerSearch':
-      renderPlayerSearch();
+      loadPlayerSearch();
       break;
     case 'alerts':
       updateAlertsToastButton();
@@ -2037,6 +2111,64 @@ function formatCompactDollars(value) {
   if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(1)}K`;
   return `${sign}$${abs.toLocaleString(undefined, { maximumFractionDigits: abs < 100 ? 2 : 0 })}`;
 }
+
+FactoryWager.utils.debounce = function debounce(key, fn, wait = FactoryWager.state.ui.searchDebounceMs) {
+  clearTimeout(FactoryWager.timers[key]);
+  FactoryWager.timers[key] = setTimeout(fn, wait);
+};
+
+function debounce(fn, wait = FactoryWager.state.ui.searchDebounceMs) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), wait);
+  };
+}
+
+FactoryWager.apiFetch = async function apiFetch(endpoint, options = {}) {
+  const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const query = options.query || {};
+  const candidates = [
+    `/api/v1${normalizedEndpoint}`,
+    options.fallbackEndpoint || `/api${normalizedEndpoint}`,
+  ];
+  let lastError;
+  for (const candidate of [...new Set(candidates)]) {
+    const url = new URL(`${getApiBaseUrl()}${candidate}`);
+    Object.entries(query).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value);
+    });
+    try {
+      const init = {
+        method: options.method || 'GET',
+        headers: {
+          ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+          ...(options.headers || {}),
+        },
+      };
+      if (options.body) init.body = typeof options.body === 'string' ? options.body : JSON.stringify(options.body);
+      const res = await fetch(url, init);
+      if (res.ok) {
+        if (options.responseType === 'response') return res;
+        return res.json();
+      }
+      lastError = new Error(`${candidate} failed: ${res.status}`);
+      if (res.status !== 404) break;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error(`API request failed: ${normalizedEndpoint}`);
+};
+
+FactoryWager.apiUrl = function apiUrl(endpoint, query = {}) {
+  const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const url = new URL(`${getApiBaseUrl()}/api/v1${normalizedEndpoint}`);
+  Object.entries(query).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value);
+  });
+  return url.toString();
+};
 
 function setText(id, value) {
   const el = document.getElementById(id);
@@ -3439,11 +3571,13 @@ async function loadStatusPage(force = false) {
   queueEl.innerHTML = statusLoadingRow('Loading queue...');
 
   try {
-    const [healthRes, vaultRes, booksRes, patternsRes] = await Promise.all([
+    const player360Id = getStatusPlayerId();
+    const [healthRes, vaultRes, booksRes, patternsRes, player360Res] = await Promise.all([
       fetch(`${getApiBaseUrl()}/health`),
       fetch(`${getApiBaseUrl()}/api/buckeye/vault-status`),
       fetch(`${getApiBaseUrl()}/api/books/status`),
       fetch(`${getApiBaseUrl()}/api/patterns/summary?sinceHours=24`),
+      fetch(`${getApiBaseUrl()}/api/v1/players/${encodeURIComponent(player360Id)}/intelligence-map`),
     ]);
 
     if (!healthRes.ok) throw new Error(`Health request failed: ${healthRes.status}`);
@@ -3451,6 +3585,7 @@ async function loadStatusPage(force = false) {
     const vault = vaultRes.ok ? await vaultRes.json() : { available: false, agents: [] };
     const books = booksRes.ok ? await booksRes.json() : [];
     const patterns = patternsRes.ok ? await patternsRes.json() : { total: 0, bySeverity: {} };
+    const player360 = player360Res.ok ? await player360Res.json() : null;
 
     const agents = Array.isArray(vault.agents) ? vault.agents : [];
     const activeAgents = Number(health.scrapers?.activeAgents || 0);
@@ -3458,16 +3593,22 @@ async function loadStatusPage(force = false) {
     const onlineBooks = (Array.isArray(books) ? books : []).filter(book => book.status === 'online').length;
     const criticalPatterns = Number(patterns.bySeverity?.critical || 0);
     const statusOk = health.status === 'ok';
+    const player360Poll = player360?.freshness?.watermarks?.player360;
+    const player360PollValue = player360Poll?.value || {};
+    const coldBackfillLabel = player360PollValue.coldBackfillPlayers != null
+      ? `${Number(player360PollValue.coldBackfillPlayers || 0).toLocaleString()}/${Number(player360PollValue.coldBackfillLimit || 0).toLocaleString()} this poll`
+      : '-';
 
     summary.innerHTML = [
       statusCard('Backend', statusOk ? 'Online' : 'Issue', formatUptime(health.uptime), statusOk ? 'var(--green)' : 'var(--red)'),
       statusCard('Buckeye', String(activeAgents), `${agents.length} vaulted`, activeAgents > 0 ? 'var(--green)' : 'var(--yellow)'),
       statusCard('Books', `${onlineBooks}/${Array.isArray(books) ? books.length : 0}`, 'online', onlineBooks > 0 ? 'var(--green)' : 'var(--yellow)'),
       statusCard('Patterns', String(patterns.total || 0), `${criticalPatterns} critical`, criticalPatterns > 0 ? 'var(--red)' : 'var(--green)'),
+      statusCard('Player 360', player360 ? 'Mapped' : 'Issue', player360 ? `${player360.coverage?.missingSourceCount || 0} missing/probe gaps` : `${player360Id} unavailable`, player360 ? 'var(--green)' : 'var(--red)'),
     ].join('');
 
     agentsEl.innerHTML = agents.length
-      ? agents.map(agent => statusAgentRow(agent)).join('')
+      ? agents.map(agent => statusAgentRow(agent, player360)).join('')
       : '<div style="color:var(--text-dim);">No vaulted Buckeye agents. Add one from Settings to enable always-on ingestion.</div>';
 
     booksEl.innerHTML = Array.isArray(books) && books.length
@@ -3480,6 +3621,20 @@ async function loadStatusPage(force = false) {
       statusKeyValue('Alerts triggered', counters.alerts_triggered_total || 0),
       statusKeyValue('Errors', counters.errors_total || 0),
       statusKeyValue('WebSocket', wsClient?.isConnected ? 'connected' : 'offline'),
+      ...(player360 ? [
+        statusKeyValue('Player 360 player', player360.playerId),
+        statusKeyValue('Wager archive latest', player360.freshness?.wager_archive?.lastSeen ? formatShortDateTime(player360.freshness.wager_archive.lastSeen) : '-'),
+        statusKeyValue('Access log latest', player360.freshness?.access_logs?.lastSeen ? formatShortDateTime(player360.freshness.access_logs.lastSeen) : '-'),
+        statusKeyValue('Player 360 poll', player360Poll?.updatedAt ? formatShortDateTime(player360Poll.updatedAt) : '-'),
+        statusKeyValue('Cold backfill', coldBackfillLabel),
+        statusKeyValue('Transaction ledger', sourceStatusLabelFromMap(player360, 'player_transactions')),
+        statusKeyValue('Deleted transactions', sourceStatusLabelFromMap(player360, 'deleted_transactions')),
+        statusKeyValue('Deposits', sourceStatusLabelFromMap(player360, 'deposits')),
+        statusKeyValue('Customer snapshots', sourceStatusLabelFromMap(player360, 'customer_snapshots')),
+        statusKeyValue('Teaser profile', sourceStatusLabelFromMap(player360, 'teaser_profile')),
+        statusKeyValue('Player performance', sourceStatusLabelFromMap(player360, 'agent_performance_snapshots')),
+        statusKeyValue('Missing source count', player360.coverage?.missingSourceCount || 0),
+      ] : []),
     ].join('');
 
     const queues = health.scrapers?.actionQueue?.queues || {};
@@ -3493,6 +3648,7 @@ async function loadStatusPage(force = false) {
 
     // Check API endpoint health
     checkApiEndpoints();
+    checkPlayer360Status();
 
     updateStatusBadge(statusOk, activeAgents, criticalPatterns);
   } catch (error) {
@@ -3526,7 +3682,37 @@ function statusCard(label, value, subtext, color) {
   </div>`;
 }
 
-function statusAgentRow(agent) {
+function getStatusPlayerId() {
+  return getActivePlayerProfileId() || 'A17566';
+}
+
+function getHashPlayerId() {
+  const hashMatch = String(window.location.hash || '').match(/player=([^&]+)/);
+  return hashMatch ? decodeURIComponent(hashMatch[1]) : '';
+}
+
+function getActivePlayerProfileId() {
+  if (playerProfileState.playerId) return playerProfileState.playerId;
+  const headerPlayer = document.getElementById('playerProfileTitle')?.textContent?.trim() || '';
+  if (headerPlayer && headerPlayer !== 'Player') return headerPlayer;
+  return getHashPlayerId();
+}
+
+function sourceStatusFromMap(map, key) {
+  const source = (map?.sources || []).find(row => row.key === key);
+  return source?.freshnessState || source?.status || 'missing';
+}
+
+function sourceStatusLabelFromMap(map, key) {
+  const source = (map?.sources || []).find(row => row.key === key);
+  if (!source) return 'missing';
+  const status = source.freshnessState || source.status || 'missing';
+  const policy = source.refreshPolicy || 'unknown';
+  const last = source.lastSuccessAt || source.lastSeen || source.lastAttemptAt;
+  return `${status} / ${policy}${last ? ` / ${formatShortDateTime(last)}` : ''}`;
+}
+
+function statusAgentRow(agent, player360 = null) {
   const flags = [
     agent.hasPassword ? 'password' : null,
     agent.hasCfCookie ? 'cookie' : null,
@@ -3534,14 +3720,30 @@ function statusAgentRow(agent) {
   ].filter(Boolean).join(' + ') || 'no usable secrets';
   const color = agent.active ? 'var(--green)' : 'var(--yellow)';
   const error = agent.lastError ? `<div class="mt-1" style="color:var(--red);">${escapeHtml(agent.lastError)}</div>` : '';
+  const coverage = player360 ? `<div class="status-coverage-row">
+    ${statusCoverageChip('Wagers', sourceStatusFromMap(player360, 'wager_archive'))}
+    ${statusCoverageChip('Access', sourceStatusFromMap(player360, 'access_logs'))}
+    ${statusCoverageChip('Ledger', sourceStatusFromMap(player360, 'player_transactions'))}
+    ${statusCoverageChip('Deleted Tx', sourceStatusFromMap(player360, 'deleted_transactions'))}
+    ${statusCoverageChip('Deposits', sourceStatusFromMap(player360, 'deposits'))}
+    ${statusCoverageChip('Customer', sourceStatusFromMap(player360, 'customer_snapshots'))}
+    ${statusCoverageChip('Teaser', sourceStatusFromMap(player360, 'teaser_profile'))}
+    ${statusCoverageChip('Perf', sourceStatusFromMap(player360, 'agent_performance_snapshots'))}
+  </div>` : '';
   return `<div class="rounded border p-2" style="background:var(--bg);border-color:var(--border);">
     <div class="flex items-center justify-between gap-2">
       <span class="font-mono" style="color:var(--text);">${escapeHtml(agent.agentId || 'Unknown')}</span>
       <span class="px-1.5 py-0.5 rounded text-[10px] font-bold" style="background:${color}22;color:${color};">${agent.active ? 'ACTIVE' : 'VAULTED'}</span>
     </div>
     <div class="mt-1" style="color:var(--text-dim);">${escapeHtml(flags)}</div>
+    ${coverage}
     ${error}
   </div>`;
+}
+
+function statusCoverageChip(label, status) {
+  const normalized = String(status || 'missing').toLowerCase();
+  return `<span class="status-coverage-chip ${normalized}">${escapeHtml(label)}: ${escapeHtml(normalized)}</span>`;
 }
 
 function statusBookPill(book) {
@@ -3594,6 +3796,17 @@ const API_ENDPOINTS = [
   { path: '/api/wagers?limit=1', label: 'Wagers', group: 'Data' },
   { path: '/api/wagers/alerts', label: 'Alerts', group: 'Data' },
   { path: '/api/wagers/live', label: 'Live Wagers', group: 'Data' },
+  { path: '/api/players/search?q=A17566', label: 'Player Search', group: 'Player 360' },
+  { path: '/api/players/A17566/profile', label: 'Player Profile', group: 'Player 360' },
+  { path: '/api/players/A17566/agent-context', label: 'Agent Context', group: 'Player 360' },
+  { path: '/api/players/A17566/intelligence-map', label: 'Intel Map', group: 'Player 360' },
+  { path: '/api/players/A17566/deposits', label: 'Deposits', group: 'Player 360' },
+  { path: '/api/players/A17566/account-snapshots', label: 'Snapshots', group: 'Player 360' },
+  { path: '/api/players/A17566/links', label: 'Links', group: 'Player 360' },
+  { path: '/api/players/A17566/flags', label: 'Flags', group: 'Player 360' },
+  { path: '/api/players/A17566/notes', label: 'Notes', group: 'Player 360' },
+  { path: '/api/players/A17566/export/wagers', label: 'Export Wagers', group: 'Player 360' },
+  { path: '/api/players/A17566/export/access-logs', label: 'Export Access', group: 'Player 360' },
   { path: '/api/agents', label: 'Agents', group: 'Data' },
   { path: '/api/agents/downline', label: 'Downline', group: 'Data' },
   { path: '/api/agents/access-logs', label: 'Agent Access', group: 'Data' },
@@ -3624,6 +3837,33 @@ const API_ENDPOINTS = [
   { path: '/api/analytics/raw-logs?limit=1', label: 'Raw API Archive', group: 'Analytics' },
 ];
 
+function getApiEndpoints(playerId = getStatusPlayerId()) {
+  const safePlayer = encodeURIComponent(playerId || 'A17566');
+  return API_ENDPOINTS.map((endpoint) => {
+    let path = endpoint.path.replaceAll('A17566', safePlayer);
+    if (endpoint.group === 'Player 360') path = path.replace('/api/players', '/api/v1/players');
+    return { ...endpoint, path };
+  });
+}
+
+function getPlayer360EndpointRegistry(playerId = getStatusPlayerId()) {
+  const safePlayer = encodeURIComponent(playerId || 'A17566');
+  return [
+    { path: `/api/v1/players/search?q=${safePlayer}`, label: 'Search', group: 'Player 360', tab: 'Search', aspect: 'Player lookup', sources: ['wager_archive'] },
+    { path: `/api/v1/players/${safePlayer}/profile`, label: 'Profile', group: 'Player 360', tab: 'Overview', aspect: 'Overview, wagers, performance, account shell', sources: ['wager_archive', 'agent_performance_snapshots', 'access_logs', 'player_transactions', 'deleted_transactions', 'deposits', 'customer_snapshots', 'player_links', 'player_flags', 'player_notes'] },
+    { path: `/api/v1/players/${safePlayer}/intelligence-map`, label: 'Intel Map', group: 'Player 360', tab: 'Status / Docs', aspect: 'Coverage, status, freshness, gaps', sources: ['all'] },
+    { path: `/api/v1/players/${safePlayer}/deposits`, label: 'Deposits', group: 'Player 360', tab: 'Deposits', aspect: 'Deposit-like transaction rows and IP match', sources: ['deposits', 'access_logs'] },
+    { path: `/api/v1/players/${safePlayer}/transactions`, label: 'Transactions', group: 'Player 360', tab: 'Deposits', aspect: 'Full getTransactionList/getTransactionHistory/getReportDeletedTransactions account ledger', sources: ['player_transactions', 'deleted_transactions'] },
+    { path: `/api/v1/players/${safePlayer}/account-snapshots`, label: 'Snapshots', group: 'Player 360', tab: 'Account', aspect: 'KYC, VIP, masked contact, currency', sources: ['customer_snapshots'] },
+    { path: `/api/v1/players/${safePlayer}/links`, label: 'Links', group: 'Player 360', tab: 'Links', aspect: 'Multi-account evidence', sources: ['player_links', 'access_logs'] },
+    { path: `/api/v1/players/${safePlayer}/flags`, label: 'Flags', group: 'Player 360', tab: 'Notes', aspect: 'Compliance flags', sources: ['player_flags'] },
+    { path: `/api/v1/players/${safePlayer}/notes`, label: 'Notes', group: 'Player 360', tab: 'Notes', aspect: 'Operator notes', sources: ['player_notes'] },
+    { path: `/api/v1/players/${safePlayer}/export/wagers`, label: 'Export Wagers', group: 'Player 360', tab: 'Wager History', aspect: 'Wager CSV export', sources: ['wager_archive'] },
+    { path: `/api/v1/players/${safePlayer}/export/access-logs`, label: 'Export Access', group: 'Player 360', tab: 'Access Logs', aspect: 'Access CSV export', sources: ['access_logs'] },
+    { path: `/api/v1/logs/access?limit=1`, label: 'Audit Access', group: 'Player 360', tab: 'Access Logs', aspect: 'Audit access-log fallback', sources: ['access_logs'] },
+  ];
+}
+
 async function checkApiEndpoints() {
   const container = document.getElementById('apiEndpointList');
   const summary = document.getElementById('apiEndpointSummary');
@@ -3632,7 +3872,7 @@ async function checkApiEndpoints() {
   container.innerHTML = '<div class="col-span-full" style="color:var(--text-dim);">Checking endpoints...</div>';
 
   const results = await Promise.allSettled(
-    API_ENDPOINTS.map(async (ep) => {
+    getApiEndpoints().map(async (ep) => {
       const start = performance.now();
       const res = await fetch(`${getApiBaseUrl()}${ep.path}`);
       const ms = Math.round(performance.now() - start);
@@ -3641,7 +3881,7 @@ async function checkApiEndpoints() {
   );
 
   const entries = results.map((r) =>
-    r.status === 'fulfilled' ? r.value : { ...API_ENDPOINTS[results.indexOf(r)], status: 0, ms: 0 }
+    r.status === 'fulfilled' ? r.value : { ...getApiEndpoints()[results.indexOf(r)], status: 0, ms: 0 }
   );
 
   const ok = entries.filter((e) => e.status >= 200 && e.status < 400).length;
@@ -3671,6 +3911,98 @@ async function checkApiEndpoints() {
       </div>
     </div>
   `).join('');
+}
+
+// ==================== PLAYER 360 STATUS ====================
+const PLAYER360_MODEL = [
+  { key: 'stats', label: 'Stats', desc: 'Volume, risk, wager count, avg/max wager, first/last active, favorite sport, risk score, CLV %, stale line hits, past posting rate' },
+  { key: 'recentWagers', label: 'Wager History', desc: '200 most recent wagers with pattern flags (stale, pastpost, clv, burst)' },
+  { key: 'weeklyPnl', label: 'Weekly P&L', desc: '28-day weekly volume and projected P&L' },
+  { key: 'sportBreakdown', label: 'Sport Breakdown', desc: 'Top 12 sports by volume with wager count and P&L' },
+  { key: 'patternSummary', label: 'Pattern Summary', desc: 'Aggregate CLV %, stale line hits, past posting rate, pattern hit count' },
+  { key: 'transactions', label: 'Transactions', desc: 'Full getTransactionList/getTransactionHistory/getReportDeletedTransactions account ledger: wager wins/losses, credits/debits, deleted rows, balance and document numbers' },
+  { key: 'deposits', label: 'Deposits', desc: 'Deposit-like rows filtered from transaction candidates with IP-matched login flag' },
+  { key: 'accountSnapshots', label: 'Account Snapshots', desc: 'KYC level, VIP status, masked email/phone, currency, source' },
+  { key: 'links', label: 'Linked Accounts', desc: 'Multi-account detection via shared IP/device, with reason, confidence, evidence' },
+  { key: 'flags', label: 'Flags', desc: 'Manual compliance flags with type, severity, label, details, resolution state' },
+  { key: 'notes', label: 'Notes', desc: 'Manual operator notes with type, body, created_by, archived state' },
+  { key: 'accessLogs', label: 'Access Logs', desc: '10 most recent logins with IP, operation, new-IP detection, device/geo metadata' },
+];
+
+async function checkPlayer360Status() {
+  const summary = document.getElementById('player360Summary');
+  const modelEl = document.getElementById('player360Model');
+  const sourcesEl = document.getElementById('player360Sources');
+  const endpointsEl = document.getElementById('player360Endpoints');
+  if (!summary || !modelEl || !sourcesEl || !endpointsEl) return;
+
+  const playerId = getStatusPlayerId();
+  const player360Endpoints = getPlayer360EndpointRegistry(playerId);
+  const results = await Promise.allSettled(
+    player360Endpoints.map(async (ep) => {
+      const start = performance.now();
+      const res = await fetch(`${getApiBaseUrl()}${ep.path}`);
+      const ms = Math.round(performance.now() - start);
+      return { ...ep, status: res.status, ms };
+    })
+  );
+
+  const entries = results.map((r, i) =>
+    r.status === 'fulfilled' ? r.value : { ...player360Endpoints[i], status: 0, ms: 0 }
+  );
+
+  const ok = entries.filter(e => e.status >= 200 && e.status < 400).length;
+  let map = null;
+  try {
+    const mapRes = await fetch(`${getApiBaseUrl()}/api/v1/players/${encodeURIComponent(playerId)}/intelligence-map`);
+    if (mapRes.ok) map = await mapRes.json();
+  } catch {
+    map = null;
+  }
+  const sources = map?.sources || [];
+  const missingCount = sources.filter(source => sourceHealth(source).state === 'missing').length;
+  summary.textContent = map
+    ? `${playerId}: ${ok}/${entries.length} endpoints OK · ${missingCount} missing sources`
+    : `${playerId}: ${ok}/${entries.length} endpoints OK · intelligence map unavailable`;
+
+  // Render model
+  modelEl.innerHTML = PLAYER360_MODEL.map(m => `
+    <div class="flex items-start gap-2 py-1 border-b" style="border-color:var(--border);">
+      <div class="w-1.5 h-1.5 rounded-full mt-1 shrink-0" style="background:var(--green);"></div>
+      <div>
+        <span class="font-semibold">${m.label}</span>
+        <span style="color:var(--text-dim);"> — ${m.desc}</span>
+      </div>
+    </div>
+  `).join('');
+
+  // Render sources
+  sourcesEl.innerHTML = sources.length ? sources.map(s => {
+    const health = sourceHealth(s);
+    const color = health.state === 'live' ? 'var(--green)' : health.state === 'derived' ? 'var(--blue)' : health.state === 'missing' ? 'var(--red)' : 'var(--yellow)';
+    return `<div class="flex items-center gap-2 py-1 border-b" style="border-color:var(--border);">
+      <div class="w-1.5 h-1.5 rounded-full shrink-0" style="background:${color};"></div>
+      <div class="flex-1">
+        <div class="flex items-center justify-between">
+          <span class="font-semibold">${escapeHtml(s.name || s.key || s.label)}</span>
+          <span class="text-[10px] px-1 py-0.5 rounded" style="background:${color}20;color:${color};">${health.state}</span>
+        </div>
+        <div style="color:var(--text-dim);font-size:10px;">${escapeHtml(s.buckeyeEndpoint || s.source || '-')} • ${Number(s.rowCount || 0).toLocaleString()} rows • last seen ${s.lastSeen ? formatShortDateTime(s.lastSeen) : '-'}</div>
+        <div style="color:var(--text-dim);font-size:10px;">${escapeHtml(s.gap || s.desc || '')}</div>
+      </div>
+    </div>`;
+  }).join('') : '<div class="text-xs" style="color:var(--red);">No source coverage available because /api/v1/players/:id/intelligence-map did not return a live contract.</div>';
+
+  // Render endpoint health
+  endpointsEl.innerHTML = entries.map(ep => {
+    const isOk = ep.status >= 200 && ep.status < 400;
+    const color = isOk ? 'var(--green)' : ep.status === 0 ? 'var(--red)' : 'var(--yellow)';
+    return `<div class="flex items-center gap-1.5 px-2 py-1.5 rounded" style="background:var(--bg);border:1px solid var(--border);" title="${ep.path} — ${ep.status} in ${ep.ms}ms">
+      <div class="w-1.5 h-1.5 rounded-full shrink-0" style="background:${color};"></div>
+      <span class="truncate">${ep.label}</span>
+      <span class="ml-auto text-[10px] shrink-0" style="color:var(--text-dim);">${ep.status}</span>
+    </div>`;
+  }).join('');
 }
 
 // ==================== UP TAB (ERROR TRACKING & RECOVERY) ====================
@@ -3712,7 +4044,7 @@ async function loadUptimePage(force = false) {
 
     // API endpoints
     const apiResults = await Promise.allSettled(
-      API_ENDPOINTS.slice(0, 10).map(async (ep) => {
+      getApiEndpoints().slice(0, 10).map(async (ep) => {
         const res = await fetch(`${getApiBaseUrl()}${ep.path}`);
         return res.status;
       })
@@ -4690,6 +5022,14 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function escapeJs(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '');
+}
+
 function updateAgentSummary(flatAgents) {
   const totalAgents = flatAgents.length;
   const totalPlayers = flatAgents.reduce((s, a) => s + (a.player_count || 0), 0);
@@ -5385,15 +5725,97 @@ function filterTickerByAgent(agentLogin) {
 
 // ==================== PLAYER SEARCH & DETAIL ====================
 function searchPlayers() {
-  const query = document.getElementById('playerSearchInput')?.value?.toLowerCase() || '';
-  scheduleTask('playerSearch', () => renderPlayerSearch(query), 100);
+  playerSearchState.query = document.getElementById('playerSearchInput')?.value?.trim() || '';
+  FactoryWager.utils.debounce('playerSearch', () => loadPlayerSearch(true));
 }
 
-function renderPlayerSearch(query = '') {
+async function loadPlayerSearch(force = false) {
   const tbody = document.getElementById('playerSearchTable');
   if (!tbody) return;
+  const agent = document.getElementById('playerAgentFilter')?.value || '';
+  const from = document.getElementById('playerFromFilter')?.value || '';
+  const to = document.getElementById('playerToFilter')?.value || '';
+  playerSearchState.agent = agent;
+  playerSearchState.from = from;
+  playerSearchState.to = to;
+  if (playerSearchState.loading && !force) return;
 
-  // Derive players from buckeyeWagers
+  playerSearchState.loading = true;
+  tbody.innerHTML = '<tr><td colspan="7" class="px-3 py-8 text-center text-sm" style="color:var(--text-dim);">Searching archived players...</td></tr>';
+
+  try {
+    const payload = await FactoryWager.apiFetch('/players/search', {
+      query: {
+        q: playerSearchState.query,
+        agent,
+        from,
+        to,
+        sort: playerSearchState.sort || 'volume',
+      },
+    });
+    playerSearchState.players = payload.players || [];
+    playerSearchState.agents = payload.agentOptions || payload.agents || playerSearchState.agents || [];
+    renderPlayerAgentFilter();
+    renderPlayerSearch();
+    renderPlayerSearchSuggestions();
+  } catch (err) {
+    console.warn('[Players] Search failed, falling back to loaded wagers:', err?.message || err);
+    renderPlayerSearchFallback(playerSearchState.query.toLowerCase());
+  } finally {
+    playerSearchState.loading = false;
+  }
+}
+
+function renderPlayerAgentFilter() {
+  const select = document.getElementById('playerAgentFilter');
+  if (!select) return;
+  const selected = select.value;
+  const agents = normalizePlayerSearchAgents(playerSearchState.agents);
+  select.innerHTML = '<option value="">All agents</option>' + agents.map(agent => {
+    const label = `${agent.agentLogin || agent.agentId}${agent.level ? ` · L${agent.level}` : ''}${agent.agentType ? ` ${agent.agentType}` : ''}`;
+    return `<option value="${escapeHtml(agent.agentId || agent.agentLogin)}">${escapeHtml(label)}</option>`;
+  }).join('');
+  select.value = agents.some(agent => (agent.agentId || agent.agentLogin) === selected) ? selected : '';
+}
+
+function normalizePlayerSearchAgents(agents) {
+  const seen = new Set();
+  return (agents || []).map(agent => {
+    if (typeof agent === 'string') return { agentId: agent, agentLogin: agent, level: null, agentType: '' };
+    return {
+      agentId: agent.agentId || agent.id || agent.agentLogin || '',
+      agentLogin: agent.agentLogin || agent.login || agent.agentId || '',
+      level: agent.level || agent.Level || null,
+      agentType: agent.agentType || agent.AgentType || '',
+    };
+  }).filter(agent => {
+    const key = agent.agentId || agent.agentLogin;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function renderPlayerSearch() {
+  const tbody = document.getElementById('playerSearchTable');
+  if (!tbody) return;
+  const players = playerSearchState.players || [];
+  const meta = document.getElementById('playerSearchMeta');
+  if (meta) {
+    meta.textContent = `${players.length.toLocaleString()} player${players.length === 1 ? '' : 's'} from wager archive · sorted by ${playerSearchState.sort}`;
+  }
+
+  tbody.innerHTML = players.map(p => playerSearchRow(p)).join('');
+  renderPlayerSearchSuggestions();
+
+  if (players.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="px-3 py-8 text-center text-sm" style="color:var(--text-dim);">No players found.</td></tr>';
+  }
+}
+
+function renderPlayerSearchFallback(query = '') {
+  const tbody = document.getElementById('playerSearchTable');
+  if (!tbody) return;
   const playerMap = {};
   buckeyeWagers.forEach(w => {
     const p = w.Login;
@@ -5410,32 +5832,56 @@ function renderPlayerSearch(query = '') {
     players = players.filter(p => p.login.toLowerCase().includes(query));
   }
   players.sort((a, b) => b.total_volume - a.total_volume);
+  playerSearchState.players = players.map(p => ({
+    login: p.login,
+    customerId: p.login,
+    agentLogin: p.agent_login,
+    wagerCount: p.wager_count,
+    totalVolume: p.total_volume,
+    totalRisk: p.total_risk,
+    riskScore: Math.min(100, Math.round(p.total_risk / 1000)),
+    lastWagerAt: '',
+  }));
 
-  const totalPlayers = players.length;
-  const visiblePlayers = players.slice(0, TABLE_RENDER_LIMIT);
+  const visiblePlayers = playerSearchState.players.slice(0, TABLE_RENDER_LIMIT);
+  tbody.innerHTML = visiblePlayers.map(p => playerSearchRow(p)).join('');
 
-  tbody.innerHTML = visiblePlayers.map(p => {
-    const playerLabel = escapeHtml(p.login);
-    const agentLabel = escapeHtml(p.agent_login);
-    return `<tr class="border-b cursor-pointer hover:bg-opacity-50" data-player="${escapeHtml(p.login)}" style="border-color:var(--border);">
-    <td class="px-3 py-2 font-medium hover:underline" style="color:var(--accent);">${playerLabel}</td>
-    <td class="px-3 py-2">${agentLabel}</td>
-    <td class="px-3 py-2 text-center">${p.wager_count}</td>
-    <td class="px-3 py-2 text-right font-mono">$${p.total_volume.toLocaleString()}</td>
-    <td class="px-3 py-2 text-right font-mono">$${p.total_risk.toLocaleString()}</td>
+  if (playerSearchState.players.length > TABLE_RENDER_LIMIT) {
+    tbody.innerHTML += `<tr><td colspan="7" class="px-3 py-2 text-center text-xs" style="color:var(--text-dim);">Showing ${TABLE_RENDER_LIMIT.toLocaleString()} of ${playerSearchState.players.length.toLocaleString()} players. Search to narrow results.</td></tr>`;
+  }
+
+  if (playerSearchState.players.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="px-3 py-8 text-center text-sm" style="color:var(--text-dim);">No players found.</td></tr>';
+  }
+  renderPlayerSearchSuggestions();
+}
+
+function renderPlayerSearchSuggestions() {
+  const list = document.getElementById('playerSearchSuggestions');
+  if (!list) return;
+  list.innerHTML = (playerSearchState.players || [])
+    .slice(0, 40)
+    .map(p => `<option value="${escapeHtml(p.login || p.customerId || '')}">${escapeHtml(p.agentLogin || '')}</option>`)
+    .join('');
+}
+
+function playerSearchRow(p) {
+  const playerId = p.login || p.customerId || '';
+  const risk = Number(p.riskScore || 0);
+  const riskColor = risk >= 80 ? 'var(--red)' : risk >= 55 ? 'var(--yellow)' : 'var(--green)';
+  const agentLabel = p.agentLogin || p.agentId || '';
+  const agentMeta = [p.agentId && p.agentId !== p.agentLogin ? p.agentId : '', p.agentLevel ? `L${p.agentLevel}` : '', p.agentType || ''].filter(Boolean).join(' · ');
+  return `<tr class="border-b cursor-pointer" data-player="${escapeHtml(playerId)}" style="border-color:var(--border);">
+    <td class="px-3 py-2 font-medium hover:underline" style="color:var(--accent);">${escapeHtml(playerId)}</td>
+    <td class="px-3 py-2"><div class="font-mono">${escapeHtml(agentLabel)}</div>${agentMeta ? `<div class="text-[10px]" style="color:var(--text-dim);">${escapeHtml(agentMeta)}</div>` : ''}</td>
+    <td class="px-3 py-2 text-center">${Number(p.wagerCount || 0).toLocaleString()}</td>
+    <td class="px-3 py-2 text-right font-mono">$${Math.round(Number(p.totalVolume || 0)).toLocaleString()}</td>
+    <td class="px-3 py-2 text-right font-mono"><span style="color:${riskColor};">${risk}</span></td>
+    <td class="px-3 py-2 text-center text-xs" style="color:var(--text-dim);">${p.lastWagerAt ? formatShortDateTime(p.lastWagerAt) : '-'}</td>
     <td class="px-3 py-2 text-center">
-      <button type="button" class="px-2 py-1 rounded text-xs" style="background:var(--accent);color:#fff;" data-player="${escapeHtml(p.login)}">View</button>
+      <button type="button" class="px-2 py-1 rounded text-xs" style="background:var(--accent);color:#fff;" data-player="${escapeHtml(playerId)}">View</button>
     </td>
   </tr>`;
-  }).join('');
-
-  if (totalPlayers > TABLE_RENDER_LIMIT) {
-    tbody.innerHTML += `<tr><td colspan="6" class="px-3 py-2 text-center text-xs" style="color:var(--text-dim);">Showing ${TABLE_RENDER_LIMIT.toLocaleString()} of ${totalPlayers.toLocaleString()} players. Search to narrow results.</td></tr>`;
-  }
-
-  if (totalPlayers === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="px-3 py-8 text-center text-sm" style="color:var(--text-dim);">No players found.</td></tr>';
-  }
 }
 
 function viewPlayer(playerLogin, event) {
@@ -5444,9 +5890,7 @@ function viewPlayer(playerLogin, event) {
     event.stopPropagation();
   }
   if (!playerLogin) return false;
-  previousSection = currentSection;
-  switchSection('playerDetail', null);
-  renderPlayerDetail(playerLogin);
+  openPlayerProfileModal(playerLogin);
   return false;
 }
 
@@ -5487,6 +5931,2210 @@ function handleBuckeyeWagerTableClick(event) {
 
 function backFromPlayerDetail() {
   switchSection(previousSection, null);
+}
+
+async function openPlayerProfileModal(playerId) {
+  const modal = document.getElementById('playerProfileModal');
+  if (!modal) return;
+  playerProfileState.playerId = playerId;
+  playerProfileState.profile = null;
+  playerProfileState.intelligenceMap = null;
+  playerProfileState.docsLoading = false;
+  playerProfileState.statusLoading = false;
+  playerProfileState.statusMap = null;
+  playerProfileState.statusEndpointChecks = [];
+  playerProfileState.tab = 'overview';
+  playerProfileState.wagerPage = 1;
+  modal.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+  document.getElementById('playerProfileTitle').textContent = playerId;
+  document.getElementById('playerProfileSubhead').textContent = 'Loading archive profile...';
+  renderPlayerProfileLoading();
+  FactoryWager.actions.subscribePlayerWagers(playerId);
+  if (!history.state?.playerProfile) {
+    history.pushState({ playerProfile: true, playerId }, '', `#player=${encodeURIComponent(playerId)}`);
+  }
+
+  try {
+    playerProfileState.profile = await fetchPlayerProfile(playerId);
+    configurePlayerProfileExports(playerId);
+    renderPlayerProfile();
+  } catch (err) {
+    console.warn('[Players] Profile failed:', err?.message || err);
+    playerProfileState.profile = null;
+    configurePlayerProfileExports(playerId);
+    renderPlayerProfileError(playerId, err);
+  }
+}
+
+function renderPlayerProfileError(playerId, err) {
+  const message = err?.message || String(err || 'Profile unavailable');
+  const panels = ['playerProfileOverview', 'playerProfileWagers', 'playerProfileAccess', 'playerProfilePerformance', 'playerProfileDeposits', 'playerProfileTransactions', 'playerProfileAccount', 'playerProfileAgent', 'playerProfileLinks', 'playerProfileNotes', 'playerProfileStatus', 'playerProfileDocs'];
+  panels.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = `<div class="profile-doc-panel">
+      <h3>Real API profile unavailable</h3>
+      <p class="text-sm" style="color:var(--text-dim);">Player 360 does not render mock profile data. The live profile endpoint failed for <span class="font-mono">${escapeHtml(playerId)}</span>.</p>
+      <div class="mt-3 text-xs font-mono" style="color:var(--red);">${escapeHtml(message)}</div>
+      <div class="profile-status-actions mt-3">
+        <button type="button" class="profile-action-button" onclick="openPlayerProfileModal(decodeURIComponent('${encodeURIComponent(playerId)}'))">Retry Profile API</button>
+        <button type="button" class="profile-action-button" onclick="setPlayerProfileTab('status')">Open Status Map</button>
+      </div>
+    </div>`;
+  });
+}
+
+async function fetchBuckeyePlayerLiveData(playerId) {
+  const [infoRes, perfRes] = await Promise.allSettled([
+    FactoryWager.apiFetch(`/buckeye/player-info?customerId=${encodeURIComponent(playerId)}`),
+    FactoryWager.apiFetch(`/buckeye/player-performance?acc=${encodeURIComponent(playerId)}&period=0`),
+  ]);
+  const info = infoRes.status === 'fulfilled' ? infoRes.value : null;
+  const performance = perfRes.status === 'fulfilled' ? perfRes.value : null;
+  if (infoRes.status === 'rejected') {
+    console.warn('[Players] Buckeye player-info failed:', infoRes.reason?.message || infoRes.reason);
+  }
+  if (perfRes.status === 'rejected') {
+    console.warn('[Players] Buckeye player-performance failed:', perfRes.reason?.message || perfRes.reason);
+  }
+  return { info, performance, hasLiveData: Boolean(info?.snapshot || performance?.data) };
+}
+
+async function fetchBuckeyePlayerTransactions(playerId, timeoutMs = 15000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${getApiBaseUrl()}/api/buckeye/player-transactions?customerId=${encodeURIComponent(playerId)}`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    clearTimeout(timeout);
+    console.warn('[Players] Buckeye player-transactions failed:', err?.message || err);
+    return null;
+  }
+}
+
+async function fetchPlayerProfile(playerId) {
+  const profile = await FactoryWager.apiFetch(`/players/${encodeURIComponent(playerId)}/profile`);
+  try {
+    const live = await fetchBuckeyePlayerLiveData(playerId);
+    profile.buckeye = live;
+  } catch (err) {
+    console.warn('[Players] Live data fetch failed:', err?.message || err);
+    profile.buckeye = { info: null, performance: null, transactions: null, hasLiveData: false };
+  }
+  try {
+    const txLive = await fetchBuckeyePlayerTransactions(playerId, 15000);
+    if (txLive && profile.buckeye) {
+      profile.buckeye.transactions = txLive;
+      profile.buckeye.hasLiveData = Boolean(profile.buckeye.hasLiveData || txLive.rows?.length);
+    }
+  } catch (err) {
+    console.warn('[Players] Live transactions fetch failed:', err?.message || err);
+  }
+  if (!Array.isArray(profile.accessLogs) || profile.accessLogs.length === 0) {
+    try {
+      const audit = await FactoryWager.apiFetch('/logs/access', { query: { limit: 100 } });
+      const logs = (audit.logs || []).filter(row => {
+        const login = row.login || row.customer_id || row.customerId || row.player_id || row.playerId || '';
+        return login === playerId;
+      });
+      if (logs.length) {
+        profile.accessLogs = logs.map(row => ({
+          ...row,
+          isNewIp: Boolean(row.isNewIp || row.is_new_ip),
+        }));
+      }
+    } catch (err) {
+      console.warn('[Players] Access audit fallback unavailable:', err?.message || err);
+    }
+  }
+  return profile;
+}
+
+async function fetchPlayerIntelligenceMap(playerId) {
+  return FactoryWager.apiFetch(`/players/${encodeURIComponent(playerId)}/intelligence-map`);
+}
+
+async function refreshOpenPlayerProfile(playerId) {
+  try {
+    const profile = await fetchPlayerProfile(playerId);
+    if (playerProfileState.playerId !== playerId) return;
+    playerProfileState.profile = profile;
+    configurePlayerProfileExports(playerId);
+    renderPlayerProfile();
+  } catch (err) {
+    console.warn('[Players] Live profile refresh failed:', err?.message || err);
+  }
+}
+
+function closePlayerProfileModal(updateHistory = true) {
+  const modal = document.getElementById('playerProfileModal');
+  if (!modal || modal.classList.contains('hidden')) return;
+  FactoryWager.actions.unsubscribePlayerWagers(playerProfileState.playerId);
+  modal.classList.add('hidden');
+  document.body.style.overflow = '';
+  destroyPlayerProfileCharts();
+  playerProfileState.playerId = null;
+  playerProfileState.profile = null;
+  playerProfileState.intelligenceMap = null;
+  playerProfileState.docsLoading = false;
+  playerProfileState.statusLoading = false;
+  playerProfileState.statusMap = null;
+  playerProfileState.statusEndpointChecks = [];
+  playerProfileState.wagerPage = 1;
+  if (updateHistory && history.state?.playerProfile) history.back();
+}
+
+FactoryWager.actions.subscribePlayerWagers = function subscribePlayerWagers(playerId) {
+  FactoryWager.state.ws.subscribedPlayerId = playerId;
+  if (wsClient?.isConnected) {
+    wsClient.send({ type: 'player.subscribe', playerId });
+  }
+};
+
+FactoryWager.actions.unsubscribePlayerWagers = function unsubscribePlayerWagers(playerId) {
+  if (wsClient?.isConnected && playerId) {
+    wsClient.send({ type: 'player.unsubscribe', playerId });
+  }
+  if (FactoryWager.state.ws.subscribedPlayerId === playerId) FactoryWager.state.ws.subscribedPlayerId = null;
+};
+
+function configurePlayerProfileExports(playerId) {
+  const base = `${getApiBaseUrl()}/api/v1/players/${encodeURIComponent(playerId)}/export`;
+  const wagers = document.getElementById('playerExportWagersBtn');
+  const access = document.getElementById('playerExportAccessBtn');
+  if (wagers) {
+    wagers.href = `${base}/wagers`;
+    wagers.download = `${playerId}-wagers.csv`;
+  }
+  if (access) {
+    access.href = `${base}/access-logs`;
+    access.download = `${playerId}-access-logs.csv`;
+  }
+}
+
+function exportPlayerProfileCsv(kind) {
+  const playerId = playerProfileState.playerId;
+  if (!playerId) return false;
+  const path = kind === 'access' ? 'access-logs' : 'wagers';
+  window.location.href = FactoryWager.apiUrl(`/players/${encodeURIComponent(playerId)}/export/${path}`);
+  return false;
+}
+
+function renderPlayerProfileLoading() {
+  ['playerProfileOverview', 'playerProfileWagers', 'playerProfileAccess', 'playerProfilePerformance', 'playerProfileDeposits', 'playerProfileTransactions', 'playerProfileAccount', 'playerProfileAgent', 'playerProfileLinks', 'playerProfileNotes', 'playerProfileStatus', 'playerProfileDocs'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = `<div class="profile-skeleton-grid" aria-busy="true" aria-label="Loading Player 360 profile">
+      <div class="profile-skeleton skeleton-tall"></div>
+      <div class="profile-skeleton skeleton-wide"></div>
+      <div class="profile-skeleton"></div>
+      <div class="profile-skeleton"></div>
+      <div class="profile-skeleton skeleton-wide"></div>
+    </div>`;
+  });
+}
+
+function openPlayerProfileDocs() {
+  setPlayerProfileTab('docs');
+}
+
+function setPlayerProfileTab(tab) {
+  playerProfileState.tab = tab;
+  document.querySelectorAll('[data-player-profile-tab]').forEach(btn => {
+    const active = btn.dataset.playerProfileTab === tab;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    btn.setAttribute('tabindex', active ? '0' : '-1');
+  });
+  document.getElementById('playerProfileDocsBtn')?.classList.toggle('active', tab === 'docs');
+  const panels = {
+    overview: 'playerProfileOverview',
+    wagers: 'playerProfileWagers',
+    access: 'playerProfileAccess',
+    performance: 'playerProfilePerformance',
+    deposits: 'playerProfileDeposits',
+    transactions: 'playerProfileTransactions',
+    account: 'playerProfileAccount',
+    agent: 'playerProfileAgent',
+    links: 'playerProfileLinks',
+    notes: 'playerProfileNotes',
+    status: 'playerProfileStatus',
+    docs: 'playerProfileDocs',
+  };
+  Object.entries(panels).forEach(([name, id]) => {
+    const panel = document.getElementById(id);
+    if (!panel) return;
+    panel.classList.toggle('hidden', name !== tab);
+    panel.setAttribute('aria-hidden', name === tab ? 'false' : 'true');
+  });
+  if (!playerProfileState.profile) {
+    const playerId = getActivePlayerProfileId();
+    if (playerId) {
+      playerProfileState.playerId = playerId;
+      if (tab === 'status') {
+        renderPlayerProfileStatus({ playerId, stats: {} });
+      } else if (tab === 'docs') {
+        renderPlayerProfileDocs({ playerId, stats: {} });
+      } else {
+        refreshOpenPlayerProfile(playerId);
+      }
+    }
+    return;
+  }
+  renderPlayerProfile();
+}
+
+function renderPlayerProfile() {
+  const profile = playerProfileState.profile;
+  if (!profile) return;
+  const stats = profile.stats || {};
+  const playerId = profile.playerId || playerProfileState.playerId;
+  document.getElementById('playerProfileTitle').textContent = playerId;
+  const subhead = document.getElementById('playerProfileSubhead');
+  if (subhead) {
+    subhead.innerHTML = `<div class="player-profile-meta">
+      <span class="player-profile-pill">${escapeHtml(stats.agentLogin || 'No agent')}</span>
+      <span class="player-profile-pill">${Number(stats.wagerCount || stats.openBets || 0).toLocaleString()} wagers</span>
+      <span class="player-profile-pill">${escapeHtml(stats.favoriteSport || 'Unknown sport')}</span>
+      <span class="player-profile-pill"><span class="profile-live-dot"></span>Live bridge</span>
+    </div>`;
+  }
+
+  if (playerProfileState.tab === 'overview') renderPlayerProfileOverview(profile);
+  if (playerProfileState.tab === 'wagers') renderPlayerProfileWagers(profile);
+  if (playerProfileState.tab === 'access') renderPlayerProfileAccess(profile);
+  if (playerProfileState.tab === 'performance') renderPlayerProfilePerformance(profile);
+  if (playerProfileState.tab === 'deposits') renderPlayerProfileDeposits(profile);
+  if (playerProfileState.tab === 'transactions') renderPlayerProfileTransactions(profile);
+  if (playerProfileState.tab === 'account') renderPlayerProfileAccount(profile);
+  if (playerProfileState.tab === 'agent') renderPlayerProfileAgent(profile);
+  if (playerProfileState.tab === 'links') renderPlayerProfileLinks(profile);
+  if (playerProfileState.tab === 'notes') renderPlayerProfileNotes(profile);
+  if (playerProfileState.tab === 'status') renderPlayerProfileStatus(profile);
+  if (playerProfileState.tab === 'docs') renderPlayerProfileDocs(profile);
+}
+
+function renderPlayerProfileOverview(profile) {
+  const el = document.getElementById('playerProfileOverview');
+  if (!el) return;
+  const stats = profile.stats || {};
+  const live = profile.buckeye || {};
+  const liveInfo = live.info?.snapshot?.raw || live.info?.snapshot || {};
+  const livePerf = live.performance?.data || [];
+  const liveName = [liveInfo.NameFirst, liveInfo.NameLast].filter(Boolean).join(' ') || null;
+  const liveStatus = liveInfo.Active === 'Y' ? 'Active' : (liveInfo.Active === 'N' ? 'Suspended' : null);
+  const liveCurrency = liveInfo.Currency?.split(' ')[0] || liveInfo.Currency || null;
+  const liveBalance = Number(liveInfo.CurrentBalance || 0) / 100;
+  const livePending = Number(liveInfo.PendingWagerBalance || 0) / 100;
+  const livePendingCount = Number(liveInfo.PendingWagerCount || 0);
+  const liveCredit = Number(liveInfo.CreditLimit || 0) / 100;
+  const liveSuspend = liveInfo.SuspendAccount === 'Y';
+  const liveVip = liveInfo.VigDiscountPercent || liveInfo.VIP || null;
+  const account = getLatestAccountSnapshot(profile);
+  const playerId = profile.playerId || playerProfileState.playerId || 'Player';
+  const accessLogs = profile.accessLogs || [];
+  const flags = profile.flags || [];
+  const notes = profile.notes || [];
+  const wagers = profile.recentWagers || [];
+  const weeklyPnl = profile.weeklyPnl || [];
+  const sportBreakdown = profile.sportBreakdown || [];
+  const agentContext = profile.agentContext || {};
+  const assignedAgent = profile.agent || agentContext.assigned || {};
+  const allAgents = Array.isArray(profile.allAgents) ? profile.allAgents : (agentContext.lineage || []);
+  const displayName = liveName || playerId;
+  const displayStatus = liveStatus || account.account_status || 'Active from wagers';
+  const displayCurrency = liveCurrency || account.currency || 'Unknown';
+  let liveRisk = Number(stats.riskScore || 0);
+  if (live.hasLiveData) {
+    liveRisk = Math.min(100, Math.round(
+      (Number(stats.totalVolume || 0) >= 50000 ? 70 : Number(stats.totalVolume || 0) / 750)
+      + (Math.max(Number(stats.totalRisk || 0), Number(liveInfo.CreditLimit || 0) / 100) >= 50000 ? 25 : Math.max(Number(stats.totalRisk || 0), Number(liveInfo.CreditLimit || 0) / 100) / 2500)
+      + Math.min(10, Math.abs(liveBalance) / 5000)
+      + (liveSuspend ? 15 : 0)
+      + (livePendingCount > 5 ? 5 : 0)
+    ));
+  }
+  const risk = liveRisk;
+
+  el.innerHTML = `
+    <div class="profile-intel-layout">
+      <!-- LEFT COLUMN -->
+      <section class="profile-intel-column">
+        <!-- Identity Card -->
+        <div class="intel-identity-card-v2">
+          <div class="intel-identity-head">
+            <div class="intel-avatar-v2">${escapeHtml(playerProfileInitials(displayName))}<div class="intel-avatar-status"></div></div>
+            <div class="min-w-0">
+              <div class="intel-eyebrow">Player Identity ${live.hasLiveData ? '<span class="intel-live-dot" style="margin-left:6px;display:inline-block;vertical-align:middle;"></span>' : ''}</div>
+              <h3>${escapeHtml(displayName)}${live.hasLiveData ? ' <span class="intel-chip live" style="font-size:10px;vertical-align:middle;margin-left:6px;">Buckeye Live</span>' : ''}</h3>
+              <div class="intel-pill-row">
+                <span class="intel-chip ${accessLogs.length ? 'live' : 'probe'}">${accessLogs.length ? 'Active trail' : 'No access trail'}</span>
+                <span class="intel-chip">${escapeHtml(assignedAgent.login || stats.agentLogin || account.agent_login || 'No agent')}</span>
+                ${assignedAgent.level ? `<button type="button" class="intel-chip" onclick="setPlayerProfileTab('agent')">L${escapeHtml(assignedAgent.level)} ${escapeHtml(assignedAgent.agentType || '')}</button>` : ''}
+              </div>
+            </div>
+          </div>
+          <div class="intel-kv-list">
+            ${intelKvRow('Account Status', displayStatus)}
+            ${intelKvRow('AgentID', assignedAgent.agentId || stats.agentId || 'Not linked')}
+            ${intelKvRow('Parent Agent', allAgents.length > 1 ? `${allAgents[allAgents.length - 2].login} (${allAgents[allAgents.length - 2].agentId})` : 'Root / none')}
+            ${intelKvRow('Agent Players', assignedAgent.playerCount ? Number(assignedAgent.playerCount).toLocaleString() : '0')}
+            ${intelKvRow('KYC Level', liveInfo.KycLevel || liveInfo.kycLevel || account.kyc_level || 'Needs customer-info probe')}
+            ${intelKvRow('VIP Tier', liveVip || account.vip_status || 'Not captured')}
+            ${intelKvRow('Last Active', latestPlayerActivity(profile))}
+            ${intelKvRow('Currency', displayCurrency)}
+            ${intelKvRow('App / Device', accessLogs[0]?.device || 'Access payload pending')}
+          </div>
+        </div>
+
+        <!-- Risk Score -->
+        <div class="intel-glass-card">
+          <div class="intel-card-title">
+            <span>Risk Score</span>
+            <strong class="${risk >= 70 ? 'danger' : risk >= 40 ? 'warn' : 'good'}">${risk}<small>/100</small></strong>
+          </div>
+          <div class="intel-risk-meter-v2"><div class="intel-risk-meter-v2-fill" style="width:${Math.min(100, Math.max(0, risk))}%;"></div></div>
+          <div class="intel-risk-scale"><span>Low</span><span>Medium</span><span>High</span></div>
+          <div class="intel-risk-factors">${renderRiskFactors(profile)}</div>
+        </div>
+
+        <!-- Active Flags -->
+        <div class="intel-glass-card">
+          <div class="intel-section-header">
+            <h3>Active Flags</h3>
+            <button type="button" class="intel-text-action" onclick="setPlayerProfileTab('notes')">+ Add</button>
+          </div>
+          ${renderArtifactFlags(flags)}
+        </div>
+
+        <!-- Operator Notes -->
+        <div class="intel-glass-card">
+          <div class="intel-section-header">
+            <h3>Operator Notes</h3>
+            <button type="button" class="intel-text-action" onclick="focusPlayerNoteComposer()">+ Add</button>
+          </div>
+          ${renderArtifactNotes(notes)}
+        </div>
+
+        <!-- Key Statistics Grid -->
+        <div class="intel-stat-grid">
+          ${artifactStatCard('Total Volume', formatCompactDollars(stats.totalVolume), 'fa-coins', '#0ea5e9', 'up', '12.4% this month')}
+          ${artifactStatCard('Open Bets', live.hasLiveData ? `${livePendingCount.toLocaleString()}` : Number(stats.openBets || 0).toLocaleString(), 'fa-fire', '#f43f5e', null, live.hasLiveData ? `${formatCompactDollars(livePending)} pending` : `${formatCompactDollars(stats.openExposure || 0)} exposure`)}
+          ${artifactStatCard('Win Rate', `${Number(stats.winRate || 0).toFixed(1)}%`, 'fa-chart-pie', '#10b981', 'up', '3.2% vs avg')}
+          ${artifactStatCard('Favorite Sport', stats.favoriteSport || 'Unknown', 'fa-trophy', '#8b5cf6', null, 'Volume leader')}
+        </div>
+
+        <!-- Advanced Metrics -->
+        <div class="intel-glass-card">
+          <div class="intel-card-title"><span>Advanced Metrics</span><small>derived</small></div>
+          <div class="intel-advanced-grid">
+            ${intelMiniMetric('Avg Stake', formatCompactDollars(stats.avgStake || stats.avgWager), '')}
+            ${intelMiniMetric('CLV %', `${Number(stats.clvPercent || 0).toFixed(2)}%`, 'estimated')}
+            ${intelMiniMetric('Past Posting', `${Number(stats.pastPostingRate || 0).toFixed(1)}%`, `${Number(stats.patternHits || 0)} flags`)}
+            ${intelMiniMetric('Stale Hits', Number(stats.staleLineHits || 0).toLocaleString(), 'last archive')}
+          </div>
+        </div>
+
+        <!-- Agent Assignment -->
+        <div class="intel-glass-card">
+          <div class="intel-section-header">
+            <h3>Agent Assignment</h3>
+            <button type="button" class="intel-text-action" onclick="setPlayerProfileTab('agent')">Open Tree</button>
+          </div>
+          ${renderAgentAssignmentCard(agentContext)}
+        </div>
+
+        <!-- Volume by Sport -->
+        <div class="intel-glass-card">
+          <div class="intel-card-title"><span>Volume By Sport</span><small>${Number(sportBreakdown.length).toLocaleString()} sports</small></div>
+          ${renderSportVolumeBars(sportBreakdown)}
+        </div>
+      </section>
+
+      <!-- MIDDLE COLUMN -->
+      <section class="profile-intel-column">
+        <!-- Live Wager Feed -->
+        <div class="intel-glass-card intel-feed-panel">
+          <div class="intel-card-title">
+            <span>Live Wager Feed</span>
+            <div class="intel-pill-row">
+              <span class="intel-chip live"><span class="intel-live-dot"></span>Live</span>
+              <button type="button" class="intel-text-action" onclick="exportPlayerProfileCsv('wagers')">CSV</button>
+            </div>
+          </div>
+          <div class="intel-wager-feed-v2 intel-scroll">${renderArtifactWagerFeed(wagers)}</div>
+        </div>
+
+        <!-- 4-Week P&L Trend -->
+        <div class="intel-glass-card">
+          <div class="intel-card-title"><span>4-Week P&L Trend</span><small>${livePerf.length ? 'Buckeye live' : 'archive'}</small></div>
+          <div class="intel-chart-container"><canvas id="playerMiniPnlChart"></canvas></div>
+          ${livePerf.length ? renderLivePnlSummary(livePerf) : renderWeeklyPnlSummary(weeklyPnl)}
+        </div>
+
+        <!-- CLV Analysis -->
+        <div class="intel-glass-card">
+          <div class="intel-card-title"><span>Closing Line Value</span><strong class="${Number(stats.clvPercent || 0) >= 0 ? 'good' : 'danger'}">${Number(stats.clvPercent || 0).toFixed(2)}%</strong></div>
+          ${renderClvBySport(profile)}
+        </div>
+      </section>
+
+      <!-- RIGHT COLUMN -->
+      <section class="profile-intel-column">
+        <!-- Linked Accounts -->
+        <div class="intel-glass-card">
+          <div class="intel-section-header">
+            <h3>Linked Accounts</h3>
+            <span class="badge" style="background:rgba(244,63,94,.1);color:#f43f5e;border:1px solid rgba(244,63,94,.2);">${(profile.links || []).length} found</span>
+          </div>
+          ${renderArtifactLinkedAccounts(profile)}
+        </div>
+
+        <!-- Access Logs -->
+        <div class="intel-glass-card intel-access-panel">
+          <div class="intel-section-header">
+            <h3>Access Logs</h3>
+            <button type="button" class="intel-text-action" onclick="exportPlayerProfileCsv('access')">CSV</button>
+          </div>
+          <div class="intel-access-list intel-scroll">${renderArtifactAccessLogs(profile)}</div>
+        </div>
+
+        <!-- Login Locations -->
+        <div class="intel-glass-card">
+          <div class="intel-card-title"><span>Login Locations</span><small>last 10</small></div>
+          ${renderArtifactGeoDistribution(profile)}
+        </div>
+
+        <!-- Quick Actions -->
+        <div class="intel-glass-card">
+          <div class="intel-card-title"><span>Quick Actions</span><small>profile</small></div>
+          <div class="intel-action-list">
+            <button type="button" class="intel-action-btn-v2" onclick="exportPlayerProfileCsv('wagers')"><span class="action-icon" style="color:#f43f5e;"><i class="fa-solid fa-ban"></i></span><span class="action-label">Suspend Account</span></button>
+            <button type="button" class="intel-action-btn-v2" onclick="exportPlayerProfileCsv('wagers')"><span class="action-icon" style="color:#0ea5e9;"><i class="fa-solid fa-file-export"></i></span><span class="action-label">Export History</span></button>
+            <button type="button" class="intel-action-btn-v2" onclick="focusPlayerFlagComposer()"><span class="action-icon" style="color:#8b5cf6;"><i class="fa-solid fa-user-shield"></i></span><span class="action-label">Escalate to Compliance</span></button>
+            <button type="button" class="intel-action-btn-v2" onclick="checkPlayerMultiAccounts()"><span class="action-icon" style="color:#10b981;"><i class="fa-solid fa-envelope"></i></span><span class="action-label">Send Notification</span></button>
+          </div>
+        </div>
+      </section>
+    </div>`;
+  renderPlayerMiniPnlChart(weeklyPnl);
+}
+
+function profileStatCard(label, value) {
+  return `<div class="profile-stat-card"><div class="profile-stat-label">${label}</div><div class="profile-stat-value">${value}</div></div>`;
+}
+
+/* ===== ARTIFACT-STYLE RENDER HELPERS ===== */
+
+function artifactStatCard(label, value, icon, color, deltaDir, deltaText) {
+  const deltaHtml = deltaDir
+    ? `<span class="delta ${deltaDir}"><i class="fa-solid fa-arrow-${deltaDir}"></i>${escapeHtml(deltaText)}</span>`
+    : (deltaText ? `<span class="delta" style="color:var(--text-dim);">${escapeHtml(deltaText)}</span>` : '');
+  return `<div class="intel-stat-card-v2">
+    <div class="icon-wrap" style="background:${color}18;color:${color};"><i class="fa-solid ${icon}"></i></div>
+    <div class="label">${escapeHtml(label)}</div>
+    <div class="value">${escapeHtml(value || '0')}</div>
+    ${deltaHtml}
+  </div>`;
+}
+
+function renderArtifactFlags(flags) {
+  if (!flags.length) return '<div class="intel-empty">No manual flags yet.</div>';
+  const severityMap = { critical: 'critical', high: 'critical', warning: 'warning', warn: 'warning', medium: 'warning', info: 'info', low: 'info' };
+  return `<div class="intel-stack">${flags.slice(0, 3).map(flag => {
+    const sev = severityMap[(flag.severity || '').toLowerCase()] || 'info';
+    const colors = { critical: '#f43f5e', warning: '#f59e0b', info: '#8b5cf6' };
+    const c = colors[sev];
+    return `<div class="intel-flag-badge-v2 ${sev}">
+      <div class="flag-icon" style="color:${c};"><i class="fa-solid fa-flag"></i></div>
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
+          <span style="font-size:11px;font-weight:800;color:${c};">${escapeHtml(flag.label || flag.flag_type || 'Flag')}</span>
+          <span style="font-size:10px;color:var(--text-dim);">${escapeHtml(formatShortDateTime(flag.created_at))}</span>
+        </div>
+        <p style="margin:0;font-size:11px;color:var(--text);line-height:1.4;">${escapeHtml(flag.details || flag.status || 'Open')}</p>
+      </div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function renderArtifactNotes(notes) {
+  if (!notes.length) return '<div class="intel-empty">No notes yet. Add Telegram handles, VIP host context, or compliance notes from the Notes tab.</div>';
+  const typeColors = { 'VIP Host Note': '#0ea5e9', 'Compliance': '#f59e0b', 'Investigation': '#f43f5e', 'General': '#64748b' };
+  return `<div class="intel-stack">${notes.slice(0, 2).map(note => {
+    const typeColor = typeColors[note.note_type] || '#64748b';
+    return `<div class="intel-note-card-v2">
+      <div class="note-header">
+        <span class="note-type" style="color:${typeColor};">${escapeHtml(note.note_type || 'Note')}</span>
+        <span class="note-time">${escapeHtml(formatShortDateTime(note.created_at))}</span>
+      </div>
+      <p class="note-body">${escapeHtml(note.body || '')}</p>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function renderArtifactWagerFeed(wagers) {
+  if (!wagers.length) return '<div class="intel-empty">No wagers captured yet.</div>';
+  return wagers.slice(0, 12).map(row => {
+    const w = normalizeBackendWager(row);
+    const flags = row.pattern_flags || row.patternFlags || [];
+    const pattern = intelWagerPattern(row, flags);
+    const clv = Number(row.clv_percent ?? row.clvPercent ?? 0);
+    const sport = w.Sport || parseSport(w.ShortDesc) || 'Unknown';
+    const sportColors = { NBA: '#f97316', NFL: '#f59e0b', Soccer: '#10b981', NHL: '#06b6d4', Tennis: '#84cc16', MLB: '#ef4444' };
+    const sportBg = { NBA: 'rgba(249,115,22,.12)', NFL: 'rgba(245,158,11,.12)', Soccer: 'rgba(16,185,129,.12)', NHL: 'rgba(6,182,212,.12)', Tennis: 'rgba(132,204,22,.12)', MLB: 'rgba(239,68,68,.12)' };
+    const sc = sportColors[sport] || '#64748b';
+    const sb = sportBg[sport] || 'rgba(100,116,139,.12)';
+    return `<div class="intel-wager-card-v2 ${pattern.className}">
+      <div style="display:flex;align-items:start;gap:8px;">
+        <div class="intel-sport-token-v2" style="background:${sb};color:${sc};">${escapeHtml(String(sport).slice(0, 3).toUpperCase())}</div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;">
+            <div style="min-width:0;">
+              <strong style="font-size:12px;color:var(--text);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(parseDescription(w.ShortDesc) || w.WagerType || 'Wager')}</strong>
+              <span style="font-size:10px;color:var(--text-dim);display:block;margin-top:2px;">${escapeHtml(w.WagerType || 'Ticket')} · #${escapeHtml(w.WagerNumber || '-')}</span>
+            </div>
+            <div style="text-align:right;flex:0 0 auto;">
+              <strong style="font-size:12px;color:var(--text);font-family:var(--font-mono,monospace);">${formatCompactDollars(w.AmountWagered)}</strong>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:6px;padding-top:6px;border-top:1px solid rgba(148,163,184,.1);font-size:10px;color:var(--text-dim);">
+            <span>${escapeHtml(formatShortDateTime(w.InsertDateTime))}</span>
+            <span>To win ${escapeHtml(formatCompactDollars(w.ToWinAmount))}</span>
+            ${pattern.label ? `<span class="intel-pattern-pill ${pattern.key}">${escapeHtml(pattern.label)}</span>` : ''}
+            ${clv ? `<span class="${clv >= 0 ? 'good' : 'danger'}">CLV ${clv.toFixed(2)}%</span>` : ''}
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderArtifactLinkedAccounts(profile) {
+  const links = profile.links || [];
+  if (!links.length) return '<div class="intel-empty">No linked accounts detected yet. Run a check to compare shared IP and device evidence.</div>';
+  return `<div class="intel-stack">${links.slice(0, 4).map(row => {
+    const other = row.player_a === profile.playerId ? row.player_b : row.player_a;
+    const encodedOther = encodeURIComponent(String(other || ''));
+    const reasonColors = { 'IP Shared': '#f59e0b', 'Device Shared': '#8b5cf6', 'Email Match': '#f43f5e', 'Phone Match': '#0ea5e9' };
+    const rc = reasonColors[row.reason] || '#64748b';
+    return `<div class="intel-linked-card-v2" onclick="openPlayerProfileModal(decodeURIComponent('${encodedOther}'))">
+      <div class="linked-header">
+        <span class="linked-id">${escapeHtml(other || '-')}</span>
+        <span class="linked-reason" style="background:${rc}18;color:${rc};border:1px solid ${rc}30;">${escapeHtml(row.reason || 'Link')}</span>
+      </div>
+      <p class="linked-meta">${escapeHtml(row.reason || 'Link evidence')}</p>
+      <div class="linked-stats">
+        <span>Risk: <strong style="color:${Number(row.confidence || 0) > 0.5 ? '#f43f5e' : '#f59e0b'};">${Math.round(Number(row.confidence || 0) * 100)}%</strong></span>
+        <span>Conf: <strong>${Math.round(Number(row.confidence || 0) * 100)}%</strong></span>
+      </div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function renderArtifactAccessLogs(profile) {
+  const logs = profile.accessLogs || [];
+  if (!logs.length) return '<div class="intel-empty">No access logs captured yet.</div>';
+  return logs.slice(0, 8).map(log => `<div class="intel-access-card-v2 ${log.isNewIp ? 'novel' : ''}">
+    <div class="access-header">
+      <div style="display:flex;align-items:center;gap:6px;">
+        <i class="fa-solid fa-location-dot" style="color:#0ea5e9;font-size:10px;"></i>
+        <span class="access-ip">${escapeHtml(log.ip_address || '-')}</span>
+        ${log.isNewIp ? '<span style="font-size:10px;padding:2px 6px;border-radius:999px;background:rgba(244,63,94,.1);color:#f43f5e;border:1px solid rgba(244,63,94,.2);font-weight:800;">NEW IP</span>' : ''}
+      </div>
+      <span class="access-status" style="color:${log.status === 'success' ? '#10b981' : '#f43f5e'};"><i class="fa-solid ${log.status === 'success' ? 'fa-check-circle' : 'fa-circle-xmark'}"></i></span>
+    </div>
+    <p class="access-meta">${escapeHtml(log.geo || 'Unknown geo')} · ${escapeHtml(log.isp || 'Unknown ISP')} · ${escapeHtml(log.device || 'Unknown device')}</p>
+    <div class="access-footer">
+      <span style="color:var(--text-dim);">${escapeHtml(formatShortDateTime(log.access_datetime))}</span>
+      <span style="padding:2px 6px;border-radius:999px;background:rgba(100,116,139,.15);color:var(--text-dim);font-weight:800;font-size:10px;">${escapeHtml(log.operation || log.log_type || 'access')}</span>
+    </div>
+  </div>`).join('');
+}
+
+function renderArtifactGeoDistribution(profile) {
+  const logs = profile.accessLogs || [];
+  if (!logs.length) return '<div class="intel-empty">No geo distribution available.</div>';
+  const counts = new Map();
+  for (const log of logs) counts.set(log.geo || 'Unknown', (counts.get(log.geo || 'Unknown') || 0) + 1);
+  const max = Math.max(...counts.values(), 1);
+  const colors = ['#0ea5e9', '#8b5cf6', '#f59e0b', '#10b981', '#f43f5e', '#06b6d4'];
+  return `<div class="intel-stack">${[...counts.entries()].slice(0, 5).map(([geo, count], i) => {
+    const pct = Math.round((count / max) * 100);
+    const c = colors[i % colors.length];
+    const code = geo.split(',')[0]?.slice(0, 2).toUpperCase() || '??';
+    return `<div class="intel-geo-row-v2">
+      <div class="intel-geo-flag" style="background:${c}18;color:${c};">${escapeHtml(code)}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+          <span style="font-size:11px;color:var(--text);font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(geo)}</span>
+          <span style="font-size:11px;color:var(--text-dim);font-family:var(--font-mono,monospace);">${count}</span>
+        </div>
+        <div class="intel-geo-bar-track"><div class="intel-geo-bar-fill" style="width:${pct}%;background:${c};"></div></div>
+      </div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function renderMiniWagerList(wagers) {
+  if (!wagers.length) return '<div class="text-sm" style="color:var(--text-dim);">No wagers yet.</div>';
+  return `<div class="space-y-2">${wagers.slice(0, 8).map(row => {
+    const w = normalizeBackendWager(row);
+    return `<div class="flex items-center justify-between gap-3 text-xs border-b pb-2" style="border-color:var(--border);">
+      <div class="min-w-0"><div class="font-mono">#${escapeHtml(w.WagerNumber)}</div><div class="truncate" style="color:var(--text-dim);">${escapeHtml(parseDescription(w.ShortDesc))}</div></div>
+      <div class="font-mono">$${Math.round(w.AmountWagered).toLocaleString()}</div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function renderSportVolumeBars(sports) {
+  if (!sports.length) return '<div class="text-sm" style="color:var(--text-dim);">No sport volume yet.</div>';
+  const max = Math.max(...sports.map(row => Number(row.volume || 0)), 1);
+  return `<div class="space-y-3">${sports.slice(0, 7).map(row => {
+    const volume = Number(row.volume || 0);
+    const pct = Math.max(3, Math.round((volume / max) * 100));
+    return `<div>
+      <div class="flex items-center justify-between text-xs mb-1">
+        <span>${escapeHtml(row.sport || 'Unknown')}</span>
+        <span class="font-mono" style="color:var(--text-dim);">$${Math.round(volume).toLocaleString()}</span>
+      </div>
+      <div class="sport-volume-track"><div class="sport-volume-fill" style="width:${pct}%;"></div></div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function getLatestAccountSnapshot(profile) {
+  return (profile.accountSnapshots || [])[0] || {};
+}
+
+function playerProfileInitials(playerId) {
+  const clean = String(playerId || 'PL').replace(/[^a-z0-9]/gi, '');
+  return (clean.slice(0, 2) || 'PL').toUpperCase();
+}
+
+function latestPlayerActivity(profile) {
+  const latestAccess = profile.accessLogs?.[0]?.access_datetime;
+  const latestWager = profile.stats?.lastWagerAt || profile.recentWagers?.[0]?.insert_datetime || profile.recentWagers?.[0]?.insert_date_time;
+  const latest = latestAccess || latestWager;
+  return latest ? timeAgo(latest) : 'No activity captured';
+}
+
+function intelKvRow(label, value) {
+  return `<div class="intel-kv-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || '-')}</strong></div>`;
+}
+
+function intelStatCard(label, value, subtext) {
+  return `<div class="intel-stat-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || '0')}</strong><small>${escapeHtml(subtext || '')}</small></div>`;
+}
+
+function intelMiniMetric(label, value, subtext) {
+  return `<div class="intel-mini-metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || '0')}</strong>${subtext ? `<small>${escapeHtml(subtext)}</small>` : ''}</div>`;
+}
+
+function renderAgentAssignmentCard(agentContext) {
+  const agent = agentContext?.assigned;
+  if (!agent) return '<div class="intel-empty">No real agent row is linked to this player yet.</div>';
+  const parent = (agentContext.lineage || []).length > 1 ? agentContext.lineage[agentContext.lineage.length - 2] : null;
+  const rates = agent.rates || {};
+  return `<div class="agent-assignment-card">
+    <div class="agent-assignment-head">
+      <div>
+        <div class="intel-eyebrow">Assigned Agent</div>
+        <strong>${escapeHtml(agent.login || agent.agentId)}</strong>
+        <small>${escapeHtml(agent.agentId || '')}</small>
+      </div>
+      <button type="button" class="profile-action-button" onclick="openAgentTreeFromProfile('${escapeJs(agent.agentId || agent.login || '')}')">Tree</button>
+    </div>
+    <div class="intel-advanced-grid">
+      ${intelMiniMetric('Level', agent.level ? `L${agent.level}` : '-', agent.agentType === 'M' ? 'Master' : 'Agent')}
+      ${intelMiniMetric('Parent', parent ? parent.login : 'Root', parent ? parent.agentId : '')}
+      ${intelMiniMetric('Players', Number(agent.playerCount || 0).toLocaleString(), `${Number(agent.childCount || 0)} child agents`)}
+      ${intelMiniMetric('Head Rate', `${Number(rates.headCount || 0).toFixed(2)}%`, `Inet ${Number(rates.inetHeadCount || 0).toFixed(2)}%`)}
+    </div>
+  </div>`;
+}
+
+async function refreshPlayerAgentContext(playerId) {
+  if (!playerId || playerProfileState.agentContextLoading) return;
+  playerProfileState.agentContextLoading = true;
+  try {
+    const payload = await fetchJson(`${getApiBaseUrl()}/api/players/${encodeURIComponent(playerId)}/agent-context`);
+    if (playerProfileState.profile && payload?.agentContext) {
+      playerProfileState.profile.agentContext = payload.agentContext;
+      playerProfileState.profile.stats = {
+        ...(playerProfileState.profile.stats || {}),
+        agentId: payload.agentContext.assigned?.agentId || playerProfileState.profile.stats?.agentId || '',
+        agentLogin: payload.agentContext.assigned?.login || playerProfileState.profile.stats?.agentLogin || '',
+        agentLevel: payload.agentContext.assigned?.level || playerProfileState.profile.stats?.agentLevel || null,
+        agentType: payload.agentContext.assigned?.agentType || playerProfileState.profile.stats?.agentType || '',
+        parentAgentId: payload.agentContext.assigned?.parentAgentId || playerProfileState.profile.stats?.parentAgentId || '',
+        parentAgentLogin: payload.agentContext.lineage?.length > 1 ? payload.agentContext.lineage[payload.agentContext.lineage.length - 2]?.login || '' : '',
+        agentPlayerCount: payload.agentContext.assigned?.playerCount || 0,
+      };
+      if (['overview', 'agent'].includes(playerProfileState.tab)) renderPlayerProfile();
+    }
+  } catch (err) {
+    console.warn('[Players] Agent context refresh failed:', err?.message || err);
+  } finally {
+    playerProfileState.agentContextLoading = false;
+  }
+}
+
+function renderPlayerProfileAgent(profile) {
+  const el = document.getElementById('playerProfileAgent');
+  if (!el) return;
+  const context = profile.agentContext || {};
+  const agent = profile.agent || context.assigned;
+  if (!agent) {
+    refreshPlayerAgentContext(profile.playerId || playerProfileState.playerId);
+    el.innerHTML = '<div class="profile-doc-panel"><h3>No Agent Link</h3><p class="text-sm" style="color:var(--text-dim);">Checking the real Buckeye agent-context endpoint for this player.</p></div>';
+    return;
+  }
+  const lineage = Array.isArray(profile.allAgents) ? profile.allAgents : (context.lineage || []);
+  const children = context.children || [];
+  const siblings = context.siblings || [];
+  const roots = context.roots || [];
+  const stats = context.treeStats || {};
+  const filter = String(playerProfileState.agentFilter || '').trim().toLowerCase();
+  const filteredChildren = filterAgentNodes(children, filter);
+  const filteredSiblings = filterAgentNodes(siblings, filter);
+  el.innerHTML = `<div class="profile-chart-card mb-3">
+    <div class="profile-action-row">
+      <div>
+        <h3 class="text-sm font-semibold mb-1">Real Agent Hierarchy</h3>
+        <div class="text-xs" style="color:var(--text-dim);">${Number(stats.totalAgents || 0).toLocaleString()} real agents · ${Number(stats.maxLevel || 0)} levels · roots ${roots.map(r => r.login).join(', ')}</div>
+      </div>
+      <button type="button" class="profile-action-button" onclick="openAgentTreeFromProfile('${escapeJs(agent.agentId)}')">Open Network Tree</button>
+    </div>
+    <div class="mt-3">
+      <input class="profile-filter-input" type="search" aria-label="Filter agent hierarchy" placeholder="Search child or sibling agents" value="${escapeHtml(playerProfileState.agentFilter || '')}" oninput="setPlayerAgentFilter(this.value)">
+    </div>
+  </div>
+  <div class="grid grid-cols-3 gap-3 mb-3">
+    ${profileStatCard('Assigned Agent', `${escapeHtml(agent.login)}<small class="block font-mono">${escapeHtml(agent.agentId)}</small>`)}
+    ${profileStatCard('Level / Type', `L${escapeHtml(agent.level)} ${escapeHtml(agent.agentType)}`)}
+    ${profileStatCard('Player Count', Number(agent.playerCount || 0).toLocaleString())}
+  </div>
+  <div class="grid grid-cols-2 gap-4">
+    <div class="profile-chart-card">
+      <h3 class="text-sm font-semibold mb-3">Root To Player Agent</h3>
+      ${renderAgentLineage(lineage, agent.agentId)}
+    </div>
+    <div class="profile-chart-card">
+      <h3 class="text-sm font-semibold mb-3">Commission Rates</h3>
+      ${renderAgentRates(agent)}
+    </div>
+  </div>
+  <div class="grid grid-cols-2 gap-4 mt-4">
+    <div class="profile-chart-card">
+      <h3 class="text-sm font-semibold mb-3">Direct Child Agents</h3>
+      ${renderAgentNodeList(filteredChildren, 'No direct child agents.')}
+    </div>
+    <div class="profile-chart-card">
+      <h3 class="text-sm font-semibold mb-3">Sibling Agents</h3>
+      ${renderAgentNodeList(filteredSiblings, 'No sibling agents under the same parent.')}
+    </div>
+  </div>
+  ${renderAgentComplianceSection([...lineage, ...children, ...siblings, ...roots])}`;
+}
+
+function filterAgentNodes(nodes, filter) {
+  if (!filter) return nodes || [];
+  return (nodes || []).filter(node => `${node.login || ''} ${node.agentId || ''} ${node.agentType || ''} ${node.level || ''}`.toLowerCase().includes(filter));
+}
+
+const setPlayerAgentFilter = debounce((value) => {
+  playerProfileState.agentFilter = value || '';
+  if (playerProfileState.tab === 'agent') renderPlayerProfile();
+}, 150);
+
+function renderAgentLineage(lineage, activeAgentId) {
+  if (!lineage.length) return '<div class="intel-empty">Lineage unavailable.</div>';
+  return `<div class="agent-lineage-list" role="tree" aria-label="Agent lineage">${lineage.map((node, index) => `<div class="agent-lineage-row ${node.agentId === activeAgentId ? 'active' : ''}" role="treeitem" aria-level="${index + 1}" aria-expanded="true">
+    <span class="agent-lineage-depth">${index + 1}</span>
+    <div>
+      <strong>${escapeHtml(node.login || node.agentId)}</strong>
+      <small>${escapeHtml(node.agentId)} · L${escapeHtml(node.level)} · ${escapeHtml(node.agentType)}</small>
+    </div>
+    <span class="font-mono">${Number(node.playerCount || 0).toLocaleString()}</span>
+  </div>`).join('')}</div>`;
+}
+
+function renderAgentRates(agent) {
+  const rates = agent.rates || {};
+  const rows = [
+    ['HeadCountRateM', rates.headCount],
+    ['InetHeadCountRateM', rates.inetHeadCount],
+    ['CasinoHeadCountRateM', rates.casinoHeadCount],
+    ['LiveBettingRateM', rates.liveBetting],
+    ['LiveBetting2RateM', rates.liveBetting2],
+    ['LiveCasinoRateM', rates.liveCasino],
+    ['PropBuilderRateM', rates.propBuilder],
+    ['FlashBetsRate', rates.flashBets],
+    ['ExtPropsRate', rates.extProps],
+    ['CrashRate', rates.crash],
+    ['FantasyRate', rates.fantasy],
+    ['AmigoTechRate', rates.amigoTech],
+  ];
+  return `<div class="agent-rate-grid">${rows.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${Number(value || 0).toFixed(2)}</strong></div>`).join('')}</div>`;
+}
+
+function renderAgentComplianceSection(nodes) {
+  const unique = new Map();
+  (nodes || []).forEach(node => {
+    if (node?.agentId) unique.set(node.agentId, node);
+  });
+  const flat = [...unique.values()];
+  const topPlayers = [...flat].sort((a, b) => Number(b.playerCount || 0) - Number(a.playerCount || 0)).slice(0, 6);
+  const unusualRates = flat
+    .map(node => {
+      const rates = node.rates || {};
+      const maxRate = Math.max(
+        Number(rates.headCount || rates.HeadCountRateM || 0),
+        Number(rates.inetHeadCount || rates.InetHeadCountRateM || 0),
+        Number(rates.liveCasino || rates.LiveCasinoRateM || 0),
+        Number(rates.propBuilder || rates.PropBuilderRateM || 0)
+      );
+      return { ...node, maxRate };
+    })
+    .filter(node => node.maxRate >= 10)
+    .sort((a, b) => b.maxRate - a.maxRate)
+    .slice(0, 6);
+  const levels = flat.reduce((acc, node) => {
+    const level = `L${Number(node.level || 0) || '?'}`;
+    acc[level] = (acc[level] || 0) + 1;
+    return acc;
+  }, {});
+  const maxLevelCount = Math.max(1, ...Object.values(levels));
+  return `<div class="profile-chart-card mt-4">
+    <div class="profile-action-row mb-3">
+      <div>
+        <h3 class="text-sm font-semibold mb-1">Agent Risk</h3>
+        <div class="text-xs" style="color:var(--text-dim);">Compliance view from the flattened available agent branch.</div>
+      </div>
+    </div>
+    <div class="grid grid-cols-3 gap-3">
+      <div>
+        <div class="intel-eyebrow mb-2">Top Player Counts</div>
+        ${renderAgentNodeList(topPlayers, 'No agent player counts available.')}
+      </div>
+      <div>
+        <div class="intel-eyebrow mb-2">Unusual Rates</div>
+        ${unusualRates.length ? `<div class="agent-node-list">${unusualRates.map(node => `<div class="agent-node-row"><span><strong>${escapeHtml(node.login || node.agentId)}</strong><small>L${escapeHtml(node.level)} · max rate ${Number(node.maxRate || 0).toFixed(2)}</small></span></div>`).join('')}</div>` : '<div class="intel-empty">No unusual rates in this branch.</div>'}
+      </div>
+      <div>
+        <div class="intel-eyebrow mb-2">Level Distribution</div>
+        <div class="agent-level-bars">${Object.entries(levels).sort().map(([level, count]) => `<div><span>${escapeHtml(level)}</span><div class="exposure-bar"><div class="exposure-bar-fill" style="width:${(Number(count) / maxLevelCount) * 100}%;"></div></div><strong>${Number(count).toLocaleString()}</strong></div>`).join('')}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderAgentNodeList(nodes, emptyText) {
+  if (!nodes.length) return `<div class="intel-empty">${escapeHtml(emptyText)}</div>`;
+  return `<div class="agent-node-list" role="tree" aria-label="Agent branch">${nodes.slice(0, 80).map(node => `<button type="button" class="agent-node-row" role="treeitem" aria-expanded="${Number(node.childCount || 0) > 0 ? 'false' : 'undefined'}" onclick="openAgentTreeFromProfile('${escapeJs(node.agentId)}')">
+    <span><strong>${escapeHtml(node.login || node.agentId)}</strong><small>${escapeHtml(node.agentId)} · L${escapeHtml(node.level)} · ${escapeHtml(node.agentType)}</small></span>
+    <span class="font-mono">${Number(node.playerCount || 0).toLocaleString()}</span>
+  </button>`).join('')}</div>`;
+}
+
+function openAgentTreeFromProfile(agentId) {
+  closePlayerProfileModal(false);
+  switchSection('agentTree', getSidebarButton('agentTree'));
+  setTimeout(() => {
+    refreshAgentDownline(true).then(() => {
+      const target = agentTreeFlat.find(node => node.AgentID === agentId || node.agent === agentId);
+      if (target) {
+        let current = target;
+        while (current) {
+          current.expanded = true;
+          current = agentTreeFlat.find(node => (node.children || []).includes(current));
+        }
+        renderAgentTree(agentTreeData);
+        if (currentSection === 'agentTree') initAgentCanvas();
+      }
+    }).catch(() => {});
+  }, 0);
+}
+
+function renderRiskFactors(profile) {
+  const stats = profile.stats || {};
+  const accessLogs = profile.accessLogs || [];
+  const deposits = profile.deposits || [];
+  const agentContext = profile.agentContext || {};
+  const assignedAgent = agentContext.assigned || {};
+  const live = profile.buckeye || {};
+  const liveInfo = live.info?.snapshot?.raw || {};
+  const factors = [];
+  if (Number(stats.patternHits || 0) > 0) factors.push(['warn', `${Number(stats.patternHits || 0)} wager pattern flag${Number(stats.patternHits || 0) === 1 ? '' : 's'} detected`]);
+  if (accessLogs.some(row => row.isNewIp)) factors.push(['danger', `${accessLogs.filter(row => row.isNewIp).length} new IP login${accessLogs.filter(row => row.isNewIp).length === 1 ? '' : 's'} in profile window`]);
+  if (deposits.some(row => !row.ip_matched_login)) factors.push(['warn', 'Deposit IP mismatch needs review']);
+  if (liveInfo.SuspendAccount === 'Y') factors.push(['danger', 'Account suspended in Buckeye']);
+  if (Number(liveInfo.CurrentBalance || 0) < -1000000) factors.push(['danger', `Negative balance ${formatCompactDollars(Number(liveInfo.CurrentBalance || 0) / 100)}`]);
+  if (Number(liveInfo.PendingWagerCount || 0) > 5) factors.push(['warn', `${Number(liveInfo.PendingWagerCount || 0)} pending wagers`]);
+  if (assignedAgent.playerCount >= 250) factors.push(['warn', `Assigned agent carries ${Number(assignedAgent.playerCount).toLocaleString()} seeded players`]);
+  if ((agentContext.children || []).length >= 25) factors.push(['probe', `Agent has ${(agentContext.children || []).length} direct child agents; inspect cluster risk`]);
+  if (!profile.accountSnapshots?.length && !live.info?.snapshot) factors.push(['probe', 'Customer profile/KYC endpoint still needs probe confirmation']);
+  if (!factors.length) factors.push(['good', 'No high-signal risk factors in captured data']);
+  return factors.slice(0, 4).map(([level, text]) => `<div class="intel-risk-factor ${level}"><span></span>${escapeHtml(text)}</div>`).join('');
+}
+
+function renderCompactFlags(flags) {
+  if (!flags.length) return '<div class="intel-empty">No manual flags yet.</div>';
+  return `<div class="intel-stack">${flags.slice(0, 3).map(flag => `<div class="intel-flag-card ${escapeHtml(flag.severity || 'info')}">
+    <div><strong>${escapeHtml(flag.label || flag.flag_type || 'Flag')}</strong><small>${escapeHtml(formatShortDateTime(flag.created_at))}</small></div>
+    <p>${escapeHtml(flag.details || flag.status || 'Open')}</p>
+  </div>`).join('')}</div>`;
+}
+
+function renderCompactNotes(notes) {
+  if (!notes.length) return '<div class="intel-empty">No notes yet. Add Telegram handles, VIP host context, or compliance notes from the Notes tab.</div>';
+  return `<div class="intel-stack">${notes.slice(0, 2).map(note => `<div class="intel-note-card">
+    <div><strong>${escapeHtml(note.note_type || 'Note')}</strong><small>${escapeHtml(formatShortDateTime(note.created_at))}</small></div>
+    <p>${escapeHtml(note.body || '')}</p>
+  </div>`).join('')}</div>`;
+}
+
+function renderIntelWagerFeed(wagers) {
+  if (!wagers.length) return '<div class="intel-empty">No wagers captured yet.</div>';
+  return wagers.slice(0, 12).map(row => renderIntelWagerCard(row)).join('');
+}
+
+function renderIntelWagerCard(row) {
+  const w = normalizeBackendWager(row);
+  const flags = row.pattern_flags || row.patternFlags || [];
+  const pattern = intelWagerPattern(row, flags);
+  const clv = Number(row.clv_percent ?? row.clvPercent ?? 0);
+  const sport = w.Sport || parseSport(w.ShortDesc) || 'Unknown';
+  return `<div class="intel-wager-card ${pattern.className}">
+    <div class="intel-wager-main">
+      <div class="intel-sport-token">${escapeHtml(String(sport).slice(0, 3).toUpperCase())}</div>
+      <div class="min-w-0">
+        <strong>${escapeHtml(parseDescription(w.ShortDesc) || w.WagerType || 'Wager')}</strong>
+        <span>${escapeHtml(w.WagerType || 'Ticket')} · #${escapeHtml(w.WagerNumber || '-')}</span>
+      </div>
+      <div class="intel-wager-amount">${formatCompactDollars(w.AmountWagered)}</div>
+    </div>
+    <div class="intel-wager-meta">
+      <span>${escapeHtml(formatShortDateTime(w.InsertDateTime))}</span>
+      <span>To win ${escapeHtml(formatCompactDollars(w.ToWinAmount))}</span>
+      ${pattern.label ? `<span class="intel-pattern-pill ${pattern.key}">${escapeHtml(pattern.label)}</span>` : ''}
+      ${clv ? `<span class="${clv >= 0 ? 'good' : 'danger'}">CLV ${clv.toFixed(2)}%</span>` : ''}
+    </div>
+  </div>`;
+}
+
+function intelWagerPattern(row, flags) {
+  const text = Array.isArray(flags) ? flags.join(' ').toLowerCase() : '';
+  const clv = Math.abs(Number(row.clv_percent ?? row.clvPercent ?? 0));
+  if (text.includes('past')) return { key: 'pastpost', label: 'Past post', className: 'pattern-pastpost' };
+  if (text.includes('stale')) return { key: 'stale', label: 'Stale', className: 'pattern-stale' };
+  if (text.includes('burst')) return { key: 'burst', label: 'Burst', className: 'pattern-burst' };
+  if (text.includes('clv') || clv >= 3) return { key: 'clv', label: 'CLV', className: 'pattern-clv' };
+  return { key: '', label: '', className: '' };
+}
+
+function renderWeeklyPnlSummary(weeklyPnl) {
+  if (!weeklyPnl.length) return '<div class="intel-empty mt-3">No weekly P&L buckets yet.</div>';
+  const total = weeklyPnl.reduce((sum, row) => sum + Number(row.pnl || 0), 0);
+  const best = weeklyPnl.reduce((max, row) => Math.max(max, Number(row.pnl || 0)), Number.NEGATIVE_INFINITY);
+  const worst = weeklyPnl.reduce((min, row) => Math.min(min, Number(row.pnl || 0)), Number.POSITIVE_INFINITY);
+  return `<div class="intel-summary-strip">
+    <span>Net <strong class="${total >= 0 ? 'good' : 'danger'}">${formatCompactDollars(total)}</strong></span>
+    <span>Best <strong class="good">${formatCompactDollars(best)}</strong></span>
+    <span>Worst <strong class="danger">${formatCompactDollars(worst)}</strong></span>
+  </div>`;
+}
+
+function renderLivePnlSummary(livePerf) {
+  if (!livePerf.length) return '<div class="intel-empty mt-3">No live P&L data.</div>';
+  const entries = livePerf.map(row => ({
+    date: row.Date || '',
+    pnl: (Number(row.Won || 0) - Number(row.Lost || 0)) / 100,
+  }));
+  const total = entries.reduce((sum, row) => sum + row.pnl, 0);
+  const best = entries.reduce((max, row) => Math.max(max, row.pnl), Number.NEGATIVE_INFINITY);
+  const worst = entries.reduce((min, row) => Math.min(min, row.pnl), Number.POSITIVE_INFINITY);
+  return `<div class="intel-summary-strip">
+    <span>Net <strong class="${total >= 0 ? 'good' : 'danger'}">${formatCompactDollars(total)}</strong></span>
+    <span>Best <strong class="good">${formatCompactDollars(best)}</strong></span>
+    <span>Worst <strong class="danger">${formatCompactDollars(worst)}</strong></span>
+    <span style="color:var(--text-dim);font-size:10px;">${entries.length} days</span>
+  </div>`;
+}
+
+function renderClvBySport(profile) {
+  const wagers = profile.recentWagers || [];
+  const bySport = new Map();
+  for (const row of wagers) {
+    const w = normalizeBackendWager(row);
+    const sport = w.Sport || parseSport(w.ShortDesc) || 'Unknown';
+    const clv = Number(row.clv_percent ?? row.clvPercent ?? 0);
+    if (!bySport.has(sport)) bySport.set(sport, { count: 0, clv: 0 });
+    const bucket = bySport.get(sport);
+    bucket.count += 1;
+    bucket.clv += clv;
+  }
+  const rows = [...bySport.entries()].slice(0, 5);
+  if (!rows.length) return '<div class="intel-empty">No CLV samples yet. True CLV remains estimated until closing-line fields are confirmed.</div>';
+  return `<div class="intel-stack">${rows.map(([sport, row]) => {
+    const avg = row.count ? row.clv / row.count : 0;
+    return `<div class="intel-clv-row">
+      <span>${escapeHtml(sport)}</span>
+      <strong class="${avg >= 0 ? 'good' : 'danger'}">${avg >= 0 ? '+' : ''}${avg.toFixed(2)}%</strong>
+      <small>${row.count} bets</small>
+    </div>`;
+  }).join('')}</div>
+  <div class="intel-footnote">Estimated from archived wager payloads unless Buckeye returns confirmed closing-line fields.</div>`;
+}
+
+function renderLinkedAccountCards(profile) {
+  const links = profile.links || [];
+  if (!links.length) return '<div class="intel-empty">No linked accounts detected yet. Run a check to compare shared IP and device evidence.</div>';
+  return `<div class="intel-stack">${links.slice(0, 4).map(row => {
+    const other = row.player_a === profile.playerId ? row.player_b : row.player_a;
+    const encodedOther = encodeURIComponent(String(other || ''));
+    return `<button type="button" class="intel-linked-card" onclick="openPlayerProfileModal(decodeURIComponent('${encodedOther}'))">
+      <span>${escapeHtml(other || '-')}</span>
+      <small>${escapeHtml(row.reason || 'Link evidence')}</small>
+      <strong>${Math.round(Number(row.confidence || 0) * 100)}%</strong>
+    </button>`;
+  }).join('')}</div>`;
+}
+
+function renderAccessLogCards(profile) {
+  const logs = profile.accessLogs || [];
+  if (!logs.length) return '<div class="intel-empty">No access logs captured yet.</div>';
+  return logs.slice(0, 8).map(log => `<div class="intel-access-card ${log.isNewIp ? 'novel' : ''}">
+    <div><strong>${escapeHtml(log.ip_address || '-')}</strong>${log.isNewIp ? '<span>New IP</span>' : ''}</div>
+    <p>${escapeHtml(log.geo || 'Unknown geo')} · ${escapeHtml(log.device || 'Unknown device')}</p>
+    <small>${escapeHtml(formatShortDateTime(log.access_datetime))} · ${escapeHtml(log.operation || log.log_type || 'access')}</small>
+  </div>`).join('');
+}
+
+function renderGeoDistribution(profile) {
+  const logs = profile.accessLogs || [];
+  if (!logs.length) return '<div class="intel-empty">No geo distribution available.</div>';
+  const counts = new Map();
+  for (const log of logs) counts.set(log.geo || 'Unknown', (counts.get(log.geo || 'Unknown') || 0) + 1);
+  const max = Math.max(...counts.values(), 1);
+  return `<div class="intel-stack">${[...counts.entries()].slice(0, 4).map(([geo, count]) => {
+    const pct = Math.round((count / max) * 100);
+    return `<div class="intel-location-row">
+      <div><span>${escapeHtml(geo)}</span><strong>${count}</strong></div>
+      <div class="intel-location-track"><div style="width:${pct}%;"></div></div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function focusPlayerFlagComposer() {
+  setPlayerProfileTab('notes');
+  setTimeout(() => document.getElementById('playerFlagLabel')?.focus(), 0);
+}
+
+function focusPlayerNoteComposer() {
+  setPlayerProfileTab('notes');
+  setTimeout(() => document.getElementById('playerNoteBody')?.focus(), 0);
+}
+
+function renderPlayerProfileWagers(profile) {
+  const el = document.getElementById('playerProfileWagers');
+  if (!el) return;
+  const virtual = getVirtualHistoryRows(profile.recentWagers || [], 'wagers');
+  const wagers = virtual.rows;
+  const pageSize = playerProfileState.wagerPageSize;
+  const pageCount = Math.max(1, Math.ceil(wagers.length / pageSize));
+  playerProfileState.wagerPage = Math.min(playerProfileState.wagerPage, pageCount);
+  const start = (playerProfileState.wagerPage - 1) * pageSize;
+  const rows = wagers.slice(start, start + pageSize);
+  el.innerHTML = `
+    <div class="rounded-lg border overflow-auto" style="border-color:var(--border);">
+      <table class="profile-table">
+        <thead><tr><th>#</th><th>Type</th><th>Description</th><th>Flags</th><th class="text-right">CLV</th><th class="text-right">Wagered</th><th class="text-right">To Win</th><th>Sport</th><th>Time</th></tr></thead>
+        <tbody>${rows.map((row, idx) => playerProfileWagerRow(row, idx === 0 && row.__live)).join('') || '<tr><td colspan="9" class="text-center" style="color:var(--text-dim);">No wagers found.</td></tr>'}</tbody>
+      </table>
+    </div>
+    ${virtual.moreHtml}
+    <div class="profile-pager">
+      <button class="px-2 py-1 rounded text-xs" style="background:var(--panel);border:1px solid var(--border);" onclick="setPlayerWagerPage(${playerProfileState.wagerPage - 1})">Prev</button>
+      <span class="text-xs" style="color:var(--text-dim);">Page ${playerProfileState.wagerPage} of ${pageCount}</span>
+      <button class="px-2 py-1 rounded text-xs" style="background:var(--panel);border:1px solid var(--border);" onclick="setPlayerWagerPage(${playerProfileState.wagerPage + 1})">Next</button>
+    </div>`;
+}
+
+function playerProfileWagerRow(row, isLive = false) {
+  const w = normalizeBackendWager(row);
+  const flags = row.pattern_flags || row.patternFlags || [];
+  const clv = Number(row.clv_percent ?? row.clvPercent ?? 0);
+  return `<tr class="${[isLive ? 'player-live-row' : '', patternRowClass(row)].filter(Boolean).join(' ')}">
+    <td class="font-mono">${escapeHtml(w.WagerNumber)}</td>
+    <td>${escapeHtml(w.WagerType || '-')}</td>
+    <td style="max-width:520px;"><div class="truncate" title="${escapeHtml(w.ShortDesc)}">${escapeHtml(parseDescription(w.ShortDesc))}</div></td>
+    <td>${renderPatternPills(flags)}</td>
+    <td class="text-right font-mono ${clv >= 0 ? 'clv-positive' : 'clv-negative'}">${clv ? `${clv.toFixed(2)}%` : '-'}</td>
+    <td class="text-right font-mono">$${Math.round(w.AmountWagered).toLocaleString()}</td>
+    <td class="text-right font-mono">$${Math.round(w.ToWinAmount).toLocaleString()}</td>
+    <td>${escapeHtml(w.Sport || parseSport(w.ShortDesc))}</td>
+    <td style="color:var(--text-dim);">${formatShortDateTime(w.InsertDateTime)}</td>
+  </tr>`;
+}
+
+function renderPatternPills(flags) {
+  if (!Array.isArray(flags) || !flags.length) return '<span style="color:var(--text-dim);">-</span>';
+  return flags.slice(0, 3).map(flag => `<span class="pattern-flag-pill">${escapeHtml(String(flag).replace(/_/g, ' '))}</span>`).join('');
+}
+
+function patternRowClass(row) {
+  const severity = row.pattern_severity || row.patternSeverity || '';
+  if (severity === 'critical') return 'pattern-row-critical';
+  if (severity === 'warning') return 'pattern-row-warning';
+  if (severity === 'watch') return 'pattern-row-watch';
+  return '';
+}
+
+function setPlayerWagerPage(page) {
+  const wagers = playerProfileState.profile?.recentWagers || [];
+  const pageCount = Math.max(1, Math.ceil(wagers.length / playerProfileState.wagerPageSize));
+  playerProfileState.wagerPage = Math.min(Math.max(1, page), pageCount);
+  renderPlayerProfileWagers(playerProfileState.profile);
+}
+
+function renderPlayerProfileAccess(profile) {
+  const el = document.getElementById('playerProfileAccess');
+  if (!el) return;
+  const virtual = getVirtualHistoryRows(profile.accessLogs || [], 'access');
+  const logs = virtual.rows;
+  el.innerHTML = `<div class="rounded-lg border overflow-auto" style="border-color:var(--border);">
+    <table class="profile-table">
+      <thead><tr><th>Time</th><th>IP</th><th>Flag</th><th>Device</th><th>Geo</th><th>Operation</th></tr></thead>
+      <tbody>${logs.map(log => `<tr class="${log.isNewIp ? 'new-ip-row' : ''}">
+        <td style="color:var(--text-dim);">${formatShortDateTime(log.access_datetime)}</td>
+        <td class="font-mono">${escapeHtml(log.ip_address)}</td>
+        <td>${log.isNewIp ? '<span class="new-ip-pill px-2 py-0.5 rounded text-xs">New IP</span>' : '<span style="color:var(--text-dim);">Known</span>'}</td>
+        <td>${escapeHtml(log.device || '-')}</td>
+        <td>${escapeHtml(log.geo || '-')}</td>
+        <td>${escapeHtml(log.operation || log.log_type || '-')}</td>
+      </tr>`).join('') || '<tr><td colspan="6" class="text-center" style="color:var(--text-dim);">No access logs found.</td></tr>'}</tbody>
+    </table>
+  </div>${virtual.moreHtml}`;
+}
+
+function renderPlayerProfilePerformance(profile) {
+  const el = document.getElementById('playerProfilePerformance');
+  if (!el) return;
+  const live = profile.buckeye || {};
+  const livePerf = live.performance?.data || [];
+  const liveChartHtml = livePerf.length ? `
+    <div class="profile-chart-card mb-4">
+      <h3 class="text-sm font-semibold mb-3">30-Day P&L (Buckeye Live) <span class="intel-live-dot" style="display:inline-block;vertical-align:middle;margin-left:6px;"></span></h3>
+      <div class="profile-chart-box"><canvas id="playerLivePnlChart"></canvas></div>
+      ${renderLivePnlSummary(livePerf)}
+    </div>` : '';
+  el.innerHTML = `
+    ${liveChartHtml}
+    <div class="grid grid-cols-2 gap-4">
+      <div class="profile-chart-card">
+        <h3 class="text-sm font-semibold mb-3">4-Week P&L</h3>
+        <div class="profile-chart-box"><canvas id="playerPerformanceLineChart"></canvas></div>
+      </div>
+      <div class="profile-chart-card">
+        <h3 class="text-sm font-semibold mb-3">Sport Breakdown</h3>
+        <div class="profile-chart-box"><canvas id="playerSportDonutChart"></canvas></div>
+      </div>
+    </div>`;
+  renderPlayerPerformanceCharts(profile);
+  if (livePerf.length) renderPlayerLivePnlChart(livePerf);
+}
+
+function renderPlayerProfileDeposits(profile) {
+  const el = document.getElementById('playerProfileDeposits');
+  if (!el) return;
+  const virtual = getVirtualHistoryRows(profile.deposits || [], 'deposits');
+  const deposits = virtual.rows;
+  const txVirtual = getVirtualHistoryRows(profile.transactions || [], 'transactions');
+  const transactions = txVirtual.rows;
+  el.innerHTML = `<div class="profile-chart-card mb-3">
+    <h3 class="text-sm font-semibold mb-1">Deposit Intelligence</h3>
+    <div class="text-xs" style="color:var(--text-dim);">Deposits are filtered from real Buckeye transaction candidates. The combined transaction ledger is shown below for audit context.</div>
+  </div>
+  <div class="rounded-lg border overflow-auto" style="border-color:var(--border);">
+    <table class="profile-table">
+      <thead><tr><th>Time</th><th class="text-right">Amount</th><th>Method</th><th>Currency</th><th>IP</th><th>Login IP Match</th><th>Status</th></tr></thead>
+      <tbody>${deposits.map(row => `<tr class="${row.ip_matched_login ? '' : 'deposit-mismatch-row'}">
+        <td style="color:var(--text-dim);">${formatShortDateTime(row.transaction_time)}</td>
+        <td class="text-right font-mono">$${Math.round(Number(row.amount || 0)).toLocaleString()}</td>
+        <td>${escapeHtml(row.method || '-')}</td>
+        <td>${escapeHtml(row.currency || '-')}</td>
+        <td class="font-mono">${escapeHtml(row.ip_address || '-')}</td>
+        <td>${row.ip_matched_login ? '<span style="color:var(--green);">Matched</span>' : '<span style="color:var(--yellow);">Unmatched</span>'}</td>
+        <td>${escapeHtml(row.status || '-')}</td>
+      </tr>`).join('') || profileEmptyRow('No deposits captured yet. Run the Buckeye transaction probe before enabling a poller.', 7)}</tbody>
+    </table>
+  </div>${virtual.moreHtml}
+  <div class="profile-chart-card mt-4 mb-3">
+    <h3 class="text-sm font-semibold mb-1">Transaction Ledger</h3>
+    <div class="text-xs" style="color:var(--text-dim);">Raw account movements from Buckeye getTransactionList/getTransactionHistory/getReportDeletedTransactions, normalized to dollars and classified without fabricating deposit rows.</div>
+  </div>
+  <div class="rounded-lg border overflow-auto" style="border-color:var(--border);">
+    <table class="profile-table">
+      <thead><tr><th>Time</th><th>Document</th><th>Category</th><th>Description</th><th class="text-right">Amount</th><th class="text-right">Balance</th><th>Entered By</th></tr></thead>
+      <tbody>${transactions.map(row => `<tr>
+        <td style="color:var(--text-dim);">${formatShortDateTime(row.transaction_time)}</td>
+        <td class="font-mono">${escapeHtml(row.document_number || row.id || '-')}</td>
+        <td>${profileStatusChip(row.category || 'other')}</td>
+        <td>${escapeHtml(row.description || '-')}</td>
+        <td class="text-right font-mono">$${Math.round(Number(row.amount || 0)).toLocaleString()}</td>
+        <td class="text-right font-mono">$${Math.round(Number(row.balance || 0)).toLocaleString()}</td>
+        <td>${escapeHtml(row.entered_by || '-')}</td>
+      </tr>`).join('') || profileEmptyRow('No transaction ledger rows captured yet for this player.', 7)}</tbody>
+    </table>
+  </div>${txVirtual.moreHtml}`;
+}
+
+function renderPlayerProfileTransactions(profile) {
+  const el = document.getElementById('playerProfileTransactions');
+  if (!el) return;
+  const live = profile.buckeye || {};
+  const txResult = live.transactions || {};
+  const archived = profile.transactions || [];
+  const isLive = Boolean(txResult.rows?.length || txResult.data?.LIST?.length);
+
+  let sourceRows = [];
+  let sourceLabel = 'Archived';
+  let sourceDesc = 'From database archive (player_transactions table).';
+  if (isLive) {
+    const rows = txResult.rows || [];
+    const rawData = txResult.data || {};
+    const list = rawData.LIST || rawData.list || rawData.Rows || rawData.rows || [];
+    sourceRows = Array.isArray(list) && list.length ? list : rows;
+    sourceLabel = 'Live';
+    sourceDesc = 'Direct from Buckeye getTransactionList / getTransactionHistory / getReportDeletedTransactions.';
+  } else if (archived.length) {
+    sourceRows = archived.map(r => ({
+      DocumentNumber: r.document_number || r.id,
+      TranCode: r.tran_code,
+      TranType: r.tran_type,
+      Amount: (r.amount || 0) * 100,
+      Balance: (r.balance || 0) * 100,
+      ShortDesc: r.description,
+      EnteredBy: r.entered_by,
+      TranDateTime: r.transaction_time,
+      AgentID: r.agent_id,
+      Login: r.login,
+    }));
+  }
+
+  // Summary stats
+  let creditTotal = 0;
+  let debitTotal = 0;
+  let creditCount = 0;
+  let debitCount = 0;
+  sourceRows.forEach(r => {
+    const code = r.TranCode || r.tran_code || r.Code || r.code || '';
+    const amt = Number(r.Amount || r.amount || r.TransactionAmount || r.transactionAmount || 0) / 100;
+    if (code === 'C' || code === 'c') { creditTotal += amt; creditCount++; }
+    else if (code === 'D' || code === 'd') { debitTotal += amt; debitCount++; }
+  });
+
+  // Build table rows
+  const tableRows = sourceRows.map(r => {
+    const doc = r.DocumentNumber || r.documentNumber || r.document_number || r.DocNo || r.id || '-';
+    const code = r.TranCode || r.tran_code || r.Code || r.code || '-';
+    const type = r.TranType || r.tran_type || r.Type || r.type || '-';
+    const desc = r.ShortDesc || r.shortDesc || r.Description || r.description || r.Details || r.details || '-';
+    const amt = Number(r.Amount || r.amount || r.TransactionAmount || r.transactionAmount || 0) / 100;
+    const balance = Number(r.Balance || r.balance || 0) / 100;
+    const entered = r.EnteredBy || r.enteredBy || r.entered_by || '-';
+    const date = r.TranDateTime || r.tranDateTime || r.TransactionTime || r.transactionTime || r.Date || r.date || r.transaction_time || '';
+    const isCredit = code === 'C' || code === 'c';
+    const amountClass = isCredit ? 'color:var(--green);' : (code === 'D' || code === 'd') ? 'color:var(--red);' : '';
+    const amountPrefix = isCredit ? '+' : '';
+    return `<tr>
+      <td style="color:var(--text-dim);font-size:11px;">${escapeHtml(String(date).split(' ')[0] || '-')}</td>
+      <td class="font-mono" style="font-size:11px;">${escapeHtml(String(doc))}</td>
+      <td><span class="profile-status-chip" style="${amountClass}font-size:10px;padding:1px 6px;">${escapeHtml(code)}</span></td>
+      <td style="font-size:11px;">${escapeHtml(type)}</td>
+      <td style="font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(desc)}">${escapeHtml(desc)}</td>
+      <td class="text-right font-mono" style="font-size:11px;${amountClass}">${amountPrefix}$${Math.abs(amt).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+      <td class="text-right font-mono" style="font-size:11px;color:var(--text-dim);">$${balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+      <td style="font-size:11px;color:var(--text-dim);">${escapeHtml(entered).trim() || '-'}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `<div class="profile-chart-card mb-3">
+    <div class="flex items-center justify-between">
+      <h3 class="text-sm font-semibold mb-0">${sourceLabel} Transaction Ledger</h3>
+      ${txResult.fetchedAt ? `<span class="text-xs" style="color:var(--text-dim);">Fetched ${formatShortDateTime(txResult.fetchedAt)}</span>` : ''}
+    </div>
+    <div class="text-xs mt-1" style="color:var(--text-dim);">${sourceDesc} Credit (C) and Debit (D) rows with document numbers, descriptions, and running balance.</div>
+    <div class="flex gap-3 mt-2">
+      <div class="px-2 py-1 rounded text-xs" style="background:var(--panel);border:1px solid var(--border);">
+        <span style="color:var(--text-dim);">Rows</span> <strong>${sourceRows.length.toLocaleString()}</strong>
+      </div>
+      <div class="px-2 py-1 rounded text-xs" style="background:var(--panel);border:1px solid var(--border);">
+        <span style="color:var(--green);">Credits</span> <strong>${creditCount}</strong> <span style="color:var(--text-dim);">$${creditTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+      </div>
+      <div class="px-2 py-1 rounded text-xs" style="background:var(--panel);border:1px solid var(--border);">
+        <span style="color:var(--red);">Debits</span> <strong>${debitCount}</strong> <span style="color:var(--text-dim);">$${debitTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+      </div>
+    </div>
+  </div>
+  <div class="rounded-lg border overflow-auto" style="border-color:var(--border);">
+    <table class="profile-table">
+      <thead><tr>
+        <th>Date</th><th>Document</th><th>Code</th><th>Type</th><th>Description</th><th class="text-right">Amount</th><th class="text-right">Balance</th><th>Entered By</th>
+      </tr></thead>
+      <tbody>${tableRows || profileEmptyRow('No transaction ledger rows available for this player.', 8)}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderPlayerProfileAccount(profile) {
+  const el = document.getElementById('playerProfileAccount');
+  if (!el) return;
+  const snapshots = profile.accountSnapshots || [];
+  const live = profile.buckeye || {};
+  const liveInfo = live.info?.snapshot?.raw || {};
+  const hasLive = Boolean(liveInfo.CreditLimit);
+  const liveSummary = hasLive ? `
+    <div class="profile-chart-card mb-3">
+      <h3 class="text-sm font-semibold mb-2">Live Account Summary <span class="intel-live-dot" style="display:inline-block;vertical-align:middle;margin-left:6px;"></span></h3>
+      <div class="grid grid-cols-3 gap-3">
+        ${profileStatCard('Credit Limit', formatCompactDollars(Number(liveInfo.CreditLimit || 0) / 100))}
+        ${profileStatCard('Current Balance', `<span class="${Number(liveInfo.CurrentBalance || 0) < 0 ? 'danger' : 'good'}">${formatCompactDollars(Number(liveInfo.CurrentBalance || 0) / 100)}</span>`)}
+        ${profileStatCard('Pending Wagers', `${Number(liveInfo.PendingWagerCount || 0).toLocaleString()} <small>($${formatCompactDollars(Number(liveInfo.PendingWagerBalance || 0) / 100)})</small>`)}
+        ${profileStatCard('Carry Over', formatCompactDollars(Number(liveInfo.CarryOverAmount || 0) / 100))}
+        ${profileStatCard('Settle Figure', formatCompactDollars(Number(liveInfo.SettleFigure || 0) / 100))}
+        ${profileStatCard('Temp Credit', formatCompactDollars(Number(liveInfo.TempCreditAdj || 0) / 100))}
+      </div>
+    </div>` : '';
+  el.innerHTML = `${liveSummary}
+  <div class="profile-chart-card mb-3">
+    <h3 class="text-sm font-semibold mb-1">Customer Account Snapshots</h3>
+    <div class="text-xs" style="color:var(--text-dim);">PII fields are stored masked for display. Raw source payloads remain preserved server-side.</div>
+  </div>
+  <div class="profile-chart-card mb-3">
+    <h3 class="text-sm font-semibold mb-2">KYC Document Status</h3>
+    ${renderKycTimeline(snapshots)}
+  </div>
+  <div class="rounded-lg border overflow-auto" style="border-color:var(--border);">
+    <table class="profile-table">
+      <thead><tr><th>Snapshot</th><th>KYC</th><th>VIP</th><th>Email</th><th>Phone</th><th>Currency</th><th>Source</th></tr></thead>
+      <tbody>${snapshots.map(row => `<tr>
+        <td style="color:var(--text-dim);">${formatShortDateTime(row.snapshot_time)}</td>
+        <td>${escapeHtml(row.kyc_level || '-')}</td>
+        <td>${escapeHtml(row.vip_status || '-')}</td>
+        <td>${escapeHtml(row.email_masked || '-')}</td>
+        <td>${escapeHtml(row.phone_masked || '-')}</td>
+        <td>${escapeHtml(row.currency || '-')}</td>
+        <td>${escapeHtml(row.source || '-')}</td>
+      </tr>`).join('') || profileEmptyRow('No account snapshots captured yet. Use the customer-info probe to validate source fields.', 7)}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderKycTimeline(snapshots) {
+  if (!snapshots.length) return '<div class="text-xs" style="color:var(--text-dim);">No KYC documents or verification timeline captured yet.</div>';
+  return `<div class="space-y-2">${snapshots.slice(0, 5).map(row => `<div class="flex items-center justify-between gap-3 text-xs">
+    <div><span class="font-semibold">${escapeHtml(row.kyc_level || 'Unspecified')}</span><span style="color:var(--text-dim);"> · ${escapeHtml(row.source || 'snapshot')}</span></div>
+    <div class="font-mono" style="color:var(--text-dim);">${formatShortDateTime(row.snapshot_time)}</div>
+  </div>`).join('')}</div>`;
+}
+
+function renderPlayerProfileLinks(profile) {
+  const el = document.getElementById('playerProfileLinks');
+  if (!el) return;
+  const links = profile.links || [];
+  el.innerHTML = `<div class="profile-chart-card mb-3">
+    <div class="profile-action-row">
+      <div>
+        <h3 class="text-sm font-semibold mb-1">Possible Linked Accounts</h3>
+        <div class="text-xs" style="color:var(--text-dim);">Shared-IP detection checks the last 30 days of access logs and stores matches in player_links.</div>
+      </div>
+      <button type="button" class="profile-action-button" onclick="checkPlayerMultiAccounts()">Check Multi-Accounts</button>
+    </div>
+  </div>
+  <div class="rounded-lg border overflow-auto" style="border-color:var(--border);">
+    <table class="profile-table">
+      <thead><tr><th>Detected</th><th>Other Player</th><th>Reason</th><th>Confidence</th><th>Status</th></tr></thead>
+      <tbody>${links.map(row => {
+        const other = row.player_a === profile.playerId ? row.player_b : row.player_a;
+        return `<tr>
+          <td style="color:var(--text-dim);">${formatShortDateTime(row.detected_at)}</td>
+          <td class="font-mono">${escapeHtml(other || '-')}</td>
+          <td>${escapeHtml(row.reason || '-')}</td>
+          <td class="font-mono">${Math.round(Number(row.confidence || 0) * 100)}%</td>
+          <td>${escapeHtml(row.status || '-')}</td>
+        </tr>`;
+      }).join('') || profileEmptyRow('No linked accounts detected yet.', 5)}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderPlayerProfileNotes(profile) {
+  const el = document.getElementById('playerProfileNotes');
+  if (!el) return;
+  const flagVirtual = getVirtualHistoryRows(profile.flags || [], 'notes');
+  const noteVirtual = getVirtualHistoryRows(profile.notes || [], 'notes');
+  const flags = flagVirtual.rows;
+  const notes = noteVirtual.rows;
+  el.innerHTML = `
+  <div class="profile-mini-form">
+    <select id="playerFlagSeverity">
+      <option value="info">Info</option>
+      <option value="warning">Warning</option>
+      <option value="high">High</option>
+      <option value="critical">Critical</option>
+    </select>
+    <input id="playerFlagLabel" placeholder="Flag label">
+    <input id="playerFlagDetails" placeholder="Compliance detail">
+    <button type="button" onclick="createPlayerFlag()">Add Flag</button>
+  </div>
+  <div class="profile-mini-form">
+    <select id="playerNoteType">
+      <option value="general">General</option>
+      <option value="telegram">Telegram</option>
+      <option value="vip_host">VIP Host</option>
+      <option value="kyc">KYC</option>
+    </select>
+    <input id="playerNoteBody" placeholder="Note, Telegram handle, or operator context">
+    <span></span>
+    <button type="button" onclick="createPlayerNote()">Add Note</button>
+  </div>
+  <div class="grid grid-cols-2 gap-4">
+    <div class="profile-chart-card">
+      <h3 class="text-sm font-semibold mb-3">Manual Flags</h3>
+      <table class="profile-table">
+        <thead><tr><th>Created</th><th>Severity</th><th>Label</th><th>Status</th></tr></thead>
+        <tbody>${flags.map(row => `<tr>
+          <td style="color:var(--text-dim);">${formatShortDateTime(row.created_at)}</td>
+          <td>${escapeHtml(row.severity || '-')}</td>
+          <td>${escapeHtml(row.label || '-')}</td>
+          <td>${escapeHtml(row.status || '-')}</td>
+        </tr>`).join('') || profileEmptyRow('No manual flags yet.', 4)}</tbody>
+      </table>
+      ${flagVirtual.moreHtml}
+    </div>
+    <div class="profile-chart-card">
+      <h3 class="text-sm font-semibold mb-3">Operator Notes</h3>
+      <table class="profile-table">
+        <thead><tr><th>Created</th><th>Type</th><th>Note</th></tr></thead>
+        <tbody>${notes.map(row => `<tr>
+          <td style="color:var(--text-dim);">${formatShortDateTime(row.created_at)}</td>
+          <td>${escapeHtml(row.note_type || '-')}</td>
+          <td>${escapeHtml(row.body || '')}</td>
+        </tr>`).join('') || profileEmptyRow('No notes yet.', 3)}</tbody>
+      </table>
+      ${noteVirtual.moreHtml}
+    </div>
+  </div>`;
+}
+
+function renderPlayerProfileStatus(profile) {
+  const el = document.getElementById('playerProfileStatus');
+  if (!el) return;
+  profile = profile || { playerId: getActivePlayerProfileId(), stats: {} };
+  const playerId = profile.playerId || playerProfileState.playerId || getStatusPlayerId();
+  const mapReady = playerProfileState.statusMap?.playerId === playerId;
+  const checksReady = Array.isArray(playerProfileState.statusEndpointChecks) && playerProfileState.statusEndpointChecks.length > 0;
+  if (!mapReady || !checksReady) {
+    el.innerHTML = `<div class="profile-skeleton-grid" aria-busy="true" aria-label="Checking Player 360 status">
+      <div class="profile-skeleton"></div>
+      <div class="profile-skeleton skeleton-wide"></div>
+      <div class="profile-skeleton skeleton-wide"></div>
+    </div>`;
+    if (!playerProfileState.statusLoading) loadPlayerProfileStatus(playerId);
+    return;
+  }
+
+  const map = playerProfileState.statusMap;
+  const checks = playerProfileState.statusEndpointChecks;
+  const missingSources = (map.sources || []).filter(source => sourceHealth(source).state === 'missing');
+  const staleSources = (map.sources || []).filter(source => sourceHealth(source).state === 'stale');
+  const downEndpoints = checks.filter(check => !check.ok);
+  const latestSeen = latestProfileSourceSeen(map.sources || []);
+  const tabRows = buildProfileTabCoverage(map, checks);
+
+  el.innerHTML = `
+    <div class="profile-status-header">
+      <div>
+        <h3>Player 360 Status</h3>
+        <p>Endpoint health, source freshness, last seen data, and coverage gaps for ${escapeHtml(playerId)}.</p>
+      </div>
+      <div class="profile-status-actions">
+        <button type="button" class="profile-action-button" onclick="refreshPlayerProfileStatus()">Recheck</button>
+        <button type="button" class="profile-action-button" onclick="openSidebarStatusForPlayer()">Open Sidebar Status</button>
+      </div>
+    </div>
+
+    <div class="profile-status-summary">
+      ${profileStatusSummaryCard('Endpoints', `${checks.length - downEndpoints.length}/${checks.length}`, downEndpoints.length ? `${downEndpoints.length} down` : 'all reachable', downEndpoints.length ? 'danger' : 'good')}
+      ${profileStatusSummaryCard('Missing Sources', String(missingSources.length), missingSources.length ? 'coverage gaps' : 'none', missingSources.length ? 'danger' : 'good')}
+      ${profileStatusSummaryCard('Stale Sources', String(staleSources.length), staleSources.length ? 'check pollers' : 'fresh enough', staleSources.length ? 'warn' : 'good')}
+      ${profileStatusSummaryCard('Latest Seen', latestSeen ? formatShortDateTime(latestSeen) : '-', latestSeen ? timeAgo(latestSeen) : 'no source rows', latestSeen ? 'good' : 'warn')}
+    </div>
+
+    <div class="profile-doc-grid">
+      <div class="profile-doc-panel profile-doc-wide">
+        <h3>Profile Tab Coverage</h3>
+        <table class="profile-table">
+          <thead><tr><th>Tab</th><th>Status</th><th>Endpoints</th><th>Sources</th><th>Recent Update</th><th>Refresh Policy</th><th>Coverage Action</th></tr></thead>
+          <tbody>${tabRows.map(row => `<tr>
+            <td class="font-mono">${escapeHtml(row.tab)}</td>
+            <td>${profileStatusChip(row.status)}</td>
+            <td>${row.endpoints.map(endpoint => endpointHealthPill(endpoint)).join(' ')}</td>
+            <td>${row.sources.map(source => sourceHealthPill(source)).join(' ')}</td>
+            <td>${row.recentUpdateAt ? `${formatShortDateTime(row.recentUpdateAt)} <span style="color:var(--text-dim);">(${escapeHtml(row.recentUpdateSource || '')})</span>` : '-'}</td>
+            <td>${escapeHtml(row.refreshPolicySummary || '-')}</td>
+            <td>${escapeHtml(row.action)}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>
+
+      <div class="profile-doc-panel profile-doc-wide">
+        <h3>Endpoint Health</h3>
+        <table class="profile-table">
+          <thead><tr><th>Aspect</th><th>Route</th><th>Tab</th><th>Status</th><th>Latency</th><th>Sources</th></tr></thead>
+          <tbody>${checks.map(check => `<tr>
+            <td>${escapeHtml(check.aspect || check.label)}</td>
+            <td class="font-mono">${escapeHtml(check.path)}</td>
+            <td>${escapeHtml(check.tab || '-')}</td>
+            <td>${endpointHealthPill(check)}</td>
+            <td class="font-mono">${Number(check.ms || 0)}ms</td>
+            <td>${(check.sources || []).map(source => `<span class="profile-status-chip derived">${escapeHtml(source)}</span>`).join(' ')}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>
+
+      <div class="profile-doc-panel">
+        <h3>Source Freshness</h3>
+        <table class="profile-table">
+          <thead><tr><th>Source</th><th>Buckeye Endpoint</th><th>Status</th><th>Refresh Policy</th><th>Rows</th><th>Last Seen</th><th>Last Attempt</th><th>Next Refresh</th><th>Gap / Action</th></tr></thead>
+          <tbody>${(map.sources || []).map(source => {
+            const health = sourceHealth(source);
+            return `<tr>
+              <td class="font-mono">${escapeHtml(source.key || source.label)}</td>
+              <td>${escapeHtml(source.buckeyeEndpoint || '-')}</td>
+              <td>${profileStatusChip(health.state)}</td>
+              <td>${escapeHtml(source.refreshPolicy || '-')} / ${escapeHtml(source.scaleClass || '-')}</td>
+              <td class="font-mono">${Number(source.rowCount || 0).toLocaleString()}</td>
+              <td>${source.lastSeen ? `${formatShortDateTime(source.lastSeen)} <span style="color:var(--text-dim);">(${timeAgo(source.lastSeen)})</span>` : '-'}</td>
+              <td>${source.lastAttemptAt ? formatShortDateTime(source.lastAttemptAt) : '-'}</td>
+              <td>${source.nextRefreshAt ? formatShortDateTime(source.nextRefreshAt) : '-'}</td>
+              <td>${escapeHtml(source.gap || sourceStatusAction(source.key))}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>
+
+      <div class="profile-doc-panel">
+        <h3>Coverage Gaps</h3>
+        <table class="profile-table">
+          <thead><tr><th>Gap</th><th>Status</th><th>Action</th></tr></thead>
+          <tbody>${statusGapRows(map).map(gap => `<tr>
+            <td>${escapeHtml(gap.label)}</td>
+            <td>${profileStatusChip(gap.status)}</td>
+            <td>${escapeHtml(gap.action)}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>
+      <div class="profile-doc-panel profile-doc-wide">
+        <h3>Contract Mismatches</h3>
+        <table class="profile-table">
+          <thead><tr><th>Severity</th><th>Source</th><th>Status</th><th>Impacted Field</th><th>Correction</th></tr></thead>
+          <tbody>${(map.contractMismatches || []).map(row => `<tr>
+            <td>${escapeHtml(row.severity || '-')}</td>
+            <td class="font-mono">${escapeHtml(row.source || '-')}</td>
+            <td>${profileStatusChip(row.status || 'missing')}</td>
+            <td>${escapeHtml(row.field || '-')}</td>
+            <td>${escapeHtml(row.action || '-')}</td>
+          </tr>`).join('') || profileEmptyRow('No contract mismatches detected.', 5)}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+async function loadPlayerProfileStatus(playerId) {
+  playerProfileState.statusLoading = true;
+  try {
+    const [map, checks] = await Promise.all([
+      playerProfileState.intelligenceMap?.playerId === playerId ? playerProfileState.intelligenceMap : fetchPlayerIntelligenceMap(playerId),
+      checkPlayerProfileEndpoints(playerId),
+    ]);
+    if (playerProfileState.playerId !== playerId) return;
+    playerProfileState.intelligenceMap = map;
+    playerProfileState.statusMap = map;
+    playerProfileState.statusEndpointChecks = checks;
+    playerProfileState.statusLoading = false;
+    if (playerProfileState.tab === 'status') renderPlayerProfileStatus(playerProfileState.profile || { playerId, stats: {} });
+  } catch (err) {
+    playerProfileState.statusLoading = false;
+    const el = document.getElementById('playerProfileStatus');
+    if (el) el.innerHTML = `<div class="text-sm" style="color:var(--red);">Failed to load Player 360 status: ${escapeHtml(err?.message || err)}</div>`;
+  }
+}
+
+function refreshPlayerProfileStatus() {
+  const playerId = getActivePlayerProfileId();
+  if (!playerId) return;
+  playerProfileState.playerId = playerId;
+  playerProfileState.statusMap = null;
+  playerProfileState.statusEndpointChecks = [];
+  renderPlayerProfileStatus(playerProfileState.profile || { playerId, stats: {} });
+}
+
+async function checkPlayerProfileEndpoints(playerId) {
+  const endpoints = getPlayer360EndpointRegistry(playerId);
+  const results = await Promise.allSettled(endpoints.map(async (endpoint) => {
+    const start = performance.now();
+    const res = await fetch(`${getApiBaseUrl()}${endpoint.path}`);
+    return { ...endpoint, status: res.status, ok: res.status >= 200 && res.status < 400, ms: Math.round(performance.now() - start) };
+  }));
+  return results.map((result, index) => result.status === 'fulfilled'
+    ? result.value
+    : { ...endpoints[index], status: 0, ok: false, ms: 0 });
+}
+
+function buildProfileTabCoverage(map, checks) {
+  const byLabel = Object.fromEntries(checks.map(check => [check.label, check]));
+  const sourceMap = Object.fromEntries((map.sources || []).map(source => [source.key, source]));
+  const defaultRows = [
+    { tab: 'Overview', endpoints: ['Profile', 'Intel Map'], sources: ['wager_archive', 'agent_performance_snapshots', 'customer_snapshots', 'player_flags', 'player_notes'] },
+    { tab: 'Wager History', endpoints: ['Profile', 'Export Wagers'], sources: ['wager_archive'] },
+    { tab: 'Access Logs', endpoints: ['Profile', 'Export Access', 'Audit Access'], sources: ['access_logs'] },
+    { tab: 'Performance', endpoints: ['Profile'], sources: ['wager_archive', 'agent_performance_snapshots'] },
+    { tab: 'Deposits', endpoints: ['Deposits', 'Transactions'], sources: ['player_transactions', 'deleted_transactions', 'deposits', 'access_logs'] },
+    { tab: 'Account', endpoints: ['Snapshots'], sources: ['customer_snapshots'] },
+    { tab: 'Links', endpoints: ['Links'], sources: ['player_links', 'access_logs'] },
+    { tab: 'Notes', endpoints: ['Flags', 'Notes'], sources: ['player_flags', 'player_notes'] },
+    { tab: 'Status / Docs', endpoints: ['Intel Map'], sources: ['all'] },
+  ];
+  const rows = (map.tabCoverage || defaultRows).map(row => ({
+    ...row,
+    endpoints: row.endpoints || defaultRows.find(defaultRow => defaultRow.tab === row.tab)?.endpoints || ['Profile'],
+    sources: row.sources || defaultRows.find(defaultRow => defaultRow.tab === row.tab)?.sources || [],
+  }));
+  return rows.map(row => {
+    const endpoints = row.endpoints.map(label => byLabel[label]).filter(Boolean);
+    const sources = row.sources.includes('all') ? (map.sources || []) : row.sources.map(key => sourceMap[key]).filter(Boolean);
+    const down = endpoints.some(endpoint => !endpoint.ok);
+    const missing = sources.some(source => sourceHealth(source).state === 'missing');
+    const stale = sources.some(source => sourceHealth(source).state === 'stale');
+    const probe = sources.some(source => sourceHealth(source).state === 'probe');
+    const status = down || missing ? 'missing' : stale ? 'probe' : probe ? 'probe' : 'live';
+    return {
+      ...row,
+      endpoints,
+      sources,
+      status,
+      recentUpdateAt: row.recentUpdateAt || oldestSourceUpdate(sources)?.timestamp || null,
+      recentUpdateSource: row.recentUpdateSource || oldestSourceUpdate(sources)?.key || '',
+      weakestSource: row.weakestSource || weakestCoverageSource(sources)?.key || '',
+      refreshPolicySummary: row.refreshPolicySummary || Array.from(new Set(sources.map(source => source.refreshPolicy).filter(Boolean))).join(', '),
+      action: profileCoverageAction(row.tab, endpoints, sources),
+    };
+  });
+}
+
+function oldestSourceUpdate(sources) {
+  const timestamps = sources
+    .map(source => ({ key: source.key, value: source.lastSuccessAt || source.lastSeen }))
+    .filter(row => row.value)
+    .map(row => ({ key: row.key, value: row.value, time: new Date(row.value).getTime() }))
+    .filter(row => Number.isFinite(row.time))
+    .sort((a, b) => a.time - b.time);
+  return timestamps[0] ? { key: timestamps[0].key, timestamp: timestamps[0].value } : null;
+}
+
+function weakestCoverageSource(sources) {
+  return sources.find(source => ['error', 'missing', 'stale', 'probe'].includes(sourceHealth(source).state)) || sources[0] || null;
+}
+
+function profileCoverageAction(tab, endpoints, sources) {
+  const failedEndpoint = endpoints.find(endpoint => !endpoint.ok);
+  if (failedEndpoint) return `Repair route ${failedEndpoint.path}; ${tab} cannot fully hydrate while it returns ${failedEndpoint.status}.`;
+  const missingSource = sources.find(source => sourceHealth(source).state === 'missing');
+  if (missingSource) return sourceCoverageAction(missingSource);
+  const staleSource = sources.find(source => sourceHealth(source).state === 'stale');
+  if (staleSource) return `Latest ${staleSource.key} row is stale; inspect the Buckeye poller and watermarks.`;
+  const probeSource = sources.find(source => sourceHealth(source).state === 'probe');
+  if (probeSource) return sourceCoverageAction(probeSource);
+  return 'Coverage healthy for this tab.';
+}
+
+function sourceCoverageAction(source) {
+  const key = source?.key || '';
+  if (key === 'access_logs') return 'Run or repair getWebLog access polling for this player/agent; Access Logs and new-IP flags depend on it.';
+  if (key === 'deposits') return 'Probe Buckeye transaction endpoints, then enable deposit polling once a candidate returns rows.';
+  if (key === 'player_transactions') return 'Probe getTransactionList with acc=<player/account>&start= plus getTransactionHistory and getReportDeletedTransactions with customerID/startDate/endDate to populate the account ledger and classify deposit/withdrawal-like rows.';
+  if (key === 'deleted_transactions') return 'Probe getReportDeletedTransactions with customerID/startDate/endDate to surface deleted withdrawals, deposits, adjustments, DeletedBy, and Telegram Bot AID evidence.';
+  if (key === 'customer_snapshots') return 'Probe getInfoPlayer first, then customer-info endpoints to populate KYC, VIP, masked contact, and currency fields.';
+  if (key === 'agent_performance_snapshots') return 'Run getPerformancePlayer with acc=<player/account>&period=0, falling back to getAgentPerformance for broader agent context.';
+  if (key === 'player_links') return 'Run Check Multi-Accounts after access logs exist to derive shared-IP/device links.';
+  if (key === 'player_flags' || key === 'player_notes') return 'Manual overlay is available; add flags or notes when operators have context.';
+  return source?.gap || 'Investigate source freshness and endpoint coverage.';
+}
+
+function sourceHealth(source) {
+  if (source?.freshnessState) return { state: source.freshnessState };
+  const status = String(source?.status || 'missing').toLowerCase();
+  if (status === 'live' && source?.lastSeen) {
+    const age = Date.now() - new Date(source.lastSeen).getTime();
+    if (Number.isFinite(age) && age > 30 * 60 * 1000) return { state: 'stale' };
+  }
+  if (status === 'manual') return { state: 'manual' };
+  if (status === 'derived') return { state: 'derived' };
+  if (status === 'probe') return { state: 'probe' };
+  if (status === 'live') return { state: 'live' };
+  return { state: 'missing' };
+}
+
+function endpointHealthPill(endpoint) {
+  const status = endpoint?.ok ? 'live' : 'missing';
+  return `<span class="profile-status-chip ${status}" title="${escapeHtml(endpoint?.path || '')}">${escapeHtml(endpoint?.label || endpoint?.status || '-')}: ${escapeHtml(String(endpoint?.status ?? '-'))}</span>`;
+}
+
+function sourceHealthPill(source) {
+  const health = sourceHealth(source);
+  return `<span class="profile-status-chip ${health.state}" title="${escapeHtml(source?.gap || '')}">${escapeHtml(source?.key || '-')}</span>`;
+}
+
+function profileStatusSummaryCard(label, value, subtext, tone) {
+  return `<div class="profile-status-card ${tone}">
+    <span>${escapeHtml(label)}</span>
+    <strong>${escapeHtml(value)}</strong>
+    <small>${escapeHtml(subtext)}</small>
+  </div>`;
+}
+
+function latestProfileSourceSeen(sources) {
+  const timestamps = sources.map(source => source.lastSeen ? new Date(source.lastSeen).getTime() : 0).filter(Boolean);
+  if (!timestamps.length) return null;
+  return new Date(Math.max(...timestamps)).toISOString();
+}
+
+function statusGapRows(map) {
+  const sourceGaps = (map.sources || [])
+    .filter(source => ['missing', 'probe', 'stale'].includes(sourceHealth(source).state))
+    .map(source => ({
+      label: source.label || source.key,
+      status: sourceHealth(source).state,
+      action: sourceCoverageAction(source),
+    }));
+  const explicitGaps = (map.gaps || []).map(gap => ({
+    label: gap.label || gap.key,
+    status: gap.status || 'missing',
+    action: gap.detail || 'Investigate missing source.',
+  }));
+  return [...sourceGaps, ...explicitGaps];
+}
+
+function openSidebarStatusForPlayer() {
+  closePlayerProfileModal(false);
+  switchSection('status', getSidebarButton('status'));
+  loadStatusPage(true);
+}
+
+async function checkPlayerMultiAccounts() {
+  const playerId = playerProfileState.playerId;
+  if (!playerId) return;
+  try {
+    const body = await FactoryWager.apiFetch(`/players/${encodeURIComponent(playerId)}/links/check`, { method: 'POST' });
+    showToast(`Multi-account check complete: ${Number(body.inserted || 0)} new link${Number(body.inserted || 0) === 1 ? '' : 's'}`, 'success');
+    await refreshOpenPlayerProfile(playerId);
+    setPlayerProfileTab('links');
+  } catch (err) {
+    showToast(err?.message || 'Multi-account check failed', 'error');
+  }
+}
+
+async function createPlayerFlag() {
+  const playerId = playerProfileState.playerId;
+  if (!playerId) return;
+  const severity = document.getElementById('playerFlagSeverity')?.value || 'info';
+  const label = document.getElementById('playerFlagLabel')?.value?.trim() || 'Manual Review';
+  const details = document.getElementById('playerFlagDetails')?.value?.trim() || '';
+  try {
+    await FactoryWager.apiFetch(`/players/${encodeURIComponent(playerId)}/flags`, {
+      method: 'POST',
+      body: { flag_type: label.toLowerCase().replace(/[^a-z0-9]+/g, '_'), severity, label, details, created_by: 'terminal' },
+    });
+    showToast('Player flag added', 'success');
+    await refreshOpenPlayerProfile(playerId);
+    setPlayerProfileTab('notes');
+  } catch (err) {
+    showToast(err?.message || 'Flag create failed', 'error');
+  }
+}
+
+async function createPlayerNote() {
+  const playerId = playerProfileState.playerId;
+  if (!playerId) return;
+  const noteType = document.getElementById('playerNoteType')?.value || 'general';
+  const body = document.getElementById('playerNoteBody')?.value?.trim() || '';
+  if (!body) {
+    showToast('Note body is required', 'warning');
+    return;
+  }
+  try {
+    await FactoryWager.apiFetch(`/players/${encodeURIComponent(playerId)}/notes`, {
+      method: 'POST',
+      body: { note_type: noteType, body, created_by: 'terminal' },
+    });
+    showToast('Player note added', 'success');
+    await refreshOpenPlayerProfile(playerId);
+    setPlayerProfileTab('notes');
+  } catch (err) {
+    showToast(err?.message || 'Note create failed', 'error');
+  }
+}
+
+function renderPlayerProfileDocs(profile) {
+  const el = document.getElementById('playerProfileDocs');
+  if (!el) return;
+  const playerId = profile.playerId || playerProfileState.playerId || 'PLAYER';
+  const map = playerProfileState.intelligenceMap;
+  if (!map || map.playerId !== playerId) {
+    el.innerHTML = '<div class="text-sm" style="color:var(--text-dim);">Loading live Player 360 data map...</div>';
+    if (!playerProfileState.docsLoading) {
+      playerProfileState.docsLoading = true;
+      fetchPlayerIntelligenceMap(playerId)
+        .then((payload) => {
+          if (playerProfileState.playerId !== playerId) return;
+          playerProfileState.intelligenceMap = payload;
+          playerProfileState.docsLoading = false;
+          renderPlayerProfileDocs(profile);
+        })
+        .catch((err) => {
+          playerProfileState.docsLoading = false;
+          el.innerHTML = `<div class="text-sm" style="color:var(--red);">Failed to load intelligence map: ${escapeHtml(err?.message || err)}</div>`;
+        });
+    }
+    return;
+  }
+  const architecture = [
+    '+-------------------+      +-------------------------+',
+    '| Buckeye Manager   | ---> | ScraperManager          |',
+    '| getBetTicker LIVE |      | wager + access pollers  |',
+    '| getWebLog LIVE    |      | player360 probe poller  |',
+    '| customer probes   |      +-----------+-------------+',
+    '+-------------------+                  |',
+    '                                       v',
+    '  +--------------------+ +-------------------------+',
+    '  | confirmed live     | | probe / partial         |',
+    '  | wager_archive      | | deposits                |',
+    '  | access_logs        | | customer_snapshots      |',
+    '  +---------+----------+ +-----------+-------------+',
+    '            |                        |',
+    '            v                        v',
+    '  +--------------------+ +-------------------------+',
+    '  | derived            | | manual                  |',
+    '  | player_links       | | player_flags / notes    |',
+    '  +---------+----------+ +-----------+-------------+',
+    '            +------------+------------+',
+    '                         v',
+    '              +--------------------------+',
+    '              | /api/players/:id/profile|',
+    '              | /intelligence-map       |',
+    '              +------------+-------------+',
+    '                           v',
+    '              +--------------------------+',
+    '              | Player 360 modal + Status|',
+    '              +--------------------------+',
+  ].join('\n');
+  const layout = [
+    '+------------------------------------------------------------+',
+    '| PLAYER PROFILE HEADER                                      |',
+    '| player id | agent | wager count | sport | live bridge      |',
+    '|                                      Docs Export Close      |',
+    '+------------------------------------------------------------+',
+    '| Overview | Wager History | Access Logs | Performance | ... |',
+    '+------------------------------------------------------------+',
+    '| Overview                                                   |',
+    '| +---------+ +---------+ +---------+ +---------+ +--------+ |',
+    '| | Volume  | | Open    | | WinRate | | Sport   | | Risk   | |',
+    '| +---------+ +---------+ +---------+ +---------+ +--------+ |',
+    '| +--------------------------+ +---------------------------+ |',
+    '| | Risk meter + mini P&L    | | Latest wagers / live feed | |',
+    '| +--------------------------+ +---------------------------+ |',
+    '|                                                            |',
+    '| Docs panel                                                 |',
+    '| + coverage matrix + endpoint map + have/reuse/need lists   |',
+    '+------------------------------------------------------------+',
+  ].join('\n');
+
+  el.innerHTML = `
+    <div class="profile-doc-grid">
+      <div class="profile-doc-panel profile-doc-wide">
+        <h3>Coverage Matrix</h3>
+        <div class="rounded-lg border overflow-auto" style="border-color:var(--border);">
+          <table class="profile-table">
+            <thead><tr><th>Source</th><th>Buckeye Endpoint</th><th>Local Table</th><th>Profile Use</th><th>Status</th><th>Refresh Policy</th><th>Rows</th><th>Last Seen</th><th>Last Attempt</th><th>Next Refresh</th><th>Gap</th></tr></thead>
+            <tbody>${(map.sources || []).map(source => `<tr>
+              <td class="font-mono">${escapeHtml(source.key || source.label || '')}</td>
+              <td>${escapeHtml(source.buckeyeEndpoint || '-')}</td>
+              <td class="font-mono">${escapeHtml(source.localTable || '-')}</td>
+              <td>${escapeHtml(source.profileUse || '-')}</td>
+              <td>${profileStatusChip(source.freshnessState || source.status)}</td>
+              <td>${escapeHtml(source.refreshPolicy || '-')} / ${escapeHtml(source.scaleClass || '-')} / ${Number(source.ttlSeconds || 0).toLocaleString()}s</td>
+              <td class="font-mono">${Number(source.rowCount || 0).toLocaleString()}</td>
+              <td style="color:var(--text-dim);">${source.lastSeen ? formatShortDateTime(source.lastSeen) : '-'}</td>
+              <td style="color:var(--text-dim);">${source.lastAttemptAt ? formatShortDateTime(source.lastAttemptAt) : '-'}</td>
+              <td style="color:var(--text-dim);">${source.nextRefreshAt ? formatShortDateTime(source.nextRefreshAt) : '-'}</td>
+              <td>${escapeHtml(source.gap || '-')}</td>
+            </tr>`).join('')}</tbody>
+          </table>
+        </div>
+      </div>
+      <div class="profile-doc-panel">
+        <h3>Endpoint Mapping</h3>
+        <table class="profile-table">
+          <tbody>
+            <tr><th>Player</th><td class="font-mono">${escapeHtml(playerId)}</td></tr>
+            <tr><th>Agent</th><td>${escapeHtml(map.agentLogin || '-')}</td></tr>
+            <tr><th>Profile API</th><td class="font-mono">${escapeHtml(map.profileContract?.profile || '-')}</td></tr>
+            <tr><th>Search API</th><td class="font-mono">${escapeHtml(map.profileContract?.search || '-')}</td></tr>
+            <tr><th>Exports</th><td class="font-mono">${escapeHtml(map.profileContract?.exports?.wagers || '-')}<br>${escapeHtml(map.profileContract?.exports?.accessLogs || '-')}</td></tr>
+            <tr><th>Audit Logs</th><td class="font-mono">${escapeHtml(map.profileContract?.audit?.accessLogs || '-')}</td></tr>
+            <tr><th>Mutations</th><td class="font-mono">${escapeHtml(map.profileContract?.mutations?.flagCreate || '-')}<br>${escapeHtml(map.profileContract?.mutations?.noteCreate || '-')}<br>${escapeHtml(map.profileContract?.mutations?.multiAccountCheck || '-')}</td></tr>
+            <tr><th>Live Feed</th><td>${escapeHtml(map.profileContract?.websocket || '-')}</td></tr>
+          </tbody>
+        </table>
+        <div class="mt-3">
+          <h3>Profile Tab Routes</h3>
+          <table class="profile-table">
+            <tbody>${Object.entries(map.profileContract?.tabs || {}).map(([tabName, routes]) => `<tr><th>${escapeHtml(tabName)}</th><td class="font-mono">${(routes || []).map(route => escapeHtml(route)).join('<br>')}</td></tr>`).join('')}</tbody>
+          </table>
+        </div>
+      </div>
+      <div class="profile-doc-panel">
+        <h3>Data We Have / Can Reuse / Need</h3>
+        ${profileDocList('Have Now', map.coverage?.haveNow || [])}
+        ${profileDocList('Can Reuse', map.coverage?.canReuse || [])}
+        ${profileDocList('Need / Probe', map.coverage?.needOrProbe || [])}
+        <div class="mt-3">
+          <h3>Known Gaps</h3>
+          <table class="profile-table">
+            <tbody>${(map.gaps || []).map(gap => `<tr><th>${escapeHtml(gap.label || gap.key || '')}</th><td>${profileStatusChip(gap.status)} ${escapeHtml(gap.detail || '')}</td></tr>`).join('')}</tbody>
+          </table>
+        </div>
+      </div>
+      <div class="profile-doc-panel">
+        <h3>Freshness</h3>
+        <table class="profile-table">
+          <tbody>${Object.entries(map.freshness || {}).filter(([key]) => key !== 'watermarks').map(([key, value]) => `<tr>
+            <th class="font-mono">${escapeHtml(key)}</th>
+            <td>${Number(value?.rowCount || 0).toLocaleString()} rows</td>
+            <td>${value?.lastSeen ? formatShortDateTime(value.lastSeen) : '-'}</td>
+          </tr>`).join('')}
+          <tr><th>Player 360 Poll</th><td colspan="2">${map.freshness?.watermarks?.player360 ? escapeHtml(JSON.stringify(map.freshness.watermarks.player360.value)) : 'No watermark'}</td></tr>
+          <tr><th>Access Poll</th><td colspan="2">${map.freshness?.watermarks?.accessLogs ? escapeHtml(JSON.stringify(map.freshness.watermarks.accessLogs.value)) : 'No watermark'}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="profile-doc-panel profile-doc-wide">
+        <h3>Field Contract</h3>
+        <table class="profile-table">
+          <thead><tr><th>Tab</th><th>Field</th><th>Route</th><th>Real Source</th><th>Status Rule</th></tr></thead>
+          <tbody>${(map.fieldContract || []).map(row => `<tr>
+            <td>${escapeHtml(row.tab || '-')}</td>
+            <td class="font-mono">${escapeHtml(row.field || '-')}</td>
+            <td class="font-mono">${escapeHtml(row.route || '-')}</td>
+            <td>${escapeHtml(row.source || '-')}</td>
+            <td>${escapeHtml(row.statusRule || '-')}</td>
+          </tr>`).join('') || profileEmptyRow('No field contract returned by intelligence map.', 5)}</tbody>
+        </table>
+      </div>
+      <div class="profile-doc-panel profile-doc-wide">
+        <h3>Contract Mismatches To Track</h3>
+        <table class="profile-table">
+          <thead><tr><th>Severity</th><th>Field / Source</th><th>Status</th><th>Correction</th></tr></thead>
+          <tbody>${(map.contractMismatches || []).map(row => `<tr>
+            <td>${escapeHtml(row.severity || '-')}</td>
+            <td>${escapeHtml(row.field || row.source || '-')}</td>
+            <td>${profileStatusChip(row.status || 'missing')}</td>
+            <td>${escapeHtml(row.action || '-')}</td>
+          </tr>`).join('') || profileEmptyRow('No contract mismatches for this player right now.', 4)}</tbody>
+        </table>
+      </div>
+      <div class="profile-doc-panel">
+        <h3>Keyboard Help</h3>
+        <table class="profile-table">
+          <tbody>
+            <tr><th>Esc</th><td>Close the Player Profile modal and clear state.</td></tr>
+            <tr><th>Docs</th><td>Open this live endpoint and data coverage map.</td></tr>
+            <tr><th>Tab Buttons</th><td>Use tab order to move between Overview, Wager History, Access Logs, Performance, Deposits, Account, Links, and Notes.</td></tr>
+            <tr><th>CSV Buttons</th><td>Export wagers or access logs from the live Player 360 profile.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="profile-doc-panel">
+        <h3>Architecture Diagram</h3>
+        <pre class="profile-doc-pre">${escapeHtml(architecture)}</pre>
+      </div>
+      <div class="profile-doc-panel">
+        <h3>ASCII Layout</h3>
+        <pre class="profile-doc-pre">${escapeHtml(layout)}</pre>
+      </div>
+    </div>`;
+}
+
+function profileDocNode(title, body) {
+  return `<div class="profile-doc-node"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(body)}</span></div>`;
+}
+
+function profileDocList(title, rows) {
+  return `<div class="mb-3">
+    <div class="text-[10px] uppercase tracking-wider font-semibold mb-2" style="color:var(--text-dim);">${escapeHtml(title)}</div>
+    <div class="profile-doc-list">${rows.map(row => `<span>${escapeHtml(row)}</span>`).join('')}</div>
+  </div>`;
+}
+
+function profileStatusChip(status) {
+  const normalized = String(status || 'missing').toLowerCase();
+  const labels = { fresh: 'Fresh', live: 'Live', derived: 'Derived', manual: 'Manual', probe: 'Probe', stale: 'Stale', error: 'Error', missing: 'Missing' };
+  return `<span class="profile-status-chip ${normalized}">${escapeHtml(labels[normalized] || normalized)}</span>`;
+}
+
+function profileEmptyRow(message, colspan) {
+  return `<tr><td colspan="${colspan}" class="text-center" style="color:var(--text-dim);">${escapeHtml(message)}</td></tr>`;
+}
+
+function getVirtualHistoryRows(rows, key) {
+  const limit = Number(playerProfileState.virtualLimits?.[key] || 100);
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const visible = safeRows.slice(0, limit);
+  return {
+    rows: visible,
+    total: safeRows.length,
+    limit,
+    moreHtml: safeRows.length > limit
+      ? `<div class="profile-virtual-note">Virtualized list: showing ${limit.toLocaleString()} of ${safeRows.length.toLocaleString()} newest rows. Use filters or export for the full history.</div>`
+      : '',
+  };
+}
+
+function renderPlayerMiniPnlChart(weeklyPnl) {
+  const canvas = document.getElementById('playerMiniPnlChart');
+  if (!canvas || !window.Chart) return;
+  destroyPlayerProfileChart('mini');
+  requestAnimationFrame(() => {
+    if (!document.getElementById('playerMiniPnlChart')) return;
+    destroyPlayerProfileChart('mini');
+    playerProfileState.charts.mini = new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels: weeklyPnl.map(row => row.weekStart || row.week),
+        datasets: [{ data: weeklyPnl.map(row => Number(row.pnl || 0)), borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,.12)', fill: true, tension: .35, pointRadius: 2 }],
+      },
+      options: chartBaseOptions(false),
+    });
+  });
+}
+
+function renderPlayerPerformanceCharts(profile) {
+  if (!window.Chart) return;
+  destroyPlayerProfileChart('line');
+  destroyPlayerProfileChart('donut');
+  const weeklyPnl = profile.weeklyPnl || [];
+  const sports = profile.sportBreakdown || [];
+  const lineCanvas = document.getElementById('playerPerformanceLineChart');
+  const donutCanvas = document.getElementById('playerSportDonutChart');
+  requestAnimationFrame(() => {
+  if (lineCanvas) {
+    playerProfileState.charts.line = new Chart(lineCanvas, {
+      type: 'line',
+      data: {
+        labels: weeklyPnl.map(row => row.weekStart || row.week),
+        datasets: [{ label: 'P&L', data: weeklyPnl.map(row => Number(row.pnl || 0)), borderColor: '#06b6d4', backgroundColor: 'rgba(6,182,212,.12)', fill: true, tension: .3 }],
+      },
+      options: chartBaseOptions(true),
+    });
+  }
+  if (donutCanvas) {
+    playerProfileState.charts.donut = new Chart(donutCanvas, {
+      type: 'doughnut',
+      data: {
+        labels: sports.map(row => row.sport || 'Unknown'),
+        datasets: [{ data: sports.map(row => Number(row.volume || 0)), backgroundColor: ['#ff6600', '#06b6d4', '#10b981', '#f59e0b', '#8b5cf6', '#3b82f6', '#ef4444'] }],
+      },
+      options: chartBaseOptions(true),
+    });
+  }
+  });
+}
+
+function chartBaseOptions(showLegend) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: showLegend, labels: { color: '#e5e7eb' } } },
+    scales: { x: { ticks: { color: '#6b7280' }, grid: { color: 'rgba(31,41,55,.45)' } }, y: { ticks: { color: '#6b7280' }, grid: { color: 'rgba(31,41,55,.45)' } } },
+  };
+}
+
+function destroyPlayerProfileChart(key) {
+  if (playerProfileState.charts[key]) {
+    playerProfileState.charts[key].destroy();
+    delete playerProfileState.charts[key];
+  }
+}
+
+function destroyPlayerProfileCharts() {
+  Object.keys(playerProfileState.charts).forEach(destroyPlayerProfileChart);
+}
+
+function renderPlayerLivePnlChart(livePerf) {
+  if (!window.Chart) return;
+  destroyPlayerProfileChart('livePnl');
+  const canvas = document.getElementById('playerLivePnlChart');
+  if (!canvas) return;
+  const entries = livePerf.map(row => ({
+    date: row.Date || '',
+    pnl: (Number(row.Won || 0) - Number(row.Lost || 0)) / 100,
+  })).reverse();
+  requestAnimationFrame(() => {
+    playerProfileState.charts.livePnl = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: entries.map(row => row.date.split(' ')[0] || row.date),
+        datasets: [{
+          label: 'Daily P&L',
+          data: entries.map(row => row.pnl),
+          backgroundColor: entries.map(row => row.pnl >= 0 ? 'rgba(16,185,129,.5)' : 'rgba(244,63,94,.5)'),
+          borderColor: entries.map(row => row.pnl >= 0 ? '#10b981' : '#f43f5e'),
+          borderWidth: 1,
+        }],
+      },
+      options: {
+        ...chartBaseOptions(false),
+        plugins: { legend: { display: false } },
+      },
+    });
+  });
+}
+
+function handlePlayerProfileLiveWager(wager) {
+  const profile = playerProfileState.profile;
+  const playerId = playerProfileState.playerId;
+  if (!profile || !playerId) return;
+  const normalized = normalizeBackendWager(wager);
+  if (normalized.Login !== playerId && normalized.CustomerID !== playerId) return;
+  const liveWager = { ...wager, ...normalized, __live: true };
+  profile.recentWagers = [liveWager, ...(profile.recentWagers || []).filter(row => String(normalizeBackendWager(row).WagerNumber) !== String(normalized.WagerNumber))].slice(0, 200);
+  profile.stats = profile.stats || {};
+  profile.stats.wagerCount = Number(profile.stats.wagerCount || 0) + 1;
+  profile.stats.openBets = Number(profile.stats.openBets || 0) + 1;
+  profile.stats.totalVolume = Number(profile.stats.totalVolume || 0) + Number(normalized.AmountWagered || 0);
+  profile.stats.riskScore = Math.min(100, Number(profile.stats.riskScore || 0) + 1);
+  FactoryWager.state.ws.lastEventAt = new Date().toISOString();
+  playerProfileState.liveRegionMessage = `New wager ${normalized.WagerNumber || ''} for ${playerId} added to live feed`;
+  const liveRegion = document.getElementById('playerProfileLiveRegion');
+  if (liveRegion) liveRegion.textContent = playerProfileState.liveRegionMessage;
+  if (playerProfileState.tab === 'wagers' || playerProfileState.tab === 'overview') renderPlayerProfile();
 }
 
 async function renderPlayerDetail(playerLogin) {
@@ -5680,6 +8328,7 @@ Object.assign(window, {
   closeAuthModal,
   closeBookSettings,
   closeConsensusModal,
+  closePlayerProfileModal,
   closePosition,
   closeRawJsonDrawer,
   closeTradeModal,
@@ -5689,6 +8338,9 @@ Object.assign(window, {
   computeSportExposureLocal,
   computeTreeLayout,
   connectBuckeye,
+  checkPlayerMultiAccounts,
+  createPlayerFlag,
+  createPlayerNote,
   cssEscape,
   decodeEntities,
   deriveAgentDownlineFromStatic,
@@ -5699,14 +8351,18 @@ Object.assign(window, {
   displayPatternType,
   escapeHtml,
   executeTrade,
+  exportPlayerProfileCsv,
   exportPositions,
   exportWagers,
+  FactoryWager,
   extractPrice,
   filterAccessIp,
   filterBooks,
   filterBySport,
   filterTickerByAgent,
   filterWagerType,
+  focusPlayerFlagComposer,
+  focusPlayerNoteComposer,
   findBestBook,
   findTreeNodeAt,
   fitTreeToCanvas,
@@ -5725,6 +8381,8 @@ Object.assign(window, {
   getExposurePct,
   getFilteredGames,
   getGamePatterns,
+  getActivePlayerProfileId,
+  getHashPlayerId,
   getHeldRisk,
   getLastMovementForBook,
   getLastMovementForGame,
@@ -5739,6 +8397,7 @@ Object.assign(window, {
   handleAgentDownlineClick,
   handleBuckeyeWagerTableClick,
   handlePlayerSearchClick,
+  handlePlayerProfileLiveWager,
   handleWagerAction,
   hideTooltip,
   hideWebhookForm,
@@ -5751,6 +8410,7 @@ Object.assign(window, {
   isLegitimateWager,
   keepTooltip,
   loadBookPreferences,
+  loadPlayerSearch,
   markCacheFresh,
   mergeAgentDelta,
   mergeAgentStats,
@@ -5766,6 +8426,8 @@ Object.assign(window, {
   openBuckeyeForCookie,
   openConsensusModal,
   openPatternsForAgent,
+  openAgentTreeFromProfile,
+  openPlayerProfileModal,
   openRawJsonDrawer,
   openTradeModal,
   parseDescription,
@@ -5807,6 +8469,13 @@ Object.assign(window, {
   renderPerformanceDashboard,
   renderPerformanceError,
   renderPlayerPnlChart,
+  renderPlayerProfile,
+  renderPlayerProfileAccess,
+  renderPlayerProfileOverview,
+  renderPlayerProfilePerformance,
+  renderPlayerProfileStatus,
+  renderPlayerProfileWagers,
+  refreshPlayerAgentContext,
   renderPlayerSearch,
   renderPlayerWagerBreakdown,
   renderPositions,
@@ -5818,6 +8487,7 @@ Object.assign(window, {
   renderVelocityChart,
   renderWeeklyFiguresTable,
   resetBookSettings,
+  refreshPlayerProfileStatus,
   resetPatternDetail,
   resumeSession,
   resyncBuckeye,
@@ -5832,6 +8502,11 @@ Object.assign(window, {
   searchAgentTree,
   searchGames,
   searchPlayers,
+  openPlayerProfileDocs,
+  openSidebarStatusForPlayer,
+  setPlayerAgentFilter,
+  setPlayerProfileTab,
+  setPlayerWagerPage,
   setAgentNetworkMode,
   setAgentTreeLoading,
   setMarketTab,

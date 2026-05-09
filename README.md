@@ -1,4 +1,4 @@
-# Sports Terminal v5.31
+# Sports Terminal v5.32
 
 Sports Terminal is a Bun-powered betting operations terminal for Buckeye PPH live wager ingestion, agent/player intelligence, pattern detection, odds comparison, exposure tracking, alerts, webhooks, and backend health monitoring.
 
@@ -20,7 +20,10 @@ Implemented:
 - Buckeye wager feed, agent downline, hierarchy/player export parsing, player search/detail, sport and agent exposure.
 - Alert rules, alert history, toast toggle, webhook CRUD, retry, and delivery logging.
 - System Status sidebar page for backend, vault, book, and pattern health.
+- Player 360 profile contracts with real API-only hydration, live source coverage, field-level mapping, mismatch tracking, and Status/Docs panels.
 - Bun install security scanner configured with `@bun-security-scanner/osv`.
+
+Player 360 data lineage lives in `docs/PLAYER_360_DATA_MAP.md`; the live modal Docs/Status panels render the same contract from `/api/v1/players/:playerId/intelligence-map`.
 
 Partial or planned:
 

@@ -22,10 +22,14 @@ describe('API route registration', () => {
       ['GET', '/api/agents'],
       ['GET', '/api/agents/downline'],
       ['GET', '/api/agents/hierarchy'],
+      ['GET', '/api/agents/hierarchy/tree'],
+      ['POST', '/api/agents/refresh'],
       ['POST', '/api/agents/backfill/hierarchy'],
       ['GET', '/api/agents/access-logs'],
       ['GET', '/api/agents/BILLY666/performance'],
       ['GET', '/api/agents/BILLY666/exposure'],
+      ['GET', '/api/agents/BILLY666/players'],
+      ['GET', '/api/agents/BILLY666'],
       ['GET', '/api/players/CF346/details'],
       ['GET', '/api/players/CF346/wagers'],
       ['GET', '/api/players/CF346/pnl'],
@@ -95,5 +99,16 @@ describe('API route registration', () => {
     expect(router.match('GET', '/api/performance/summary')?.params.agentId).toBeUndefined();
     expect(router.match('GET', '/api/performance/details')?.params.agentId).toBeUndefined();
     expect(router.match('GET', '/api/performance/BILLY666')?.params.agentId).toBe('BILLY666');
+  });
+
+  it('registers the versioned API bridge before static fallback', () => {
+    const router = createTestRouter();
+
+    expect(router.match('GET', '/api/v1/players/A17566/profile')).not.toBeNull();
+    expect(router.match('POST', '/api/v1/agents/refresh')).not.toBeNull();
+    expect(router.match('GET', '/api/v1/agents/hierarchy')).not.toBeNull();
+    expect(router.match('GET', '/api/v1/agents/BILLY666/players')).not.toBeNull();
+    expect(router.match('GET', '/api/v1/logs/access')).not.toBeNull();
+    expect(router.match('POST', '/api/v1/players/A17566/flags')).not.toBeNull();
   });
 });

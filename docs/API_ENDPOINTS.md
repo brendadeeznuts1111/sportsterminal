@@ -186,6 +186,35 @@ Agent hierarchy with player counts and volume.
 
 Raw Buckeye agent tree from `getListAgenstByAgent`.
 
+The route returns the locally persisted Buckeye hierarchy first, then a live Buckeye call when authenticated, then ignored local seed captures as a fallback. This avoids repeatedly calling the upstream manager list endpoint for mostly static agent/customer structure.
+
+**Live upstream source:**
+```text
+POST https://fantasy402.com/cloud/api/Manager/getListAgenstByAgent
+agentID=<agent>&agentType=M&operation=getListAgenstByAgent&RRO=1&agentOwner=<owner>&agentSite=1
+```
+
+**Response 200:**
+```json
+{
+  "GENERAL": [
+    {
+      "AgentID": "BILLY667",
+      "SeqNumber": 5735,
+      "Level": 1,
+      "AgentType": "A",
+      "Login": "BILLY667",
+      "ParentAgentID": "",
+      "PlayerCount": 12,
+      "ChildCount": 0
+    }
+  ],
+  "source": "database"
+}
+```
+
+Raw seed captures may include `PLAYERS`, but local API responses and database rows must not expose upstream player passwords.
+
 ### `GET /api/agents/access-logs`
 
 Buckeye web access logs (proxied from `getWebLog`).
@@ -201,6 +230,21 @@ Per-agent exposure breakdown with top customers and games.
 ### `GET /api/agents/backfill/hierarchy` (POST)
 
 Trigger a hierarchy backfill from stored agent data.
+
+Parses ignored local seed files (`docs/agentobject.md` and `docs/agentslistharz.md`) and upserts Buckeye agents plus sanitized players/customers into the local database.
+
+**Response 200:**
+```json
+{
+  "success": true,
+  "provider": "buckeye",
+  "agents": 440,
+  "players": 12000,
+  "linkedPlayers": 12000,
+  "placeholderAgents": 0,
+  "maxSeqNumber": 6174
+}
+```
 
 ---
 

@@ -1,17 +1,17 @@
-# Sports Terminal v5.31 Implementation Tracker
+# Sports Terminal v5.32 Implementation Tracker
 
 > Last updated: **2026-05-09**
 > Started: **2026-05-08**
 > Runtime: **Bun 1.3.13+**
 > Database: **Bun.SQL SQLite wrapper**
 > Auth: **JWT (HS256) + Buckeye OS vault through Bun.secrets**
-> Latest full verification: **82 passing, 4 intentionally skipped + build clean**
+> Latest full verification: **95 passing, 4 intentionally skipped + build clean**
 
 ---
 
 ## Current Release Shape
 
-Sports Terminal v5.31 is now an always-on Buckeye operations terminal with polished navigation, clearer operator chrome, raw API observability, and a static frontend module layout. The backend process, not the browser tab, owns live ingestion. Browser disconnects only close the UI session; vaulted Buckeye agents continue polling while the backend is running.
+Sports Terminal v5.32 is now an always-on Buckeye operations terminal with polished navigation, clearer operator chrome, raw API observability, a static frontend module layout, and a real-data Player 360 contract map. The backend process, not the browser tab, owns live ingestion. Browser disconnects only close the UI session; vaulted Buckeye agents continue polling while the backend is running.
 
 Key current pillars:
 
@@ -20,6 +20,7 @@ Key current pillars:
 - Pattern detection and history across odds, wagers, agents, IP, live timing, and feed risk.
 - Odds grid with live-provider support, book health, movements, best-line highlighting, and pattern hooks. Synthetic odds are dev/test-only behind `ODDS_DEMO_MODE=true`.
 - Alert center, webhook delivery, status page, and operational health endpoints.
+- Player 360 profile modal with real API-only hydration, source coverage, field-contract mapping, explicit gaps, endpoint health, and mismatch tracking.
 - Project docs reorganized into README, Buckeye scope, implementation tracker, changelog, and project organization guide.
 
 ---

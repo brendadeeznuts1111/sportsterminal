@@ -10,7 +10,10 @@ import {
   BuckeyeCredentials,
   type BuckeyeAgentPerformanceOptions,
   type BuckeyeAgentPerformanceResult,
+  type BuckeyeCustomerSnapshot,
+  type BuckeyeDepositRow,
   type BuckeyeManagerSnapshotResult,
+  type BuckeyeTransactionRow,
   type BuckeyeWeeklyFigureOptions,
 } from './BuckeyeAPI';
 import { LiveAgentTree } from './LiveAgentTree';
@@ -23,6 +26,11 @@ import type { BunSecretVault } from '../services/BunSecretVault';
 import { PerformanceCache } from '../services/PerformanceCache';
 import { RawApiLogger } from '../services/RawApiLogger';
 import { createManagedInterval, type ManagedIntervalTask } from '../services/Scheduler';
+import {
+  getPlayer360SourcePolicy,
+  nextRefreshAt,
+  shouldRefreshPlayer360Source,
+} from '../player360/policies';
 
 interface AgentInstance {
   api: BuckeyeAPI;
@@ -32,6 +40,7 @@ interface AgentInstance {
   accessLogTask?: ManagedIntervalTask;
   performanceTask?: ManagedIntervalTask;
   dailyArchiveTask?: ManagedIntervalTask;
+  player360Task?: ManagedIntervalTask;
   credentials: BuckeyeCredentials;
   lastPoll: number;
   errorCount: number;
@@ -41,6 +50,13 @@ interface AgentInstance {
   lastError?: string;
   liveTree?: LiveAgentTree;
   isPolling: boolean; // guard against concurrent polls
+}
+
+interface Player360Candidate {
+  customerId: string;
+  login: string;
+  agentId: string;
+  agentLogin: string;
 }
 
 function getAgentPerformanceRawRows(data: unknown): unknown[] {
@@ -58,6 +74,34 @@ function readPositiveIntEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function transactionRowToDeposit(row: BuckeyeTransactionRow): BuckeyeDepositRow {
+  return {
+    id: `txn-${row.id}`,
+    customerId: row.customerId,
+    login: row.login,
+    agentId: row.agentId,
+    agentLogin: row.agentLogin,
+    amount: row.amount,
+    currency: 'USD',
+    method: row.description || row.tranType || 'Buckeye transaction ledger',
+    ipAddress: '',
+    status: row.category,
+    transactionTime: row.transactionTime,
+    raw: row.raw,
+  };
+}
+
+function transactionDedupeKey(row: BuckeyeTransactionRow): string {
+  return [
+    row.raw?.sourceOperation || '',
+    row.documentNumber || row.id,
+    row.transactionTime,
+    row.amount,
+    row.balance,
+    row.category,
+  ].join('|');
+}
+
 export class BuckeyeScraperManager {
   private agents: Map<string, AgentInstance> = new Map();
   private db: Database;
@@ -66,6 +110,10 @@ export class BuckeyeScraperManager {
   private tokenRenewalMs: number = 15 * 60 * 1000; // 15 minutes
   private accessLogIntervalMs: number = 5 * 60 * 1000;
   private performanceIntervalMs: number = 15 * 60 * 1000;
+  private player360IntervalMs: number = 10 * 60 * 1000;
+  private player360MaxPlayersPerPoll: number = 50;
+  private player360ColdBackfillPerPoll: number = 2;
+  private customerSnapshotTtlMs: number = 24 * 60 * 60 * 1000;
   private webhookService: WebhookService;
   private patternService: PatternService;
   private actionQueue: ActionQueue;
@@ -96,6 +144,10 @@ export class BuckeyeScraperManager {
     this.tokenRenewalMs = readPositiveIntEnv('TOKEN_RENEWAL_MINUTES', 15) * 60 * 1000;
     this.accessLogIntervalMs = readPositiveIntEnv('ACCESS_LOG_INTERVAL_MS', this.accessLogIntervalMs);
     this.performanceIntervalMs = readPositiveIntEnv('AGENT_PERFORMANCE_INTERVAL_MS', this.performanceIntervalMs);
+    this.player360IntervalMs = readPositiveIntEnv('PLAYER360_INTERVAL_MS', this.player360IntervalMs);
+    this.player360MaxPlayersPerPoll = readPositiveIntEnv('PLAYER360_MAX_PLAYERS_PER_POLL', this.player360MaxPlayersPerPoll);
+    this.player360ColdBackfillPerPoll = readPositiveIntEnv('PLAYER360_COLD_BACKFILL_PER_POLL', this.player360ColdBackfillPerPoll);
+    this.customerSnapshotTtlMs = readPositiveIntEnv('CUSTOMER_SNAPSHOT_TTL_MS', this.customerSnapshotTtlMs);
     this.webhookService = new WebhookService(db);
     this.patternService = new PatternService(db, broadcast);
     this.rawApiLogger = new RawApiLogger(db, true);
@@ -127,11 +179,11 @@ export class BuckeyeScraperManager {
     const instance: AgentInstance = {
       api,
       pollTask: createManagedInterval(`buckeye.${agentId}.bets`, this.pollIntervalMs, () => this.pollAgent(agentId), {
-        initialDelayMs: 0,
+        initialDelayMs: 100,
       }),
       renewalTask: createManagedInterval(`buckeye.${agentId}.renewal`, this.tokenRenewalMs, () => this.renewToken(agentId)),
       masterSnapshotTask: createManagedInterval(`buckeye.${agentId}.masterSnapshot`, 30 * 60 * 1000, () => this.pollMasterSnapshot(agentId), {
-        initialDelayMs: 0,
+        initialDelayMs: 500,
       }),
       credentials,
       lastPoll: Date.now(),
@@ -149,6 +201,7 @@ export class BuckeyeScraperManager {
     this.startAccessLogPolling(agentId, instance);
     this.startPerformancePolling(agentId, instance);
     this.startDailyArchiveRefresh(agentId, instance);
+    this.startPlayer360Polling(agentId, instance);
     console.log(`[Manager] Started polling for ${agentId} every ${this.pollIntervalMs}ms`);
 
   }
@@ -176,11 +229,11 @@ export class BuckeyeScraperManager {
     const instance: AgentInstance = {
       api,
       pollTask: createManagedInterval(`buckeye.${agentId}.bets`, this.pollIntervalMs, () => this.pollAgent(agentId), {
-        initialDelayMs: 0,
+        initialDelayMs: 100,
       }),
       renewalTask: createManagedInterval(`buckeye.${agentId}.renewal`, this.tokenRenewalMs, () => this.renewToken(agentId)),
       masterSnapshotTask: createManagedInterval(`buckeye.${agentId}.masterSnapshot`, 30 * 60 * 1000, () => this.pollMasterSnapshot(agentId), {
-        initialDelayMs: 0,
+        initialDelayMs: 500,
       }),
       credentials,
       lastPoll: Date.now(),
@@ -198,6 +251,7 @@ export class BuckeyeScraperManager {
     this.startAccessLogPolling(agentId, instance);
     this.startPerformancePolling(agentId, instance);
     this.startDailyArchiveRefresh(agentId, instance);
+    this.startPlayer360Polling(agentId, instance);
     console.log(`[Manager] Resumed session for ${agentId}`);
 
     return true;
@@ -232,6 +286,7 @@ export class BuckeyeScraperManager {
     instance.accessLogTask?.stop();
     instance.performanceTask?.stop();
     instance.dailyArchiveTask?.stop();
+    instance.player360Task?.stop();
     this.actionQueue.clearAgent(agentId);
     this.agents.delete(agentId);
     console.log(`[Manager] Stopped polling for ${agentId}`);
@@ -246,6 +301,112 @@ export class BuckeyeScraperManager {
 
   async forceAccessLogRefresh(agentId: string): Promise<any> {
     return this.refreshAccessLogs(agentId);
+  }
+
+  requestPlayer360Refresh(playerId: string, reason: string = 'profile_open'): void {
+    void this.refreshPlayer360OnDemand(playerId, reason).catch((error) => {
+      console.warn(`[Manager] Player 360 on-demand refresh failed for ${playerId}:`, error instanceof Error ? error.message : error);
+    });
+  }
+
+  private async refreshPlayer360OnDemand(playerId: string, _reason: string): Promise<void> {
+    const row = await this.db.get<any>(
+      `SELECT
+        COALESCE(NULLIF(customer_id, ''), NULLIF(login, '')) AS customerId,
+        COALESCE(NULLIF(login, ''), NULLIF(customer_id, '')) AS login,
+        COALESCE(NULLIF(agent_id, ''), NULLIF(agent_login, '')) AS agentId,
+        COALESCE(NULLIF(agent_login, ''), NULLIF(agent_id, '')) AS agentLogin
+       FROM wager_archive
+       WHERE login = ? OR customer_id = ?
+       ORDER BY insert_date_time DESC
+       LIMIT 1`,
+      [playerId, playerId]
+    );
+    const agentId = String(row?.agentLogin || row?.agentId || '').trim();
+    const instance = this.resolveAgentInstance(agentId);
+    if (!row || !agentId || !instance || !instance.api.isAuthenticated()) return;
+    const pollingAgentId = instance.credentials.agentId;
+    const player = {
+      customerId: String(row.customerId || playerId).trim(),
+      login: String(row.login || playerId).trim(),
+      agentId: String(row.agentId || agentId).trim(),
+      agentLogin: agentId,
+    };
+
+    if (await this.shouldRefreshPlayerSource(player.customerId, player.login, 'access_logs')) {
+      await this.markPlayerSourceAttempt(player, 'access_logs');
+      try {
+        await this.refreshAccessLogs(pollingAgentId);
+        await this.markPlayerSourceSuccess(player, 'access_logs');
+      } catch (error) {
+        await this.markPlayerSourceError(player, 'access_logs', error);
+      }
+    }
+
+    const refreshTransactions = await this.shouldRefreshPlayerSource(player.customerId, player.login, 'player_transactions');
+    const refreshDeletedTransactions = await this.shouldRefreshPlayerSource(player.customerId, player.login, 'deleted_transactions');
+    if (refreshTransactions || refreshDeletedTransactions) {
+      if (refreshTransactions) {
+        await this.markPlayerSourceAttempt(player, 'player_transactions');
+        await this.markPlayerSourceAttempt(player, 'deposits');
+      }
+      if (refreshDeletedTransactions) {
+        await this.markPlayerSourceAttempt(player, 'deleted_transactions');
+      }
+      try {
+        const refreshResult = await this.refreshPlayerTransactionLedger(instance, player, {
+          includeCore: refreshTransactions,
+          includeDeleted: refreshDeletedTransactions,
+        });
+        await this.markTransactionRefreshStatus(player, refreshResult, refreshTransactions, refreshDeletedTransactions);
+      } catch (error) {
+        if (refreshTransactions) {
+          await this.markPlayerSourceError(player, 'player_transactions', error);
+          await this.markPlayerSourceError(player, 'deposits', error);
+        }
+        if (refreshDeletedTransactions) {
+          await this.markPlayerSourceError(player, 'deleted_transactions', error);
+        }
+      }
+    }
+
+    if (await this.shouldRefreshPlayerSource(player.customerId, player.login, 'customer_snapshots')) {
+      await this.markPlayerSourceAttempt(player, 'customer_snapshots');
+      try {
+        const snapshot = await instance.api.getCustomerSnapshot(player.customerId);
+        if (snapshot.snapshot) {
+          await this.persistCustomerSnapshot(snapshot.snapshot);
+          await this.markPlayerSourceSuccess(player, 'customer_snapshots');
+        }
+      } catch (error) {
+        await this.markPlayerSourceError(player, 'customer_snapshots', error);
+      }
+    }
+
+    if (await this.shouldRefreshPlayerSource(player.customerId, player.login, 'teaser_profile')) {
+      await this.markPlayerSourceAttempt(player, 'teaser_profile');
+      try {
+        await instance.api.getTeaserProfile(player.customerId);
+      } catch (error) {
+        await this.markPlayerSourceError(player, 'teaser_profile', error);
+      }
+    }
+
+    if (await this.shouldRefreshPlayerSource(player.customerId, player.login, 'agent_performance_snapshots')) {
+      await this.markPlayerSourceAttempt(player, 'agent_performance_snapshots');
+      try {
+        const performance = await instance.api.getPerformancePlayer(player.customerId, {
+          acc: player.customerId,
+          period: 0,
+          agentID: pollingAgentId,
+          agentOwner: pollingAgentId,
+        });
+        await this.persistPlayerPerformanceSnapshot(performance, player.customerId, player.login);
+        await this.markPlayerSourceSuccess(player, 'agent_performance_snapshots');
+      } catch (error) {
+        await this.markPlayerSourceError(player, 'agent_performance_snapshots', error);
+      }
+    }
   }
 
   /**
@@ -387,6 +548,23 @@ export class BuckeyeScraperManager {
     }
   }
 
+  async getBuckeyePlayersList(agentId?: string): Promise<any> {
+    const instance = agentId
+      ? this.agents.get(agentId)
+      : Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
+
+    if (!instance || !instance.api.isAuthenticated()) {
+      return { LIST: [], message: 'Not authenticated to Buckeye' };
+    }
+    try {
+      const data = await instance.api.getPlayersList();
+      return data;
+    } catch (err: any) {
+      console.error('[ScraperManager] getBuckeyePlayersList error:', err.message);
+      return { LIST: [], error: err.message };
+    }
+  }
+
   async getPersistedAgentHierarchy(): Promise<any> {
     try {
       const rows = await this.db.all(
@@ -414,6 +592,9 @@ export class BuckeyeScraperManager {
           amigo_tech_rate
          FROM agents
          WHERE provider = 'buckeye'
+           AND seq_number IS NOT NULL
+           AND level IS NOT NULL
+           AND COALESCE(raw_json, '') NOT LIKE '%placeholder%'
          ORDER BY COALESCE(seq_number, 999999999), COALESCE(level, 99), login`
       );
       if (!rows.length) {
@@ -573,23 +754,29 @@ export class BuckeyeScraperManager {
   private async persistManagerSnapshot(result: BuckeyeManagerSnapshotResult): Promise<void> {
     if (!result || !result.agentId) return;
     if (typeof (this.db as any).run !== 'function') return;
-    await this.db.run(
-      `INSERT INTO master_snapshots
-        (provider, agent_id, timestamp, config_web_reports_json, config_web_reports_pending_json, sports_type_json, authorizations_json, message_json, new_emails_count_json, raw_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        'buckeye',
-        result.agentId,
-        result.fetchedAt || new Date().toISOString(),
-        JSON.stringify(result.configWebReports || {}),
-        JSON.stringify(result.configWebReportsPending || {}),
-        JSON.stringify(result.sportsType || {}),
-        JSON.stringify(result.authorizations || {}),
-        JSON.stringify(result.message || {}),
-        JSON.stringify(result.newEmailsCount || {}),
-        JSON.stringify(result),
-      ]
-    );
+    try {
+      await this.db.run(
+        `INSERT INTO master_snapshots
+          (provider, agent_id, timestamp, config_web_reports_json, config_web_reports_pending_json, sports_type_json, authorizations_json, message_json, new_emails_count_json, account_info_json, raw_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          'buckeye',
+          result.agentId,
+          result.fetchedAt || new Date().toISOString(),
+          JSON.stringify(result.configWebReports || {}),
+          JSON.stringify(result.configWebReportsPending || {}),
+          JSON.stringify(result.sportsType || {}),
+          JSON.stringify(result.authorizations || {}),
+          JSON.stringify(result.message || {}),
+          JSON.stringify(result.newEmailsCount || {}),
+          JSON.stringify(result),
+          JSON.stringify(result),
+        ]
+      );
+    } catch (err) {
+      console.error(`[Manager] persistManagerSnapshot failed for ${result.agentId}:`, err instanceof Error ? err.message : err);
+      throw err;
+    }
     this.broadcast({
       type: 'masterSnapshot.new',
       timestamp: new Date().toISOString(),
@@ -625,6 +812,78 @@ export class BuckeyeScraperManager {
       return result;
     } catch (err: any) {
       console.error('[ScraperManager] getBuckeyeAgentPerformanceReport error:', err.message);
+      return { data: null, error: err.message };
+    }
+  }
+
+  async getBuckeyePlayerPerformance(
+    customerId: string,
+    period: string | number = 0,
+    agentId?: string
+  ): Promise<any> {
+    const instance = this.resolveAgentInstance(agentId);
+
+    if (!instance || !instance.api.isAuthenticated()) {
+      return { data: null, message: 'Not authenticated to Buckeye' };
+    }
+
+    try {
+      const result = await instance.api.getPerformancePlayer(customerId, {
+        acc: customerId,
+        period,
+        agentID: agentId || instance.credentials.agentId,
+        agentOwner: agentId || instance.credentials.agentId,
+      });
+      await this.persistPlayerPerformanceSnapshot(result, customerId, customerId);
+      await this.setWatermark(
+        `last_player_performance.${instance.credentials.agentId}.${customerId}`,
+        result.fetchedAt || new Date().toISOString()
+      );
+      return result;
+    } catch (err: any) {
+      console.error('[ScraperManager] getBuckeyePlayerPerformance error:', err.message);
+      return { data: null, error: err.message };
+    }
+  }
+
+  async getBuckeyePlayerInfo(
+    customerId: string,
+    agentId?: string
+  ): Promise<any> {
+    const instance = this.resolveAgentInstance(agentId);
+
+    if (!instance || !instance.api.isAuthenticated()) {
+      return { data: null, message: 'Not authenticated to Buckeye' };
+    }
+
+    try {
+      const result = await instance.api.getCustomerSnapshot(customerId);
+      if (result.snapshot) {
+        await this.persistCustomerSnapshot(result.snapshot);
+      }
+      return result;
+    } catch (err: any) {
+      console.error('[ScraperManager] getBuckeyePlayerInfo error:', err.message);
+      return { data: null, error: err.message };
+    }
+  }
+
+  async getBuckeyePlayerTransactions(
+    customerId: string,
+    agentId?: string
+  ): Promise<any> {
+    const instance = this.resolveAgentInstance(agentId);
+
+    if (!instance || !instance.api.isAuthenticated()) {
+      return { data: null, message: 'Not authenticated to Buckeye' };
+    }
+
+    try {
+      const start = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const result = await instance.api.getTransactionList(customerId, { start });
+      return result;
+    } catch (err: any) {
+      console.error('[ScraperManager] getBuckeyePlayerTransactions error:', err.message);
       return { data: null, error: err.message };
     }
   }
@@ -1094,9 +1353,11 @@ export class BuckeyeScraperManager {
   }
 
   private resolveAgentInstance(agentId?: string): AgentInstance | undefined {
-    return agentId
-      ? this.agents.get(agentId)
-      : Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
+    if (agentId) {
+      const direct = this.agents.get(agentId);
+      if (direct) return direct;
+    }
+    return Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
   }
 
   private async initializeLiveAgentTree(agentId: string, instance: AgentInstance): Promise<void> {
@@ -1284,78 +1545,100 @@ export class BuckeyeScraperManager {
     const correlation = await this.patternService.correlateWager(wager);
     const parsed = correlation.parsed;
 
-    // Insert into main wagers table
-    await this.db.run(
-      `INSERT OR REPLACE INTO wagers
-      (wager_number, agent_id, customer_id, login, wager_type,
-       amount_wagered, to_win_amount, volume_amount, insert_datetime,
-       ticket_writer, short_desc, vip, agent_login, sport,
-       parsed_game, parsed_market, parsed_side, parsed_price, parsed_period,
-       matched_event_id, pin_reference_json, scraped_at, raw_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        wager.WagerNumber,
-        wager.AgentID,
-        wager.CustomerID,
-        wager.Login,
-        wager.WagerType,
-        wager.AmountWagered,
-        wager.ToWinAmount,
-        wager.VolumeAmount,
-        wager.InsertDateTime,
-        wager.TicketWriter,
-        wager.ShortDesc,
-        wager.VIP,
-        wager.AgentLogin,
-        this.parseSport(wager.ShortDesc),
-        parsed.game,
-        parsed.market,
-        parsed.side,
-        parsed.price,
-        parsed.period,
-        correlation.match.eventId,
-        JSON.stringify(correlation.pinReference || {}),
-        new Date().toISOString(),
-        JSON.stringify(wager),
-      ]
-    );
-
-    const archiveInsert = await this.db.run(
-      `INSERT OR IGNORE INTO wager_archive
-      (wager_number, agent_id, customer_id, login, wager_type,
-       amount_wagered, to_win_amount, insert_date_time, ticket_writer,
-       volume_amount, short_desc_raw, vip, agent_login, ingested_at, raw_json, sport, league, price)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        wager.WagerNumber,
-        wager.AgentID,
-        wager.CustomerID,
-        wager.Login,
-        wager.WagerType,
-        wager.AmountWagered,
-        wager.ToWinAmount,
-        wager.InsertDateTime,
-        wager.TicketWriter,
-        wager.VolumeAmount,
-        wager.ShortDesc,
-        wager.VIP,
-        wager.AgentLogin,
-        new Date().toISOString(),
-        JSON.stringify(wager),
-        null,
-        null,
-        null,
-      ]
-    );
-    if (archiveInsert.changes > 0) {
-      this.deferWagerArchiveParse(wager.WagerNumber, wager.ShortDesc, parsed.price);
+    try {
+      // Insert into main wagers table
+      await this.db.run(
+        `INSERT OR REPLACE INTO wagers
+        (wager_number, agent_id, customer_id, login, wager_type,
+         amount_wagered, to_win_amount, volume_amount, insert_datetime,
+         ticket_writer, short_desc, vip, agent_login, sport,
+         parsed_game, parsed_market, parsed_side, parsed_price, parsed_period,
+         matched_event_id, pin_reference_json, scraped_at, raw_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          wager.WagerNumber,
+          wager.AgentID,
+          wager.CustomerID,
+          wager.Login,
+          wager.WagerType,
+          wager.AmountWagered,
+          wager.ToWinAmount,
+          wager.VolumeAmount,
+          wager.InsertDateTime,
+          wager.TicketWriter,
+          wager.ShortDesc,
+          wager.VIP,
+          wager.AgentLogin,
+          this.parseSport(wager.ShortDesc),
+          parsed.game,
+          parsed.market,
+          parsed.side,
+          parsed.price,
+          parsed.period,
+          correlation.match.eventId,
+          JSON.stringify(correlation.pinReference || {}),
+          new Date().toISOString(),
+          JSON.stringify(wager),
+        ]
+      );
+    } catch (err) {
+      console.error(
+        `[Manager] persistWager INSERT failed for wager #${wager.WagerNumber}:`,
+        err instanceof Error ? err.message : err
+      );
+      throw err;
     }
 
-    await this.updateIngestionCheckpoint('wagers', Number(wager.WagerNumber) || 0, {
-      agentId: wager.AgentID,
-      agentLogin: wager.AgentLogin,
-      scrapedAt: new Date().toISOString(),
-    });
+    try {
+      const archiveInsert = await this.db.run(
+        `INSERT OR IGNORE INTO wager_archive
+        (wager_number, agent_id, customer_id, login, wager_type,
+         amount_wagered, to_win_amount, insert_date_time, ticket_writer,
+         volume_amount, short_desc_raw, vip, agent_login, ingested_at, raw_json, sport, league, price)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          wager.WagerNumber,
+          wager.AgentID,
+          wager.CustomerID,
+          wager.Login,
+          wager.WagerType,
+          wager.AmountWagered,
+          wager.ToWinAmount,
+          wager.InsertDateTime,
+          wager.TicketWriter,
+          wager.VolumeAmount,
+          wager.ShortDesc,
+          wager.VIP,
+          wager.AgentLogin,
+          new Date().toISOString(),
+          JSON.stringify(wager),
+          null,
+          null,
+          null,
+        ]
+      );
+      if (archiveInsert.changes > 0) {
+        this.deferWagerArchiveParse(wager.WagerNumber, wager.ShortDesc, parsed.price);
+      }
+    } catch (err) {
+      console.warn(
+        `[Manager] wager_archive INSERT failed for wager #${wager.WagerNumber}:`,
+        err instanceof Error ? err.message : err
+      );
+    }
+
+    try {
+      await this.updateIngestionCheckpoint('wagers', Number(wager.WagerNumber) || 0, {
+        agentId: wager.AgentID,
+        agentLogin: wager.AgentLogin,
+        scrapedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn(
+        `[Manager] ingestion checkpoint update failed for wager #${wager.WagerNumber}:`,
+        err instanceof Error ? err.message : err
+      );
+    }
 
     return correlation;
   }
@@ -1462,6 +1745,800 @@ export class BuckeyeScraperManager {
         onError: (err) => console.warn(`[Manager] Daily archive refresh failed for ${agentId}:`, err instanceof Error ? err.message : err),
       }
     );
+  }
+
+  private startPlayer360Polling(agentId: string, instance: AgentInstance): void {
+    instance.player360Task?.stop();
+    instance.player360Task = createManagedInterval(
+      `buckeye.${agentId}.player360`,
+      this.player360IntervalMs,
+      () => this.refreshPlayer360(agentId).then(() => undefined),
+      {
+        initialDelayMs: 10_000,
+        onError: (err) => console.warn(`[Manager] Player 360 refresh failed for ${agentId}:`, err instanceof Error ? err.message : err),
+      }
+    );
+  }
+
+  private async refreshPlayer360(agentId: string): Promise<{
+    players: number;
+    hotPlayers?: number;
+    coldBackfillPlayers?: number;
+    deposits: number;
+    transactions: number;
+    snapshots: number;
+    performance: number;
+    links: number;
+  }> {
+    const instance = this.agents.get(agentId);
+    if (!instance || !instance.api.isAuthenticated()) {
+      throw new Error(`Agent ${agentId} is not active`);
+    }
+
+    const hotPlayers = await this.getHotPlayersFor360(agentId);
+    const hotKeys = new Set(hotPlayers.map((player) => this.player360CandidateKey(player)));
+    const coldBackfillPlayers = this.player360ColdBackfillPerPoll > 0
+      ? await this.getColdBackfillPlayersFor360(agentId, hotKeys, this.player360ColdBackfillPerPoll)
+      : [];
+    const players = [...hotPlayers, ...coldBackfillPlayers];
+    let depositRows = 0;
+    let transactionRows = 0;
+    let snapshots = 0;
+    let performanceRows = 0;
+    const touchedPlayers: string[] = [];
+
+    for (const player of players) {
+      const customerId = player.customerId || player.login;
+      if (!customerId) continue;
+
+      const refreshTransactions = await this.shouldRefreshPlayerSource(customerId, player.login, 'player_transactions');
+      const refreshDeletedTransactions = await this.shouldRefreshPlayerSource(customerId, player.login, 'deleted_transactions');
+      if (refreshTransactions || refreshDeletedTransactions) {
+        if (refreshTransactions) {
+          await this.markPlayerSourceAttempt(player, 'player_transactions');
+          await this.markPlayerSourceAttempt(player, 'deposits');
+        }
+        if (refreshDeletedTransactions) {
+          await this.markPlayerSourceAttempt(player, 'deleted_transactions');
+        }
+        try {
+          const refreshResult = await this.refreshPlayerTransactionLedger(instance, player, {
+            includeCore: refreshTransactions,
+            includeDeleted: refreshDeletedTransactions,
+          });
+          transactionRows += refreshResult.transactions;
+          depositRows += refreshResult.deposits;
+          await this.markTransactionRefreshStatus(player, refreshResult, refreshTransactions, refreshDeletedTransactions);
+        } catch (error) {
+          if (refreshTransactions) {
+            await this.markPlayerSourceError(player, 'player_transactions', error);
+            await this.markPlayerSourceError(player, 'deposits', error);
+          }
+          if (refreshDeletedTransactions) {
+            await this.markPlayerSourceError(player, 'deleted_transactions', error);
+          }
+          console.warn(
+            `[Manager] transaction ledger probe failed for ${customerId}:`,
+            error instanceof Error ? error.message : error
+          );
+        }
+      }
+
+      if (await this.shouldRefreshPlayerSource(customerId, player.login, 'customer_snapshots')) {
+        await this.markPlayerSourceAttempt(player, 'customer_snapshots');
+        try {
+        const snapshot = await instance.api.getCustomerSnapshot(customerId);
+        if (snapshot.snapshot) {
+          await this.persistCustomerSnapshot(snapshot.snapshot);
+          snapshots += 1;
+          await this.markPlayerSourceSuccess(player, 'customer_snapshots');
+        }
+        } catch (error) {
+          await this.markPlayerSourceError(player, 'customer_snapshots', error);
+        }
+      }
+
+      if (await this.shouldRefreshPlayerSource(customerId, player.login, 'teaser_profile')) {
+        await this.markPlayerSourceAttempt(player, 'teaser_profile');
+        try {
+          await instance.api.getTeaserProfile(customerId);
+        } catch (error) {
+          await this.markPlayerSourceError(player, 'teaser_profile', error);
+          console.warn(
+            `[Manager] getTeaserProfile probe failed for ${customerId}:`,
+            error instanceof Error ? error.message : error
+          );
+        }
+      }
+
+      if (await this.shouldRefreshPlayerSource(customerId, player.login, 'agent_performance_snapshots')) {
+        await this.markPlayerSourceAttempt(player, 'agent_performance_snapshots');
+        try {
+        const performance = await instance.api.getPerformancePlayer(customerId, {
+          acc: customerId,
+          period: 0,
+          agentID: agentId,
+          agentOwner: agentId,
+        });
+        performanceRows += await this.persistPlayerPerformanceSnapshot(performance, customerId, player.login);
+          await this.markPlayerSourceSuccess(player, 'agent_performance_snapshots');
+        } catch (error) {
+          await this.markPlayerSourceError(player, 'agent_performance_snapshots', error);
+          console.warn(
+            `[Manager] getPerformancePlayer probe failed for ${customerId}:`,
+            error instanceof Error ? error.message : error
+          );
+        }
+      }
+
+      touchedPlayers.push(customerId);
+    }
+
+    const links = await this.refreshPlayerLinks(agentId);
+    const fetchedAt = new Date().toISOString();
+    await this.setWatermark(
+      `last_player360_poll.${agentId}`,
+      JSON.stringify({
+        players: players.length,
+        hotPlayers: hotPlayers.length,
+        coldBackfillPlayers: coldBackfillPlayers.length,
+        coldBackfillLimit: this.player360ColdBackfillPerPoll,
+        deposits: depositRows,
+        transactions: transactionRows,
+        snapshots,
+        performance: performanceRows,
+        links,
+        fetchedAt,
+      })
+    );
+
+    this.broadcast({
+      type: 'player360.update',
+      timestamp: fetchedAt,
+      agentId,
+      payload: {
+        players: touchedPlayers,
+        hotPlayers: hotPlayers.length,
+        coldBackfillPlayers: coldBackfillPlayers.length,
+        deposits: depositRows,
+        transactions: transactionRows,
+        snapshots,
+        performance: performanceRows,
+        links,
+      },
+    });
+
+    return {
+      players: players.length,
+      hotPlayers: hotPlayers.length,
+      coldBackfillPlayers: coldBackfillPlayers.length,
+      deposits: depositRows,
+      transactions: transactionRows,
+      snapshots,
+      performance: performanceRows,
+      links,
+    };
+  }
+
+  private async getHotPlayersFor360(agentId: string): Promise<Player360Candidate[]> {
+    const rows = await this.db.all<any>(
+      `SELECT
+        COALESCE(NULLIF(wager_archive.customer_id, ''), NULLIF(wager_archive.login, '')) AS customerId,
+        COALESCE(NULLIF(wager_archive.login, ''), NULLIF(wager_archive.customer_id, '')) AS login,
+        COALESCE(NULLIF(wager_archive.agent_id, ''), NULLIF(wager_archive.agent_login, ''), ?) AS agentId,
+        COALESCE(NULLIF(wager_archive.agent_login, ''), NULLIF(wager_archive.agent_id, ''), ?) AS agentLogin,
+        MAX(wager_archive.insert_date_time) AS lastWager
+       FROM wager_archive
+       LEFT JOIN player_flags pf
+        ON pf.customer_id = COALESCE(NULLIF(wager_archive.customer_id, ''), NULLIF(wager_archive.login, ''))
+        AND pf.status = 'active'
+       LEFT JOIN player_source_status pss
+        ON pss.customer_id = COALESCE(NULLIF(wager_archive.customer_id, ''), NULLIF(wager_archive.login, ''))
+        AND pss.agent_id = ?
+        AND pss.last_error IS NOT NULL
+       WHERE (
+        wager_archive.agent_login = ?
+        OR wager_archive.agent_id = ?
+        OR NOT EXISTS (
+          SELECT 1
+          FROM wager_archive scoped
+          WHERE scoped.agent_login = ? OR scoped.agent_id = ?
+        )
+       )
+         AND COALESCE(NULLIF(wager_archive.customer_id, ''), NULLIF(wager_archive.login, '')) IS NOT NULL
+         AND (
+          wager_archive.insert_date_time >= datetime('now', '-24 hours')
+          OR pf.id IS NOT NULL
+          OR pss.id IS NOT NULL
+         )
+       GROUP BY COALESCE(NULLIF(wager_archive.customer_id, ''), NULLIF(wager_archive.login, ''))
+       ORDER BY MAX(wager_archive.insert_date_time) DESC
+       LIMIT ?`,
+      [agentId, agentId, agentId, agentId, agentId, agentId, agentId, this.player360MaxPlayersPerPoll]
+    );
+
+    return rows
+      .map((row) => ({
+        customerId: String(row.customerId || '').trim(),
+        login: String(row.login || '').trim(),
+        agentId: String(row.agentId || agentId).trim(),
+        agentLogin: String(row.agentLogin || agentId).trim(),
+      }))
+      .filter((row) => row.customerId || row.login);
+  }
+
+  private player360CandidateKey(player: Pick<Player360Candidate, 'customerId' | 'login'>): string {
+    return String(player.customerId || player.login || '').trim().toUpperCase();
+  }
+
+  private async getColdBackfillPlayersFor360(
+    agentId: string,
+    excludeKeys: Set<string>,
+    limit: number
+  ): Promise<Player360Candidate[]> {
+    if (limit <= 0) return [];
+
+    const sourceKeys = [
+      'player_transactions',
+      'deleted_transactions',
+      'customer_snapshots',
+      'teaser_profile',
+      'agent_performance_snapshots',
+    ];
+    const placeholders = sourceKeys.map(() => '?').join(', ');
+    const rows = await this.db.all<any>(
+      `SELECT
+        COALESCE(NULLIF(wager_archive.customer_id, ''), NULLIF(wager_archive.login, '')) AS customerId,
+        COALESCE(NULLIF(wager_archive.login, ''), NULLIF(wager_archive.customer_id, '')) AS login,
+        COALESCE(NULLIF(wager_archive.agent_id, ''), NULLIF(wager_archive.agent_login, ''), ?) AS agentId,
+        COALESCE(NULLIF(wager_archive.agent_login, ''), NULLIF(wager_archive.agent_id, ''), ?) AS agentLogin,
+        MAX(wager_archive.insert_date_time) AS lastWager
+       FROM wager_archive
+       LEFT JOIN player_source_status pss
+        ON pss.customer_id = COALESCE(NULLIF(wager_archive.customer_id, ''), NULLIF(wager_archive.login, ''))
+        AND pss.agent_id = ?
+        AND pss.source_key IN (${placeholders})
+       WHERE (
+        wager_archive.agent_login = ?
+        OR wager_archive.agent_id = ?
+        OR NOT EXISTS (
+          SELECT 1
+          FROM wager_archive scoped
+          WHERE scoped.agent_login = ? OR scoped.agent_id = ?
+        )
+       )
+         AND COALESCE(NULLIF(wager_archive.customer_id, ''), NULLIF(wager_archive.login, '')) IS NOT NULL
+       GROUP BY COALESCE(NULLIF(wager_archive.customer_id, ''), NULLIF(wager_archive.login, ''))
+       HAVING COUNT(DISTINCT pss.source_key) < ?
+          OR MAX(CASE WHEN pss.last_error IS NOT NULL THEN 1 ELSE 0 END) = 1
+          OR MIN(pss.last_attempt_at) IS NULL
+          OR MIN(pss.last_attempt_at) <= datetime('now', '-6 hours')
+       ORDER BY
+        COUNT(DISTINCT pss.source_key) ASC,
+        COALESCE(MIN(pss.last_attempt_at), '1970-01-01') ASC,
+        MAX(wager_archive.insert_date_time) DESC
+       LIMIT ?`,
+      [
+        agentId,
+        agentId,
+        agentId,
+        ...sourceKeys,
+        agentId,
+        agentId,
+        agentId,
+        agentId,
+        sourceKeys.length,
+        Math.max(limit * 10, limit),
+      ]
+    );
+
+    const candidates = rows
+      .map((row) => ({
+        customerId: String(row.customerId || '').trim(),
+        login: String(row.login || '').trim(),
+        agentId: String(row.agentId || agentId).trim(),
+        agentLogin: String(row.agentLogin || agentId).trim(),
+      }))
+      .filter((row) => row.customerId || row.login)
+      .filter((row) => !excludeKeys.has(this.player360CandidateKey(row)));
+
+    return candidates.slice(0, limit);
+  }
+
+  private async refreshPlayerTransactionLedger(instance: AgentInstance, player: {
+    customerId: string;
+    login: string;
+    agentId: string;
+    agentLogin: string;
+  }, options: {
+    includeCore: boolean;
+    includeDeleted: boolean;
+  } = { includeCore: true, includeDeleted: true }): Promise<{
+    transactions: number;
+    deposits: number;
+    coreSucceeded: boolean;
+    deletedSucceeded: boolean;
+    errors: string[];
+  }> {
+    const customerId = player.customerId || player.login;
+    const rowsByKey = new Map<string, BuckeyeTransactionRow>();
+    const errors: string[] = [];
+    let coreSucceeded = false;
+    let deletedSucceeded = false;
+
+    if (options.includeCore) {
+      try {
+        const transactionList = await instance.api.getTransactionList(customerId);
+        coreSucceeded = true;
+        for (const row of transactionList.rows.filter((entry) => this.isPlayerTransactionRow(entry, customerId, player.login))) {
+          rowsByKey.set(transactionDedupeKey(row), row);
+        }
+      } catch (error) {
+        errors.push(`getTransactionList: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
+      try {
+        const transactionHistory = await instance.api.getTransactionHistory(customerId);
+        coreSucceeded = true;
+        for (const row of transactionHistory.rows.filter((entry) => this.isPlayerTransactionRow(entry, customerId, player.login))) {
+          if (!rowsByKey.has(transactionDedupeKey(row))) {
+            rowsByKey.set(transactionDedupeKey(row), row);
+          }
+        }
+      } catch (error) {
+        errors.push(`getTransactionHistory: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    if (options.includeDeleted) {
+      try {
+        const deletedTransactions = await instance.api.getReportDeletedTransactions(customerId);
+        deletedSucceeded = true;
+        for (const row of deletedTransactions.rows.filter((entry) => this.isPlayerTransactionRow(entry, customerId, player.login))) {
+          rowsByKey.set(transactionDedupeKey(row), row);
+        }
+      } catch (error) {
+        errors.push(`getReportDeletedTransactions: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    if (!coreSucceeded && !deletedSucceeded) {
+      throw new Error(errors.join('; ') || 'No Buckeye transaction ledger endpoint responded');
+    }
+
+    if (errors.length) {
+      console.warn(`[Manager] Partial transaction ledger refresh for ${customerId}: ${errors.join('; ')}`);
+    }
+
+    let transactionRows = 0;
+    let depositRows = 0;
+    for (const row of rowsByKey.values()) {
+      transactionRows += await this.persistPlayerTransaction(row);
+      if (row.category === 'deposit') {
+        depositRows += await this.persistDepositRow(transactionRowToDeposit(row));
+      }
+    }
+
+    return { transactions: transactionRows, deposits: depositRows, coreSucceeded, deletedSucceeded, errors };
+  }
+
+  private async markTransactionRefreshStatus(player: {
+    customerId: string;
+    login: string;
+    agentId: string;
+    agentLogin: string;
+  }, refreshResult: {
+    coreSucceeded: boolean;
+    deletedSucceeded: boolean;
+    errors: string[];
+  }, refreshTransactions: boolean, refreshDeletedTransactions: boolean): Promise<void> {
+    const error = new Error(refreshResult.errors.join('; ') || 'Transaction source refresh failed');
+    if (refreshTransactions) {
+      if (refreshResult.coreSucceeded) {
+        await this.markPlayerSourceSuccess(player, 'player_transactions');
+        await this.markPlayerSourceSuccess(player, 'deposits');
+      } else {
+        await this.markPlayerSourceError(player, 'player_transactions', error);
+        await this.markPlayerSourceError(player, 'deposits', error);
+      }
+    }
+    if (refreshDeletedTransactions) {
+      if (refreshResult.deletedSucceeded) {
+        await this.markPlayerSourceSuccess(player, 'deleted_transactions');
+      } else {
+        await this.markPlayerSourceError(player, 'deleted_transactions', error);
+      }
+    }
+  }
+
+  private isPlayerTransactionRow(row: BuckeyeTransactionRow, customerId: string, login: string): boolean {
+    const expected = new Set([customerId, login].map((value) => String(value || '').trim().toUpperCase()).filter(Boolean));
+    if (!expected.size) return true;
+    return [row.customerId, row.login]
+      .map((value) => String(value || '').trim().toUpperCase())
+      .some((value) => expected.has(value));
+  }
+
+  private async persistDepositRow(row: BuckeyeDepositRow): Promise<number> {
+    const result = await this.db.run(
+      `INSERT INTO deposits
+        (id, provider, customer_id, login, agent_id, agent_login, amount, currency, method, ip_address, status, transaction_time, pulled_at, raw_json)
+       VALUES (?, 'buckeye', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+       ON CONFLICT(id) DO UPDATE SET
+        customer_id = excluded.customer_id,
+        login = excluded.login,
+        agent_id = excluded.agent_id,
+        agent_login = excluded.agent_login,
+        amount = excluded.amount,
+        currency = excluded.currency,
+        method = excluded.method,
+        ip_address = excluded.ip_address,
+        status = excluded.status,
+        transaction_time = excluded.transaction_time,
+        pulled_at = excluded.pulled_at,
+        raw_json = excluded.raw_json`,
+      [
+        row.id,
+        row.customerId,
+        row.login,
+        row.agentId,
+        row.agentLogin,
+        row.amount,
+        row.currency,
+        row.method,
+        row.ipAddress,
+        row.status,
+        row.transactionTime,
+        JSON.stringify(row.raw || {}),
+      ]
+    );
+    return result.changes > 0 ? 1 : 0;
+  }
+
+  private async persistPlayerTransaction(row: BuckeyeTransactionRow): Promise<number> {
+    const result = await this.db.run(
+      `INSERT INTO player_transactions
+        (id, provider, customer_id, login, agent_id, agent_login, document_number,
+         tran_code, tran_type, amount, balance, hold_amount, grade_num, description,
+         entered_by, category, transaction_time, pulled_at, raw_json)
+       VALUES (?, 'buckeye', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+       ON CONFLICT(id) DO UPDATE SET
+        customer_id = excluded.customer_id,
+        login = excluded.login,
+        agent_id = excluded.agent_id,
+        agent_login = excluded.agent_login,
+        document_number = excluded.document_number,
+        tran_code = excluded.tran_code,
+        tran_type = excluded.tran_type,
+        amount = excluded.amount,
+        balance = excluded.balance,
+        hold_amount = excluded.hold_amount,
+        grade_num = excluded.grade_num,
+        description = excluded.description,
+        entered_by = excluded.entered_by,
+        category = excluded.category,
+        transaction_time = excluded.transaction_time,
+        pulled_at = excluded.pulled_at,
+        raw_json = excluded.raw_json`,
+      [
+        row.id,
+        row.customerId,
+        row.login,
+        row.agentId,
+        row.agentLogin,
+        row.documentNumber,
+        row.tranCode,
+        row.tranType,
+        row.amount,
+        row.balance,
+        row.holdAmount,
+        row.gradeNum,
+        row.description,
+        row.enteredBy,
+        row.category,
+        row.transactionTime,
+        JSON.stringify(row.raw || {}),
+      ]
+    );
+    return result.changes > 0 ? 1 : 0;
+  }
+
+  private async shouldRefreshPlayerSource(customerId: string, login: string, sourceKey: string): Promise<boolean> {
+    const policy = getPlayer360SourcePolicy(sourceKey);
+    if (policy.refreshPolicy === 'live' || policy.refreshPolicy === 'manual' || policy.refreshPolicy === 'derived') {
+      return false;
+    }
+    const row = await this.db.get<{
+      last_success_at: string | null;
+      last_attempt_at: string | null;
+      last_error: string | null;
+    }>(
+      `SELECT last_success_at, last_attempt_at, last_error
+       FROM player_source_status
+       WHERE source_key = ?
+        AND (customer_id = ? OR login = ?)
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [sourceKey, customerId, login || customerId]
+    );
+    return shouldRefreshPlayer360Source({
+      ttlSeconds: policy.ttlSeconds,
+      lastSuccessAt: row?.last_success_at || null,
+      lastAttemptAt: row?.last_attempt_at || null,
+      lastError: row?.last_error || null,
+    });
+  }
+
+  private async markPlayerSourceAttempt(player: {
+    customerId: string;
+    login: string;
+    agentId: string;
+    agentLogin: string;
+  }, sourceKey: string): Promise<void> {
+    const policy = getPlayer360SourcePolicy(sourceKey);
+    const now = new Date().toISOString();
+    await this.db.run(
+      `INSERT INTO player_source_status
+        (provider, customer_id, login, agent_id, source_key, refresh_policy, ttl_seconds, scale_class,
+         last_attempt_at, last_error, next_refresh_at, updated_at)
+       VALUES ('buckeye', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, CURRENT_TIMESTAMP)
+       ON CONFLICT(provider, customer_id, source_key) DO UPDATE SET
+        login = excluded.login,
+        agent_id = excluded.agent_id,
+        refresh_policy = excluded.refresh_policy,
+        ttl_seconds = excluded.ttl_seconds,
+        scale_class = excluded.scale_class,
+        last_attempt_at = excluded.last_attempt_at,
+        last_error = NULL,
+        updated_at = excluded.updated_at`,
+      [
+        player.customerId,
+        player.login || player.customerId,
+        player.agentLogin || player.agentId,
+        sourceKey,
+        policy.refreshPolicy,
+        policy.ttlSeconds,
+        policy.scaleClass,
+        now,
+      ]
+    );
+  }
+
+  private async markPlayerSourceSuccess(player: {
+    customerId: string;
+    login: string;
+    agentId: string;
+    agentLogin: string;
+  }, sourceKey: string): Promise<void> {
+    const policy = getPlayer360SourcePolicy(sourceKey);
+    const now = new Date().toISOString();
+    await this.db.run(
+      `INSERT INTO player_source_status
+        (provider, customer_id, login, agent_id, source_key, refresh_policy, ttl_seconds, scale_class,
+         last_attempt_at, last_success_at, last_error, next_refresh_at, updated_at)
+       VALUES ('buckeye', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(provider, customer_id, source_key) DO UPDATE SET
+        login = excluded.login,
+        agent_id = excluded.agent_id,
+        refresh_policy = excluded.refresh_policy,
+        ttl_seconds = excluded.ttl_seconds,
+        scale_class = excluded.scale_class,
+        last_attempt_at = COALESCE(player_source_status.last_attempt_at, excluded.last_attempt_at),
+        last_success_at = excluded.last_success_at,
+        last_error = NULL,
+        next_refresh_at = excluded.next_refresh_at,
+        updated_at = excluded.updated_at`,
+      [
+        player.customerId,
+        player.login || player.customerId,
+        player.agentLogin || player.agentId,
+        sourceKey,
+        policy.refreshPolicy,
+        policy.ttlSeconds,
+        policy.scaleClass,
+        now,
+        now,
+        nextRefreshAt(now, policy.ttlSeconds),
+      ]
+    );
+  }
+
+  private async markPlayerSourceError(player: {
+    customerId: string;
+    login: string;
+    agentId: string;
+    agentLogin: string;
+  }, sourceKey: string, error: unknown): Promise<void> {
+    const policy = getPlayer360SourcePolicy(sourceKey);
+    const now = new Date().toISOString();
+    const message = error instanceof Error ? error.message : String(error);
+    await this.db.run(
+      `INSERT INTO player_source_status
+        (provider, customer_id, login, agent_id, source_key, refresh_policy, ttl_seconds, scale_class,
+         last_attempt_at, last_error, next_refresh_at, updated_at)
+       VALUES ('buckeye', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(provider, customer_id, source_key) DO UPDATE SET
+        login = excluded.login,
+        agent_id = excluded.agent_id,
+        refresh_policy = excluded.refresh_policy,
+        ttl_seconds = excluded.ttl_seconds,
+        scale_class = excluded.scale_class,
+        last_attempt_at = excluded.last_attempt_at,
+        last_error = excluded.last_error,
+        next_refresh_at = excluded.next_refresh_at,
+        updated_at = excluded.updated_at`,
+      [
+        player.customerId,
+        player.login || player.customerId,
+        player.agentLogin || player.agentId,
+        sourceKey,
+        policy.refreshPolicy,
+        policy.ttlSeconds,
+        policy.scaleClass,
+        now,
+        message,
+        nextRefreshAt(now, Math.min(policy.ttlSeconds || 300, 15 * 60)),
+      ]
+    );
+  }
+
+  private async shouldCaptureCustomerSnapshot(customerId: string, login: string): Promise<boolean> {
+    const row = await this.db.get<{ snapshot_time: string }>(
+      `SELECT snapshot_time
+       FROM customer_snapshots
+       WHERE customer_id = ? OR login = ?
+       ORDER BY snapshot_time DESC
+       LIMIT 1`,
+      [customerId, login || customerId]
+    );
+    if (!row?.snapshot_time) return true;
+    const timestamp = Date.parse(row.snapshot_time);
+    return !Number.isFinite(timestamp) || Date.now() - timestamp >= this.customerSnapshotTtlMs;
+  }
+
+  private async persistCustomerSnapshot(snapshot: BuckeyeCustomerSnapshot): Promise<void> {
+    await this.db.run(
+      `INSERT INTO customer_snapshots
+        (provider, customer_id, login, agent_id, agent_login, kyc_level, vip_status, email_masked, phone_masked, currency, source, snapshot_time, raw_json)
+       VALUES ('buckeye', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)`,
+      [
+        snapshot.customerId,
+        snapshot.login,
+        snapshot.agentId,
+        snapshot.agentLogin,
+        snapshot.kycLevel,
+        snapshot.vipStatus,
+        snapshot.emailMasked,
+        snapshot.phoneMasked,
+        snapshot.currency,
+        snapshot.source,
+        JSON.stringify(snapshot.raw || {}),
+      ]
+    );
+  }
+
+  private async persistPlayerPerformanceSnapshot(
+    report: BuckeyeAgentPerformanceResult,
+    customerId: string,
+    login: string
+  ): Promise<number> {
+    const pulledAt = report.fetchedAt || new Date().toISOString();
+    const rows = report.parsed?.rows?.length
+      ? report.parsed.rows
+      : [{
+        customerId,
+        login: login || customerId,
+        agentId: report.params.agentID,
+        wagerCount: 0,
+        risk: 0,
+        toWin: 0,
+        amountWon: 0,
+        amountLost: 0,
+        volume: 0,
+        net: 0,
+      }];
+    const rawRows = getAgentPerformanceRawRows(report.data);
+    let inserted = 0;
+
+    for (const [index, row] of rows.entries()) {
+      const result = await this.db.run(
+        `INSERT INTO agent_performance_snapshots
+          (provider, report_agent_id, customer_id, agent_id, login, report_type,
+           start_date, end_date, sport, subsport, period, wager_type, bet_type,
+           activity_tipo, free_play, wager_count, risk, to_win, amount_won,
+           amount_lost, volume, net, pulled_at, raw_json)
+         VALUES ('buckeye', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          report.params.agentID,
+          row.customerId || customerId,
+          row.agentId || report.params.agentID,
+          row.login || login || customerId,
+          report.params.operation,
+          report.params.start,
+          report.params.end,
+          report.params.sport,
+          report.params.subsport,
+          report.params.period,
+          report.params.wagerType,
+          report.params.betType,
+          report.params.tipo,
+          report.params.freePlay,
+          row.wagerCount,
+          row.risk,
+          row.toWin,
+          row.amountWon,
+          row.amountLost,
+          row.volume,
+          row.net,
+          pulledAt,
+          JSON.stringify(rawRows[index] || report.data || row),
+        ]
+      );
+      inserted += result.changes > 0 ? 1 : 0;
+    }
+
+    await this.setWatermark(
+      `last_player_performance.${report.params.agentID}.${customerId}`,
+      JSON.stringify({
+        acc: customerId,
+        operation: report.params.operation,
+        period: report.params.period,
+        rows: rows.length,
+        fetchedAt: pulledAt,
+      })
+    );
+    return inserted;
+  }
+
+  private async refreshPlayerLinks(agentId: string): Promise<number> {
+    const rows = await this.db.all<any>(
+      `SELECT
+        ip_address,
+        GROUP_CONCAT(DISTINCT login_id) AS players,
+        COUNT(DISTINCT login_id) AS playerCount,
+        MAX(access_datetime) AS lastSeen
+       FROM access_logs
+       WHERE agent_id = ?
+         AND ip_address IS NOT NULL
+         AND ip_address <> ''
+         AND access_datetime >= datetime('now', '-30 days')
+       GROUP BY ip_address
+       HAVING COUNT(DISTINCT login_id) > 1
+       ORDER BY MAX(access_datetime) DESC
+       LIMIT 100`,
+      [agentId]
+    );
+
+    let inserted = 0;
+    let pairBudget = 500;
+    for (const row of rows) {
+      const players = String(row.players || '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .sort();
+      for (let i = 0; i < players.length && pairBudget > 0; i += 1) {
+        for (let j = i + 1; j < players.length && pairBudget > 0; j += 1) {
+          const result = await this.db.run(
+            `INSERT OR IGNORE INTO player_links
+              (provider, player_a, player_b, reason, confidence, evidence_json, detected_at, status)
+             VALUES ('buckeye', ?, ?, 'shared_ip', 0.85, ?, CURRENT_TIMESTAMP, 'active')`,
+            [
+              players[i],
+              players[j],
+              JSON.stringify({
+                ip_address: row.ip_address,
+                last_seen: row.lastSeen,
+                window_days: 30,
+              }),
+            ]
+          );
+          inserted += result.changes > 0 ? 1 : 0;
+          pairBudget -= 1;
+        }
+      }
+    }
+    return inserted;
   }
 
   private async refreshDailyArchives(agentId: string): Promise<void> {
@@ -1815,42 +2892,47 @@ export class BuckeyeScraperManager {
    * Runs every 30 minutes per active agent.
    */
   private async pollMasterSnapshot(agentId: string): Promise<void> {
-    const instance = this.agents.get(agentId);
-    if (!instance || !instance.api.isAuthenticated()) {
-      throw new Error(`Agent ${agentId} is not active`);
+    try {
+      const instance = this.agents.get(agentId);
+      if (!instance || !instance.api.isAuthenticated()) {
+        console.warn(`[Manager] pollMasterSnapshot: Agent ${agentId} not active, skipping`);
+        return;
+      }
+
+      const result = await instance.api.getAccountInfoOwner();
+      const accountInfo = result.accountInfo || {};
+      const parsed = result.parsed || {};
+
+      const balance = parsed.balances?.current || accountInfo.balance || 0;
+      const availableBalance = parsed.balances?.available || accountInfo.availableBalance || 0;
+      const percentBook = parsed.balances?.percentBook || accountInfo.percentBook || 0;
+      const openWagerRow = await this.db.get<{ count: number }>(
+        `SELECT COUNT(*) AS count FROM wagers WHERE agent_login = ?`,
+        [agentId]
+      );
+
+      const timestamp = new Date().toISOString();
+      await this.db.run(
+        `INSERT INTO master_snapshots
+          (provider, agent_id, timestamp, balance, available_balance, percent_book, open_wager_count, account_info_json, raw_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          'buckeye',
+          agentId,
+          timestamp,
+          balance,
+          availableBalance,
+          percentBook,
+          Number(openWagerRow?.count || 0),
+          JSON.stringify({ agentId, accountInfo, parsed }),
+          JSON.stringify({ agentId, accountInfo, parsed }),
+        ]
+      );
+      await this.setWatermark(`last_master_snapshot.${agentId}`, timestamp);
+      console.log(`[Manager] Master snapshot inserted for ${agentId}`);
+    } catch (err) {
+      console.error(`[Manager] pollMasterSnapshot failed for ${agentId}:`, err instanceof Error ? err.message : err);
     }
-
-    const result = await instance.api.getAccountInfoOwner();
-    const accountInfo = result.accountInfo || {};
-    const parsed = result.parsed || {};
-
-    const balance = parsed.balances?.current || accountInfo.balance || 0;
-    const availableBalance = parsed.balances?.available || accountInfo.availableBalance || 0;
-    const percentBook = parsed.balances?.percentBook || accountInfo.percentBook || 0;
-    const openWagerRow = await this.db.get<{ count: number }>(
-      `SELECT COUNT(*) AS count FROM wagers WHERE agent_login = ?`,
-      [agentId]
-    );
-
-    const timestamp = new Date().toISOString();
-    await this.db.run(
-      `INSERT INTO master_snapshots
-        (provider, agent_id, timestamp, balance, available_balance, percent_book, open_wager_count, account_info_json, raw_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        'buckeye',
-        agentId,
-        timestamp,
-        balance,
-        availableBalance,
-        percentBook,
-        Number(openWagerRow?.count || 0),
-        JSON.stringify({ agentId, accountInfo, parsed }),
-        JSON.stringify({ agentId, accountInfo, parsed }),
-      ]
-    );
-    await this.setWatermark(`last_master_snapshot.${agentId}`, timestamp);
-    console.log(`[Manager] Master snapshot inserted for ${agentId}`);
   }
 
   /**
