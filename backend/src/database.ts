@@ -3,6 +3,28 @@ import crypto from 'crypto';
 
 const dbPath = normalizeDatabasePath(process.env.DATABASE_URL || './data/terminal.db');
 
+const BUCKEYE_SPORT_TYPES = [
+  'Auto Racing         ',
+  'Baseball            ',
+  'Basketball          ',
+  'Boxing              ',
+  'Cricket             ',
+  'Entertainment       ',
+  'Esports             ',
+  'Football            ',
+  'Golf                ',
+  'Hockey              ',
+  'Horse Racing        ',
+  'LIVE                ',
+  'Martial Arts        ',
+  'Olympics            ',
+  'Other               ',
+  'Rugby               ',
+  'Soccer              ',
+  'Tennis              ',
+  'Virtual Sports      ',
+];
+
 export function normalizeDatabasePath(value: string): string {
   return value.startsWith('sqlite:') ? value.slice('sqlite:'.length) : value;
 }
@@ -59,11 +81,31 @@ export async function initDatabase(): Promise<AppDatabase> {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       provider TEXT NOT NULL,
+      login TEXT,
+      display_name TEXT,
       parent_agent_id TEXT,
       tier INTEGER,
+      level INTEGER,
+      child_count INTEGER DEFAULT 0,
+      player_count INTEGER DEFAULT 0,
+      seq_number INTEGER,
+      agent_type TEXT,
+      head_count_rate_m REAL,
+      inet_head_count_rate_m REAL,
+      casino_head_count_rate_m REAL,
+      live_betting_rate_m REAL,
+      live_betting2_rate_m REAL,
+      live_casino_rate_m REAL,
+      prop_builder_rate_m REAL,
+      flash_bets_rate REAL,
+      ext_props_rate REAL,
+      crash_rate REAL,
+      fantasy_rate REAL,
+      amigo_tech_rate REAL,
       credit REAL,
       balance REAL,
       status TEXT DEFAULT 'active',
+      raw_json TEXT,
       last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (parent_agent_id) REFERENCES agents(id)
     );
@@ -72,13 +114,36 @@ export async function initDatabase(): Promise<AppDatabase> {
       id TEXT PRIMARY KEY,
       agent_id TEXT NOT NULL,
       name TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'buckeye',
+      login TEXT,
+      display_name TEXT,
+      agent_login TEXT,
       net_pnl REAL DEFAULT 0,
       ytd_pnl REAL DEFAULT 0,
       exposure REAL DEFAULT 0,
       credit_limit REAL,
       status TEXT DEFAULT 'active',
+      last_seen TEXT,
+      raw_json TEXT,
       last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (agent_id) REFERENCES agents(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS ingestion_checkpoints (
+      provider TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      last_seq INTEGER,
+      last_pull TEXT,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      PRIMARY KEY (provider, entity_type)
+    );
+
+    CREATE TABLE IF NOT EXISTS buckeye_sport_types (
+      raw_value TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      sort_order INTEGER NOT NULL,
+      source TEXT NOT NULL DEFAULT 'seed',
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE TABLE IF NOT EXISTS odds (
@@ -157,6 +222,10 @@ export async function initDatabase(): Promise<AppDatabase> {
     );
 
     CREATE INDEX IF NOT EXISTS idx_players_agent ON players(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_agents_parent ON agents(parent_agent_id);
+    CREATE INDEX IF NOT EXISTS idx_players_agent_login ON players(agent_login);
+    CREATE INDEX IF NOT EXISTS idx_checkpoints_provider_entity ON ingestion_checkpoints(provider, entity_type);
+    CREATE INDEX IF NOT EXISTS idx_buckeye_sport_types_label ON buckeye_sport_types(label);
     CREATE INDEX IF NOT EXISTS idx_odds_event ON odds(event_id);
     CREATE INDEX IF NOT EXISTS idx_wagers_agent ON wagers(agent_login);
     CREATE INDEX IF NOT EXISTS idx_wagers_datetime ON wagers(insert_datetime);
@@ -301,6 +370,7 @@ export async function initDatabase(): Promise<AppDatabase> {
   console.log('📊 Database tables created');
   await migrateDatabase(db);
   await createPostMigrationIndexes(db);
+  await seedBuckeyeSportTypes(db);
   return db;
 }
 
@@ -369,8 +439,104 @@ export async function migrateDatabase(db: any) {
       await db.exec(`ALTER TABLE detected_patterns ADD COLUMN agent_login TEXT`);
       console.log('📊 Migration: added agent_login to detected_patterns');
     }
+
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS ingestion_checkpoints (
+        provider TEXT NOT NULL,
+        entity_type TEXT NOT NULL,
+        last_seq INTEGER,
+        last_pull TEXT,
+        metadata TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (provider, entity_type)
+      )
+    `);
+
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS buckeye_sport_types (
+        raw_value TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        sort_order INTEGER NOT NULL,
+        source TEXT NOT NULL DEFAULT 'seed',
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    const agentColumns = await db.all(`PRAGMA table_info(agents)`);
+    const agentColumnNames = new Set(agentColumns.map((c: any) => c.name));
+    const agentAdds: Array<[string, string]> = [
+      ['login', 'TEXT'],
+      ['display_name', 'TEXT'],
+      ['level', 'INTEGER'],
+      ['child_count', 'INTEGER DEFAULT 0'],
+      ['player_count', 'INTEGER DEFAULT 0'],
+      ['seq_number', 'INTEGER'],
+      ['agent_type', 'TEXT'],
+      ['head_count_rate_m', 'REAL'],
+      ['inet_head_count_rate_m', 'REAL'],
+      ['casino_head_count_rate_m', 'REAL'],
+      ['live_betting_rate_m', 'REAL'],
+      ['live_betting2_rate_m', 'REAL'],
+      ['live_casino_rate_m', 'REAL'],
+      ['prop_builder_rate_m', 'REAL'],
+      ['flash_bets_rate', 'REAL'],
+      ['ext_props_rate', 'REAL'],
+      ['crash_rate', 'REAL'],
+      ['fantasy_rate', 'REAL'],
+      ['amigo_tech_rate', 'REAL'],
+      ['raw_json', 'TEXT'],
+    ];
+    for (const [name, type] of agentAdds) {
+      if (!agentColumnNames.has(name)) {
+        await db.exec(`ALTER TABLE agents ADD COLUMN ${name} ${type}`);
+        console.log(`📊 Migration: added ${name} to agents`);
+      }
+    }
+
+    const playerColumns = await db.all(`PRAGMA table_info(players)`);
+    const playerColumnNames = new Set(playerColumns.map((c: any) => c.name));
+    const playerAdds: Array<[string, string]> = [
+      ['provider', "TEXT NOT NULL DEFAULT 'buckeye'"],
+      ['login', 'TEXT'],
+      ['display_name', 'TEXT'],
+      ['agent_login', 'TEXT'],
+      ['last_seen', 'TEXT'],
+      ['raw_json', 'TEXT'],
+    ];
+    for (const [name, type] of playerAdds) {
+      if (!playerColumnNames.has(name)) {
+        await db.exec(`ALTER TABLE players ADD COLUMN ${name} ${type}`);
+        console.log(`📊 Migration: added ${name} to players`);
+      }
+    }
+
+    await db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_provider_login_unique ON agents(provider, login);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_players_provider_login_unique ON players(provider, login);
+      CREATE INDEX IF NOT EXISTS idx_agents_parent ON agents(parent_agent_id);
+      CREATE INDEX IF NOT EXISTS idx_agents_seq ON agents(seq_number);
+      CREATE INDEX IF NOT EXISTS idx_players_agent_id ON players(agent_id);
+      CREATE INDEX IF NOT EXISTS idx_players_agent_login ON players(agent_login);
+      CREATE INDEX IF NOT EXISTS idx_checkpoints_provider_entity ON ingestion_checkpoints(provider, entity_type);
+      CREATE INDEX IF NOT EXISTS idx_buckeye_sport_types_label ON buckeye_sport_types(label);
+    `);
+    await seedBuckeyeSportTypes(db);
   } catch (err) {
     console.error('📊 Migration error:', err);
+  }
+}
+
+export async function seedBuckeyeSportTypes(db: Database): Promise<void> {
+  for (const [index, rawValue] of BUCKEYE_SPORT_TYPES.entries()) {
+    await db.run(
+      `INSERT INTO buckeye_sport_types (raw_value, label, sort_order, source, updated_at)
+       VALUES (?, ?, ?, 'seed', CURRENT_TIMESTAMP)
+       ON CONFLICT(raw_value) DO UPDATE SET
+        label = excluded.label,
+        sort_order = excluded.sort_order,
+        source = excluded.source,
+        updated_at = CURRENT_TIMESTAMP`,
+      [rawValue, rawValue.trim(), index]
+    );
   }
 }
 

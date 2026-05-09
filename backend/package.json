@@ -6,7 +6,8 @@
     "dev": "bun run --hot src/index.ts",
     "start": "bun run src/index.ts",
     "build": "bun build src/index.ts --target bun --outdir dist",
-    "test": "bun test"
+    "test": "bun test",
+    "backfill:hierarchy": "bun run scripts/backfill-hierarchy.ts"
   },
   "dependencies": {
     "dotenv": "^16.3.1",

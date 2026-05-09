@@ -1,5 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import { evaluateWager, evaluateWagers } from '../src/risk/AlertEngine';
+import { loadLocalAgentHierarchy } from '../src/api/helpers';
+import { parseWeeklyFigureSummary } from '../src/scrapers/BuckeyeAPI';
 import type { EnrichedWager } from '../src/risk/AlertEngine';
 
 describe('AlertEngine', () => {
@@ -440,6 +442,28 @@ describe('BuckeyeScraperManager weekly figures', () => {
   });
 });
 
+describe('BuckeyeAPI weekly figure parser', () => {
+  test('normalizes Buckeye LIST.ARRAY weekly summary', () => {
+    const parsed = parseWeeklyFigureSummary({
+      LIST: {
+        ARRAY: [
+          {
+            ThisWeek: 463667.8025000004,
+            Active: 4224,
+            Today: 5469.419999999999,
+          },
+        ],
+        INFO: 'INFO',
+      },
+    });
+
+    expect(parsed.thisWeek).toBe(463667.8025000004);
+    expect(parsed.active).toBe(4224);
+    expect(parsed.today).toBe(5469.419999999999);
+    expect(parsed.info).toBe('INFO');
+  });
+});
+
 describe('BuckeyeScraperManager manager snapshot', () => {
   test('returns unauthenticated response without an active Buckeye agent', async () => {
     const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
@@ -480,6 +504,142 @@ describe('BuckeyeScraperManager manager snapshot', () => {
     expect(calls).toEqual(['A2']);
     expect(result.agentId).toBe('A2');
     expect(result.sportsType[0].Sport).toBe('Baseball');
+  });
+});
+
+describe('BuckeyeScraperManager Buckeye agent performance report', () => {
+  test('returns unauthenticated response without an active Buckeye agent', async () => {
+    const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
+    const manager = new BuckeyeScraperManager({} as any, () => {}, false);
+
+    const result = await manager.getBuckeyeAgentPerformanceReport(undefined, {
+      start: '04/28/2026',
+      end: '05/09/2026',
+    });
+
+    expect(result.data).toBeNull();
+    expect(result.message).toContain('Not authenticated');
+  });
+
+  test('uses requested active agent for Buckeye agent performance lookups', async () => {
+    const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
+    const manager = new BuckeyeScraperManager({} as any, () => {}, false);
+    const calls: string[] = [];
+
+    (manager as any).agents.set('A1', {
+      api: {
+        isAuthenticated: () => true,
+        getAgentPerformanceReport: async () => {
+          calls.push('A1');
+          return { agentId: 'A1', data: [] };
+        },
+      },
+    });
+    (manager as any).agents.set('A2', {
+      api: {
+        isAuthenticated: () => true,
+        getAgentPerformanceReport: async (options: any) => {
+          calls.push(`A2:${options.start}:${options.end}:${options.type}`);
+          return { agentId: 'A2', data: [{ Agent: 'A2' }] };
+        },
+      },
+    });
+
+    const result = await manager.getBuckeyeAgentPerformanceReport('A2', {
+      start: '04/28/2026',
+      end: '05/09/2026',
+      type: 'CP',
+    });
+
+    expect(calls).toEqual(['A2:04/28/2026:05/09/2026:CP']);
+    expect(result.data[0].Agent).toBe('A2');
+  });
+});
+
+describe('Buckeye agent performance options', () => {
+  test('documents all Buckeye getAgentPerformance form fields', async () => {
+    const { registerBuckeyeRoutes } = await import('../src/api/routes/buckeye');
+    const response = registerBuckeyeRoutes(
+      new URL('http://localhost/api/buckeye/agent-performance/options'),
+      new Request('http://localhost/api/buckeye/agent-performance/options'),
+      {} as any
+    );
+
+    expect(response).not.toBeNull();
+    const body = await response!.json();
+    const keys = body.requestFields.map((field: any) => field.key);
+
+    for (const key of [
+      'start',
+      'end',
+      'agentID',
+      'type',
+      'freePlay',
+      'store',
+      'sport',
+      'subsport',
+      'period',
+      'wagerType',
+      'betType',
+      'tipo',
+      'debug',
+      'operation',
+      'RRO',
+      'agentOwner',
+      'agentSite',
+    ]) {
+      expect(keys).toContain(key);
+    }
+    expect(body.activities).toContainEqual({ value: '0', label: 'Sports' });
+    expect(body.sports).toContainEqual({
+      value: 'Basketball',
+      label: 'Basketball',
+      rawValue: 'Basketball          ',
+    });
+    expect(body.periods).toContainEqual({ value: '-1', label: 'All Periods' });
+  });
+
+  test('returns seeded Buckeye sports type payload shape', async () => {
+    const { registerBuckeyeRoutes } = await import('../src/api/routes/buckeye');
+    const response = await registerBuckeyeRoutes(
+      new URL('http://localhost/api/buckeye/sports-types'),
+      new Request('http://localhost/api/buckeye/sports-types'),
+      {
+        getBuckeyeSportTypes: async () => [
+          {
+            raw_value: 'Basketball          ',
+            label: 'Basketball',
+            sort_order: 2,
+            source: 'seed',
+          },
+        ],
+      } as any
+    );
+
+    expect(response).not.toBeNull();
+    const body = await response!.json();
+    expect(body.LIST[0]).toEqual({
+      sportType: 'Basketball          ',
+      '0': 'Basketball          ',
+      label: 'Basketball',
+      value: 'Basketball',
+      sortOrder: 2,
+      source: 'seed',
+    });
+  });
+});
+
+describe('local Buckeye hierarchy exports', () => {
+  test('enriches raw hierarchy with parent links and player counts', async () => {
+    const result = await loadLocalAgentHierarchy();
+
+    expect(Array.isArray(result.GENERAL)).toBe(true);
+    if (result.GENERAL.length === 0) return;
+
+    const child = result.GENERAL.find((agent: any) => Number(agent.Level) > 1);
+    expect(child?.ParentAgentID).toBeTruthy();
+    expect(result.GENERAL.some((agent: any) => Number(agent.PlayerCount) > 0)).toBe(true);
+    expect(result.meta?.hasPlayerPasswords).toBe(false);
   });
 });
 

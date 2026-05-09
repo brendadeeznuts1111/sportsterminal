@@ -6,7 +6,7 @@ import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 
 export function registerAgentRoutes(
   url: URL,
-  _request: Request,
+  request: Request,
   scraperManager: BuckeyeScraperManager
 ): Response | null {
   if (url.pathname === '/api/agents') {
@@ -32,6 +32,10 @@ export function registerAgentRoutes(
   if (url.pathname === '/api/agents/hierarchy') {
     const agentId = url.searchParams.get('agentId') || undefined;
     return handleAsync(async () => {
+      const persistedHierarchy = await scraperManager.getPersistedAgentHierarchy();
+      if (Array.isArray(persistedHierarchy?.GENERAL) && persistedHierarchy.GENERAL.length > 0) {
+        return persistedHierarchy;
+      }
       const liveHierarchy = await scraperManager.getAgentHierarchy(agentId);
       if (Array.isArray(liveHierarchy?.GENERAL) && liveHierarchy.GENERAL.length > 0) {
         return liveHierarchy;
@@ -39,6 +43,10 @@ export function registerAgentRoutes(
       const localHierarchy = await loadLocalAgentHierarchy();
       return localHierarchy.GENERAL.length > 0 ? localHierarchy : liveHierarchy;
     }, corsHeaders);
+  }
+
+  if (url.pathname === '/api/agents/backfill/hierarchy' && request.method === 'POST') {
+    return handleAsync(async () => scraperManager.backfillAgentHierarchy(), corsHeaders);
   }
 
   // Buckeye IP access logs

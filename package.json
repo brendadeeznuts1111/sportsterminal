@@ -15,6 +15,7 @@
     "serve": "bun run scripts/serve-frontend.ts",
     "db:reset": "rm -f backend/data/terminal.db && echo 'Database reset. Run bun run dev to recreate.'",
     "db:migrate": "bun run --cwd backend scripts/migrate.ts",
+    "backfill:hierarchy": "bun run --cwd backend scripts/backfill-hierarchy.ts",
     "status": "bun run scripts/status.js",
     "stop": "bun run scripts/stop.js",
     "clean-start": "bun run stop && bun run dev",

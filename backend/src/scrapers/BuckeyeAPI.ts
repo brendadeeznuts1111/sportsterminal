@@ -69,6 +69,57 @@ export interface BuckeyeWeeklyFigureResult {
     type: string;
     layout: string;
   };
+  parsed: {
+    thisWeek: number;
+    active: number;
+    today: number;
+    info: string;
+  };
+  data: unknown;
+}
+
+export interface BuckeyeAgentPerformanceOptions {
+  start: string;
+  end: string;
+  agentID?: string;
+  type?: string;
+  freePlay?: string;
+  store?: string;
+  sport?: string;
+  subsport?: string;
+  period?: string | number;
+  wagerType?: string;
+  betType?: string;
+  tipo?: string | number;
+  activity?: string | number;
+  group?: string | number;
+  debug?: string | number;
+  agentOwner?: string;
+}
+
+export interface BuckeyeAgentPerformanceResult {
+  fetchedAt: string;
+  agentId: string;
+  params: {
+    start: string;
+    end: string;
+    agentID: string;
+    type: string;
+    freePlay: string;
+    store: string;
+    sport: string;
+    subsport: string;
+    period: string;
+    wagerType: string;
+    betType: string;
+    tipo: string;
+    debug: string;
+    operation: string;
+    RRO: string;
+    agentOwner: string;
+    agentSite: string;
+    group: string;
+  };
   data: unknown;
 }
 
@@ -539,11 +590,87 @@ export class BuckeyeAPI {
       throw new Error(`getWeeklyFigureByAgentLite failed: ${response.status} ${response.statusText} - ${text.substring(0, 200)}`);
     }
 
+    const data = await response.json();
     return {
       fetchedAt: new Date().toISOString(),
       agentId: this.agentId,
       params: { week, type, layout },
-      data: await response.json(),
+      parsed: parseWeeklyFigureSummary(data),
+      data,
+    };
+  }
+
+  async getAgentPerformanceReport(
+    options: BuckeyeAgentPerformanceOptions
+  ): Promise<BuckeyeAgentPerformanceResult> {
+    if (!this.loggedIn) {
+      throw new Error('Not authenticated. Call login() first.');
+    }
+
+    const agentID = (options.agentID || this.agentId).trim().toUpperCase();
+    const type = (options.type || 'CP').trim() || 'CP';
+    const freePlay = (options.freePlay || 'Y').trim() || 'Y';
+    const store = (options.store || agentID).trim() || agentID;
+    const sport = (options.sport || '').trim();
+    const subsport = (options.subsport || '').trim();
+    const period = String(options.period ?? '-1');
+    const wagerType = (options.wagerType || '').trim();
+    const betType = (options.betType || '').trim();
+    const tipo = String(options.tipo ?? options.activity ?? '-1');
+    const group = String(options.group ?? '');
+    const debug = String(options.debug ?? '0');
+    const start = normalizeReportDate(options.start);
+    const end = normalizeReportDate(options.end);
+    validateReportDateRange(start, end);
+    const agentOwner = (options.agentOwner || this.agentId).trim().toUpperCase();
+
+    const body = new URLSearchParams({
+      start,
+      end,
+      agentID,
+      type,
+      freePlay,
+      store,
+      sport,
+      subsport,
+      period,
+      wagerType,
+      betType,
+      tipo,
+      debug,
+      operation: 'getAgentPerformance',
+      RRO: '1',
+      agentOwner,
+      agentSite: '1',
+    });
+    if (group) {
+      body.set('group', group);
+    }
+
+    return {
+      fetchedAt: new Date().toISOString(),
+      agentId: this.agentId,
+      params: {
+        start,
+        end,
+        agentID,
+        type,
+        freePlay,
+        store,
+        sport,
+        subsport,
+        period,
+        wagerType,
+        betType,
+        tipo,
+        debug,
+        operation: 'getAgentPerformance',
+        RRO: '1',
+        agentOwner,
+        agentSite: '1',
+        group,
+      },
+      data: await this.postForm(`${this.baseUrl}/cloud/api/Manager/getAgentPerformance`, body, 'getAgentPerformance'),
     };
   }
 
@@ -713,6 +840,70 @@ export class BuckeyeAPI {
 
   getToken(): string {
     return this.token;
+  }
+
+  /**
+   * Accept or decline a wager through the Buckeye bet ticker action API.
+   * Endpoint: /cloud/api/Manager/betTickerAction
+   */
+  async betTickerAction(params: {
+    wagerNumber: number;
+    action: 'accept' | 'decline';
+    agentId: string;
+    reason?: string;
+  }): Promise<{ success: boolean; message: string; error?: string }> {
+    if (!this.loggedIn) {
+      throw new Error('Not authenticated. Call login() first.');
+    }
+
+    const body = new URLSearchParams({
+      agentID: params.agentId,
+      wagerNumber: String(params.wagerNumber),
+      action: params.action === 'accept' ? '1' : '0',
+      agentOwner: this.agentId,
+      agentSite: '1',
+      operation: 'betTickerAction',
+      RRO: '1',
+      ...(params.reason ? { reason: params.reason } : {}),
+    });
+
+    try {
+      const response = await fetch(`${this.baseUrl}/cloud/api/Manager/betTickerAction`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'Authorization': `Bearer ${this.token}`,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json, text/javascript, */*; q=0.01',
+          'X-Requested-With': 'XMLHttpRequest',
+          'Origin': this.baseUrl,
+          'Referer': `${this.baseUrl}/manager.html?bet-ticker=active`,
+          ...(this.cfCookie ? { 'Cookie': this.cfCookie } : {}),
+        },
+        body,
+      });
+
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          this.loggedIn = false;
+        }
+        const text = await response.text().catch(() => '');
+        throw new Error(`betTickerAction failed: ${response.status} ${response.statusText} - ${text.substring(0, 200)}`);
+      }
+
+      const data = await response.json();
+      const success = data?.success === true || data?.code === 'OK' || response.ok;
+      return {
+        success,
+        message: success ? `Wager #${params.wagerNumber} ${params.action}ed` : (data?.message || 'Unknown response'),
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: 'Action failed',
+        error: error instanceof Error ? error.message : 'Network error',
+      };
+    }
   }
 
   async getWebLog(options: BuckeyeWebLogOptions): Promise<BuckeyeWebLogRow[]> {
@@ -1010,6 +1201,16 @@ export function buildAccountInfoResult(agentId: string, data: any): BuckeyeAccou
   };
 }
 
+export function parseWeeklyFigureSummary(data: any): BuckeyeWeeklyFigureResult['parsed'] {
+  const summary = Array.isArray(data?.LIST?.ARRAY) ? data.LIST.ARRAY[0] || {} : {};
+  return {
+    thisWeek: numberValue(summary.ThisWeek),
+    active: numberValue(summary.Active),
+    today: numberValue(summary.Today),
+    info: stringValue(data?.LIST?.INFO),
+  };
+}
+
 export function parseBuckeyeAccountInfo(accountInfo: Record<string, unknown>): ParsedBuckeyeAccountInfo {
   const limits: Record<string, number> = {};
   const featureFlags: BuckeyeAccountFeatureFlag[] = [];
@@ -1164,6 +1365,29 @@ function normalizeWebLogDate(value: string, type: BuckeyeWebLogType): string {
   const dd = String(date.getDate()).padStart(2, '0');
   if (type === 'C') return `${yyyy}-${mm}-${dd}`;
   return `${mm}/${dd}/${yyyy}`;
+}
+
+function normalizeReportDate(value: string): string {
+  const date = parseWebLogDate(value);
+  if (!date) return value;
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${mm}/${dd}/${date.getFullYear()}`;
+}
+
+function validateReportDateRange(start: string, end: string): void {
+  const startDate = parseWebLogDate(start);
+  const endDate = parseWebLogDate(end);
+  if (!startDate || !endDate) {
+    throw new Error('Invalid getAgentPerformance date range');
+  }
+  if (startDate.getTime() > endDate.getTime()) {
+    throw new Error('getAgentPerformance start date must be before end date');
+  }
+  const days = Math.ceil((endDate.getTime() - startDate.getTime()) / 86400000) + 1;
+  if (days > 366) {
+    throw new Error('getAgentPerformance supports a maximum 366-day range');
+  }
 }
 
 function normalizeWebLogRow(raw: any): BuckeyeWebLogRow {

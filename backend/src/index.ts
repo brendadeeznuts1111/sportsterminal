@@ -22,6 +22,9 @@ const wsClients = new Set<any>();
 let idleTimeout: ReturnType<typeof setTimeout> | null = null;
 let isIdleShutdown = false;
 
+// Stored credentials for idle reconnect
+let lastCredentials: { agentId: string; password: string; baseUrl?: string; cfCookie?: string } | null = null;
+
 function broadcast(msg: object) {
   const payload = JSON.stringify(msg);
   for (const client of wsClients) {
@@ -58,8 +61,14 @@ function cancelIdleTimer() {
 function onClientConnected() {
   cancelIdleTimer();
   if (isIdleShutdown) {
-    console.log('[Idle] Client reconnected — restarting odds poller');
+    console.log('[Idle] Client reconnected — restarting scrapers');
     oddsPoller.start();
+    // Restart Buckeye scrapers if we have stored credentials
+    if (lastCredentials) {
+      scraperManager.startAgent(lastCredentials.agentId, lastCredentials).catch(err => {
+        console.error('[Idle] Failed to restart agent:', err);
+      });
+    }
     isIdleShutdown = false;
   }
 }
@@ -115,15 +124,27 @@ async function startServer() {
     websocket: {
       open(ws) {
         console.log('[WS] Client connected');
-        ws.data = { agentId: null, isAuthenticated: false };
+        ws.data = { agentId: null, isAuthenticated: false, lastPing: Date.now() };
         wsClients.add(ws);
         onClientConnected();
+
+        // Heartbeat: ping every 30s, close if no response within 45s
+        ws.data.pingInterval = setInterval(() => {
+          if (Date.now() - ws.data.lastPing > 45_000) {
+            console.log('[WS] Stale connection detected, closing');
+            clearInterval(ws.data.pingInterval);
+            ws.close();
+          } else {
+            try { ws.ping(); } catch {}
+          }
+        }, 30_000);
       },
       message(ws, message) {
         handleWebSocketMessage(ws, message, scraperManager);
       },
       close(ws) {
         console.log('[WS] Client disconnected');
+        if (ws.data?.pingInterval) clearInterval(ws.data.pingInterval);
         wsClients.delete(ws);
         if (ws.data?.agentId) {
           scraperManager.stopAgent(ws.data.agentId);
@@ -272,6 +293,14 @@ async function handleWebSocketMessage(
           return;
         }
 
+        // Store credentials for idle reconnect
+        lastCredentials = {
+          agentId: msg.agentId,
+          password: msg.password,
+          baseUrl: process.env.BUCKEYE_BASE_URL,
+          cfCookie: msg.cfCookie,
+        };
+
         // Get token from the agent
         const agentInstance = scraperManager.getAgentInstance(msg.agentId);
         const buckeyeToken = agentInstance?.api.getToken() || '';
@@ -371,6 +400,20 @@ async function handleWebSocketMessage(
               message: err instanceof Error ? err.message : 'Action failed',
             })
           );
+        }
+        break;
+      }
+
+      case 'token_refresh': {
+        if (!ws.data?.isAuthenticated || !ws.data?.agentId) {
+          ws.send(JSON.stringify({ type: 'token_refresh_error', message: 'Not authenticated' }));
+          return;
+        }
+        try {
+          const newToken = await createToken(ws.data.agentId, JWT_SECRET);
+          ws.send(JSON.stringify({ type: 'token_refreshed', token: newToken }));
+        } catch (err) {
+          ws.send(JSON.stringify({ type: 'token_refresh_error', message: 'Token refresh failed' }));
         }
         break;
       }

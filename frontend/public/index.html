@@ -6,7 +6,7 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>Sports Terminal v5.2 - Buckeye PPH Integration</title>
+<title>Sports Terminal v5.3 — Buckeye PPH Integration</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -141,7 +141,7 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
     <div class="flex items-center gap-2">
       <div class="w-7 h-7 rounded flex items-center justify-center font-bold text-sm" style="background:var(--accent);color:#fff;">S</div>
       <span class="font-bold text-sm tracking-wide" style="color:var(--accent);">SPORTS TERMINAL</span>
-      <span class="text-xs px-2 py-0.5 rounded-full" style="background:var(--accent);color:#fff;">v5.2</span>
+      <span class="text-xs px-2 py-0.5 rounded-full" style="background:var(--accent);color:#fff;">v5.3</span>
     </div>
     <div class="h-6 w-px" style="background:var(--border);"></div>
     <div class="hidden xl:flex items-center gap-2 text-xs">
@@ -990,7 +990,27 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
   <div class="tooltip-content" id="globalTooltipContent"></div>
 </div>
 
-<script src="buckeye_data.js"></script>
+<script>
+// Load static demo data only as fallback when backend is unavailable
+let buckeyeWagers = [];
+async function loadStaticData() {
+  try {
+    const res = await fetch('buckeye_data.js');
+    if (res.ok) {
+      const text = await res.text();
+      // Extract the array assignment from the JS file
+      const match = text.match(/buckeyeWagers\s*=\s*(\[[\s\S]*?\]);/);
+      if (match) {
+        buckeyeWagers = JSON.parse(match[1]);
+        console.log('[Static] Loaded', buckeyeWagers.length, 'demo wagers');
+      }
+    }
+  } catch {
+    console.log('[Static] buckeye_data.js not available');
+  }
+}
+loadStaticData();
+</script>
 <script>
 // ==================== WEBSOCKET CLIENT ====================
 class TerminalWebSocketClient {
@@ -2674,38 +2694,6 @@ function updateAlertsToastButton() {
 }
 
 // ==================== PATTERNS ====================
-function renderPatternsLegacy() {
-  const tbody = document.getElementById('patternsTable');
-  if (!tbody) return;
-
-  const patterns = [
-    { type: 'Steam Move', game: '76ers vs Knicks', details: '76ers -120 → -135 (15 bps)', severity: 85, time: '2m ago' },
-    { type: 'Reverse Line', game: 'Spurs vs Timberwolves', details: 'Public on Spurs, line moves to +4.5', severity: 62, time: '5m ago' },
-    { type: 'Syndicate Play', game: 'Braves vs Dodgers', details: '3 agents hammering Braves ML', severity: 78, time: '8m ago' },
-    { type: 'Arbitrage', game: 'Rays vs Red Sox', details: 'Over 8.5 +100 / Under 8.5 +105', severity: 45, time: '12m ago' },
-  ];
-
-  tbody.innerHTML = patterns.map(p => {
-    const color = p.severity > 70 ? 'var(--red)' : p.severity > 50 ? 'var(--yellow)' : 'var(--green)';
-    return `<tr class="border-b" style="border-color:var(--border);">
-      <td class="px-3 py-2"><span class="px-1.5 py-0.5 rounded text-xs font-bold" style="background:${color}22;color:${color};">${p.type}</span></td>
-      <td class="px-3 py-2">${p.game}</td>
-      <td class="px-3 py-2 text-xs" style="color:var(--text-dim);">${p.details}</td>
-      <td class="px-3 py-2 text-center">
-        <div class="flex items-center justify-center gap-1">
-          <div class="w-16 h-1.5 rounded-full" style="background:var(--border);"><div class="h-full rounded-full" style="width:${p.severity}%;background:${color};"></div></div>
-          <span class="text-xs">${p.severity}%</span>
-        </div>
-      </td>
-      <td class="px-3 py-2 text-center text-xs" style="color:var(--text-dim);">${p.time}</td>
-    </tr>`;
-  }).join('');
-}
-
-function simulatePatternsLegacy() {
-  showToast('Pattern simulation started', 'info');
-}
-
 function setPatternCategory(category) {
   patternCategory = category || 'all';
   sectionCache.patterns.at = 0;
@@ -4554,7 +4542,7 @@ function buildAgentTree(flatList) {
       level: level,
       children: [],
       expanded: level <= 2, // auto-expand top 2 levels
-      playerCount: agent.PLAYERS ? agent.PLAYERS.length : 0,
+      playerCount: Number(agent.PlayerCount) || (agent.PLAYERS ? agent.PLAYERS.length : 0),
     };
     // Find correct parent by popping until we find level < current
     while (stack.length > 1 && stack[stack.length - 1].level >= level) {

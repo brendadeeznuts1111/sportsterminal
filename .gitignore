@@ -18,6 +18,10 @@ backend/data/*.db-journal
 backend/data/*.db-shm
 backend/data/*.db-wal
 
+# Sensitive agent data
+docs/agentobject.md
+docs/agentslistharz.md
+
 # Logs
 *.log
 logs/

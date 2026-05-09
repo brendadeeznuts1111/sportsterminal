@@ -4,7 +4,7 @@
  */
 import * as jose from 'jose';
 
-const JWT_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes
+const JWT_EXPIRY_MS = 15 * 60 * 1000; // 15 minutes (matches Buckeye token renewal)
 const JWT_ALG = 'HS256';
 
 export interface JwtPayload {

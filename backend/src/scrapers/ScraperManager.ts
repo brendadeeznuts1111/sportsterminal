@@ -8,6 +8,7 @@ import type { Database } from '../database';
 import {
   BuckeyeAPI,
   BuckeyeCredentials,
+  type BuckeyeAgentPerformanceOptions,
   type BuckeyeManagerSnapshotResult,
   type BuckeyeWeeklyFigureOptions,
 } from './BuckeyeAPI';
@@ -16,6 +17,7 @@ import { evaluateWager, Alert } from '../risk/AlertEngine';
 import { WebhookService } from '../services/WebhookService';
 import { PatternService } from '../patterns/PatternService';
 import { ActionQueue } from '../actions/ActionQueue';
+import { backfillAgentsAndPlayers } from '../services/HierarchyBackfillService';
 
 interface AgentInstance {
   api: BuckeyeAPI;
@@ -316,6 +318,78 @@ export class BuckeyeScraperManager {
     }
   }
 
+  async getPersistedAgentHierarchy(): Promise<any> {
+    try {
+      const rows = await this.db.all(
+        `SELECT
+          id,
+          login,
+          display_name,
+          parent_agent_id,
+          level,
+          child_count,
+          player_count,
+          seq_number,
+          agent_type,
+          head_count_rate_m,
+          inet_head_count_rate_m,
+          casino_head_count_rate_m,
+          live_betting_rate_m,
+          live_betting2_rate_m,
+          live_casino_rate_m,
+          prop_builder_rate_m,
+          flash_bets_rate,
+          ext_props_rate,
+          crash_rate,
+          fantasy_rate,
+          amigo_tech_rate
+         FROM agents
+         WHERE provider = 'buckeye'
+         ORDER BY COALESCE(seq_number, 999999999), COALESCE(level, 99), login`
+      );
+      if (!rows.length) {
+        return { GENERAL: [], source: 'database' };
+      }
+
+      return {
+        GENERAL: rows.map((row: any) => ({
+          AgentID: row.id,
+          SeqNumber: row.seq_number,
+          Level: row.level,
+          AgentType: row.agent_type,
+          Login: row.login || row.id,
+          ParentAgentID: row.parent_agent_id || '',
+          ChildCount: row.child_count || 0,
+          PlayerCount: row.player_count || 0,
+          HeadCountRateM: row.head_count_rate_m || 0,
+          InetHeadCountRateM: row.inet_head_count_rate_m || 0,
+          CasinoHeadCountRateM: row.casino_head_count_rate_m || 0,
+          LiveBettingRateM: row.live_betting_rate_m || 0,
+          LiveBetting2RateM: row.live_betting2_rate_m || 0,
+          LiveCasinoRateM: row.live_casino_rate_m || 0,
+          PropBuilderRateM: row.prop_builder_rate_m || 0,
+          FlashBetsRate: row.flash_bets_rate || 0,
+          ExtPropsRate: row.ext_props_rate || 0,
+          CrashRate: row.crash_rate || 0,
+          FantasyRate: row.fantasy_rate || 0,
+          AmigoTechRate: row.amigo_tech_rate || 0,
+        })),
+        meta: {
+          source: 'database',
+          agentCount: rows.length,
+        },
+        source: 'database',
+      };
+    } catch (err: any) {
+      console.error('[ScraperManager] getPersistedAgentHierarchy error:', err.message);
+      return { GENERAL: [], source: 'database', error: err.message };
+    }
+  }
+
+  async backfillAgentHierarchy(): Promise<any> {
+    return backfillAgentsAndPlayers(this.db);
+  }
+
   /**
    * Fetch language/theme UI config through an active Buckeye session.
    */
@@ -405,6 +479,35 @@ export class BuckeyeScraperManager {
       return await instance.api.getManagerSnapshot();
     } catch (err: any) {
       console.error('[ScraperManager] getBuckeyeManagerSnapshot error:', err.message);
+      return { data: null, error: err.message };
+    }
+  }
+
+  async getBuckeyeSportTypes(): Promise<any[]> {
+    return this.db.all(
+      `SELECT raw_value, label, sort_order, source, updated_at
+       FROM buckeye_sport_types
+       ORDER BY sort_order ASC`
+    );
+  }
+
+  async getBuckeyeAgentPerformanceReport(
+    agentId?: string,
+    options: BuckeyeAgentPerformanceOptions = {
+      start: '',
+      end: '',
+    }
+  ): Promise<any> {
+    const instance = this.resolveAgentInstance(agentId);
+
+    if (!instance || !instance.api.isAuthenticated()) {
+      return { data: null, message: 'Not authenticated to Buckeye' };
+    }
+
+    try {
+      return await instance.api.getAgentPerformanceReport(options);
+    } catch (err: any) {
+      console.error('[ScraperManager] getBuckeyeAgentPerformanceReport error:', err.message);
       return { data: null, error: err.message };
     }
   }
@@ -737,14 +840,13 @@ export class BuckeyeScraperManager {
       };
     }
 
-    return {
-      id: request.id,
-      success: false,
-      action: request.action,
+    const result = await instance.api.betTickerAction({
       wagerNumber: request.wagerNumber,
-      message: 'Bet action endpoint not configured',
-      error: 'Buckeye accept/decline endpoint is not configured yet',
-    };
+      action: request.action,
+      agentId: request.agentId,
+    });
+
+    return { id: request.id, ...result };
   }
 
   getMetrics(): any {
@@ -961,7 +1063,30 @@ export class BuckeyeScraperManager {
       ]
     );
 
+    await this.updateIngestionCheckpoint('wagers', Number(wager.WagerNumber) || 0, {
+      agentId: wager.AgentID,
+      agentLogin: wager.AgentLogin,
+      scrapedAt: new Date().toISOString(),
+    });
+
     return correlation;
+  }
+
+  private async updateIngestionCheckpoint(
+    entityType: string,
+    lastSeq: number,
+    metadata: Record<string, unknown> = {}
+  ): Promise<void> {
+    if (!lastSeq) return;
+    await this.db.run(
+      `INSERT INTO ingestion_checkpoints (provider, entity_type, last_seq, last_pull, metadata)
+       VALUES ('buckeye', ?, ?, CURRENT_TIMESTAMP, ?)
+       ON CONFLICT(provider, entity_type) DO UPDATE SET
+        last_seq = MAX(COALESCE(ingestion_checkpoints.last_seq, 0), excluded.last_seq),
+        last_pull = excluded.last_pull,
+        metadata = excluded.metadata`,
+      [entityType, lastSeq, JSON.stringify(metadata)]
+    );
   }
 
   async getAccessLogs(limit: number = 200): Promise<any[]> {
