@@ -1,4 +1,4 @@
-# AGENTS.md — Sports Terminal v5.2
+# AGENTS.md — Sports Terminal v5.31
 
 ## Build/Lint/Test Commands
 - **Build**: `bun run build`
@@ -10,6 +10,8 @@
 - **Stop**: `bun run stop` — Kill only the process using port 3000
 - **Clean start**: `bun run clean-start` — Stop + dev in one command
 - **Dev on custom port**: `bun run dev:port 3001`
+- **Verify analytics**: `bun run dev` then check `http://localhost:3000/api/betting/velocity?minutes=10`
+- **Check error tracking**: Open the **Up** tab in the frontend sidebar
 
 ## Code Style Guidelines
 - **Language**: TypeScript (.ts), Bun runtime (v1.3.13+), prefer Bun APIs
@@ -51,7 +53,13 @@ sportsterminal/
 │   └── package.json
 ├── frontend/
 │   └── public/
-│       └── index.html            # Single-file SPA; Buckeye data loads from backend only
+│       ├── index.html            # Static SPA shell; Buckeye data loads from backend only
+│       ├── css/
+│       │   └── terminal.css      # Shared terminal styling
+│       └── js/
+│           ├── app.js            # Boot sequence and compatibility host
+│           ├── ws-client.js      # Browser WebSocket client
+│           └── *.js              # Focused frontend module homes
 ├── docs/
 │   ├── BUCKEYE_BACKEND_SCOPE.md  # API spec + architecture
 │   └── IMPLEMENTATION_TRACKER.md # Zone-based progress tracker

@@ -421,6 +421,8 @@ Rugby, Soccer, Tennis, Virtual Sports
 | `request_params` | Redacted request/query parameters |
 | `status_code` | HTTP status code or synthetic error status |
 
+Raw API responses and request params are redacted before persistence. The v5.31 Performance Raw API Archive shows metadata by default and only returns `response_json` when `includeBody=1`; the UI renders that body as escaped text.
+
 ### `wager_archive`
 
 | Column | Meaning |
@@ -628,6 +630,50 @@ Client-to-server WebSocket message types:
 | `betAction` | `agentId`, `wagerNumber`, `action`, optional `amount`, `reason` | Queue accept/decline action |
 | `token_refresh` | none | Request a fresh app JWT |
 
+## Audit & Analytics Tables
+
+| Table | Purpose | Key Columns | Indexes |
+|-------|---------|-------------|---------|
+| `raw_api_logs` | Redacted response audit trail for Buckeye API routes and pollers | `endpoint`, `fetched_at`, `response_json`, `agent_id`, `duration_ms`, `request_params`, `status_code` | `(endpoint, fetched_at)`, `(agent_id)`, `(fetched_at)` |
+| `wager_archive` | Immutable archive of Buckeye wagers (INSERT OR IGNORE by wager_number) | `wager_number`, `agent_id`, `customer_id`, `login`, `wager_type`, `amount_wagered`, `to_win_amount`, `insert_date_time`, `ticket_writer`, `volume_amount`, `short_desc_raw`, `vip`, `agent_login`, `ingested_at`, `raw_json`, `sport`, `league`, `price` | `(insert_date_time)`, `(agent_login, insert_date_time)`, `(customer_id)`, `(ingested_at)` |
+| `access_logs` | Buckeye web access/IP tracker rows | `id`, `agent_id`, `login_id`, `ip_address`, `access_datetime`, `operation`, `data`, `log_type`, `pulled_at`, `raw_json` | `(ip_address, access_datetime DESC)`, `(login_id, access_datetime DESC)` |
+| `master_snapshots` | Master account balance/book snapshots | `provider`, `agent_id`, `timestamp`, `balance`, `available_balance`, `percent_book`, `open_wager_count`, `account_info_json`, `raw_json` | `(timestamp)` |
+| `weekly_figures` | Weekly figure report archive | `agent_id`, `week_start_date`, `sport`, `handle`, `win_loss`, `wager_type`, `raw_json`, `ingested_at` | `(agent_id, week_start_date)` |
+| `agent_performance` | Raw agent performance report archive | `agent_id`, `recorded_at`, `performance_json` | `(agent_id, recorded_at)` |
+| `audit_logs` | Operator/system action trail | `action`, `entity_type`, `entity_id`, `actor_id`, `actor_type`, `old_values`, `new_values`, `timestamp`, `ip_address` | `(timestamp)`, `(entity_type, entity_id)`, `(actor_id)` |
+| `watermarks` | Restart-safe poller cursors | `key` (PK), `value`, `updated_at` | `(key)` |
+
+## Analytics API Endpoints
+
+| Endpoint | Method | Params | Returns |
+|----------|--------|--------|---------|
+| `/api/betting/velocity` | GET | `minutes` (default 30, max 60) | `{ minutes, velocity: [{ timestamp, wagerCount, totalHandle }] }` |
+| `/api/betting/live-vs-pre` | GET | `date` (default today, YYYY-MM-DD) | `{ date, live: { count, volume }, pregame: { count, volume } }` |
+| `/api/logs/access` | GET | `agent`, `ip`, `limit` (default 100, max 500) | `{ logs: [{ ...access_log_fields, first_seen, is_new_ip }], count }` |
+| `/api/master/history` | GET | `limit` (default 100, max 500) | `{ snapshots: [...master_snapshot_fields], count }` |
+| `/api/performance/summary` | GET | `week` (optional, ISO format) | `{ week, summary: [{ agent_id, row_count, handle, win_loss, last_ingested_at }], count }` |
+| `/api/performance/details` | GET | `agent` (required), `weeks` (default 8, max 52) | `{ agentId, weeks, weeklyTrend, sportBreakdown, latestRaw }` |
+| `/api/export/wagers` | GET | — | CSV of `wager_archive` |
+| `/api/export/access-logs` | GET | — | CSV of `access_logs` |
+| `/api/export/performance` | GET | — | CSV of `weekly_figures` |
+
+## Error Handling & Recovery
+
+| Error Type | HTTP Status | Recovery | Auto? |
+|------------|-------------|----------|-------|
+| Missing/Invalid JWT | 401 | Client re-authenticates via WS `auth` message | Manual |
+| Expired Buckeye Token | 401 (upstream) | Auto-renewal (15 min) → password re-login (×3) → stop agent | ✅ Yes |
+| Network Timeout | — | Exponential backoff 5s→10s→20s→40s→60s | ✅ Yes |
+| Rate Limit (429) | 429 | `Retry-After` header, client must wait | ❌ Manual |
+| DB Constraint Violation | 500 | `INSERT OR IGNORE`, transaction rollback | ✅ Yes |
+| Malformed JSON Body | 400 | Client must fix request | ❌ Manual |
+| Missing Required Param | 400 | Client must include param | ❌ Manual |
+| Route Not Found | 404 | Client must use valid path | ❌ Manual |
+| WebSocket Disconnect | — | Auto-reconnect (×5, 3s delay), JWT restore | ✅ Yes |
+| RawApiLogger Failure | — | Fire-and-forget, errors logged silently | ✅ Yes |
+| Poller Concurrent Guard | — | Skip poll, log warning, continue next interval | ✅ Yes |
+| OddsPoller Provider Null | — | Log error, continue running | ✅ Yes |
+
 ## Frontend Storage Keys
 
 | Key | Meaning | Notes |
@@ -639,6 +685,7 @@ Client-to-server WebSocket message types:
 | `toastsEnabled` | Toast toggle | Local UI preference |
 | `retainedRiskPercent` | Exposure retention percentage | Local UI setting |
 | `bookPreferences` | Book visibility/order preferences | JSON UI preference |
+| `sportsTerminal.sidebar.groups.v531` | Collapsible sidebar group state | JSON map of group key to open/closed state |
 | `wsToken` | App JWT from auth response | Short-lived app session token |
 | `password` | Removed on load/connect | Legacy key; should not persist |
 | `cfCookie` | Removed on load/connect | Legacy key; should not persist |

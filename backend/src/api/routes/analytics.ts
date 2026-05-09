@@ -18,6 +18,8 @@ export function registerAnalyticsRoutes(
     return handleAsync(async () => {
       const endpoint = url.searchParams.get('endpoint') || undefined;
       const agentId = url.searchParams.get('agentId') || undefined;
+      const status = url.searchParams.get('status') || undefined;
+      const includeBody = url.searchParams.get('includeBody') === '1';
       const limit = clamp(url.searchParams.get('limit'), 50, 1, 500);
       const days = clamp(url.searchParams.get('days'), 7, 1, 90);
       const where: string[] = [`fetched_at >= datetime('now', '-' || ? || ' days')`];
@@ -31,17 +33,40 @@ export function registerAnalyticsRoutes(
         where.push('agent_id = ?');
         params.push(agentId);
       }
+      if (status) {
+        if (/^\d+$/.test(status)) {
+          where.push('status_code = ?');
+          params.push(Number(status));
+        } else if (status === 'success') {
+          where.push('(status_code IS NULL OR (status_code >= 200 AND status_code < 400))');
+        } else if (status === 'warning') {
+          where.push('status_code >= 400 AND status_code < 500');
+        } else if (status === 'error') {
+          where.push('status_code >= 500');
+        }
+      }
       params.push(limit);
 
       const logs = await db.all(
-        `SELECT id, endpoint, fetched_at, agent_id, duration_ms, status_code
+        `SELECT id, endpoint, fetched_at, agent_id, duration_ms, status_code, request_params${includeBody ? ', response_json' : ''}
          FROM raw_api_logs
          WHERE ${where.join(' AND ')}
          ORDER BY fetched_at DESC
          LIMIT ?`,
         params
       );
-      return { logs, count: logs.length, days, endpoint: endpoint || null, agentId: agentId || null };
+      return {
+        logs: logs.map((row: any) => ({
+          ...row,
+          request_params_summary: summarizeParams(row.request_params),
+        })),
+        count: logs.length,
+        days,
+        endpoint: endpoint || null,
+        agentId: agentId || null,
+        status: status || null,
+        includeBody,
+      };
     }, corsHeaders);
   }
 
@@ -364,6 +389,32 @@ function clamp(value: string | null, fallback: number, min: number, max: number)
   return Number.isFinite(parsed) ? Math.min(Math.max(parsed, min), max) : fallback;
 }
 
+function summarizeParams(value: unknown): string {
+  if (!value) return '';
+  const text = String(value);
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return Object.entries(parsed)
+        .slice(0, 8)
+        .map(([key, child]) => `${key}=${child === null || child === undefined ? '' : String(child)}`)
+        .join(' · ');
+    }
+  } catch {
+    // Try URLSearchParams below.
+  }
+
+  try {
+    const params = new URLSearchParams(text);
+    return Array.from(params.entries())
+      .slice(0, 8)
+      .map(([key, child]) => `${key}=${child}`)
+      .join(' · ');
+  } catch {
+    return text.slice(0, 160);
+  }
+}
+
 async function csvExport(db: any, sql: string, params: unknown[], filename: string): Promise<Response> {
   try {
     const rows = await db.all(sql, params);
@@ -397,4 +448,3 @@ function csvCell(value: unknown): string {
   const text = String(value).replace(/"/g, '""');
   return /[",\r\n]/.test(text) ? `"${text}"` : text;
 }
-

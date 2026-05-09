@@ -1,4 +1,4 @@
-# Sports Terminal v5.3 Implementation Tracker
+# Sports Terminal v5.31 Implementation Tracker
 
 > Last updated: **2026-05-09**
 > Started: **2026-05-08**
@@ -11,7 +11,7 @@
 
 ## Current Release Shape
 
-Sports Terminal v5.3 is now an always-on Buckeye operations terminal. The backend process, not the browser tab, owns live ingestion. Browser disconnects only close the UI session; vaulted Buckeye agents continue polling while the backend is running.
+Sports Terminal v5.31 is now an always-on Buckeye operations terminal with polished navigation, clearer operator chrome, raw API observability, and a static frontend module layout. The backend process, not the browser tab, owns live ingestion. Browser disconnects only close the UI session; vaulted Buckeye agents continue polling while the backend is running.
 
 Key current pillars:
 
@@ -32,7 +32,9 @@ Key current pillars:
 | 2 | Patterns / Anomalies | Patterns, Trading Floor hooks, Agent links | Complete baseline live detection + persistence | Unit/API coverage |
 | 3 | Exchanges | Polymarket, Kalshi | Placeholder | Not started |
 | 4 | Buckeye Backend Ops | Buckeye, Positions, Downline, Player Search, Settings | Complete baseline always-on ingestion | Unit/API/build |
-| 5 | Navigation / System UX | Sidebar, Status | Complete baseline status tab | UI smoke |
+| 5 | Navigation / System UX | Sidebar, Status, Up | Complete with API endpoint health, error tracking, recovery matrix | UI smoke + live endpoint checks |
+| 6 | Audit & Analytics | Performance | Complete — 7 archive tables, 9 analytics endpoints, Chart.js dashboard, CSV exports, WebSocket real-time | 84 unit tests pass |
+| 7 | Error Tracking & Recovery | Up | Complete — real-time error monitoring, poller health, watermark status, recovery matrix with 12 error types | Live endpoint verification |
 | 8 | Alerts / Webhooks | Alerts, Webhooks | Complete baseline CRUD, retry, delivery log | Unit/API coverage |
 
 ---
@@ -197,8 +199,7 @@ git diff -- README.md docs
 
 Current ignored sensitive/local artifacts:
 
-- `docs/agentobject.md`
-- `docs/agentslistharz.md`
+- sensitive raw Buckeye export captures
 - `docs/archive/artifacts/*.exe`
 - `backend/data/`
 - `backend/dist/`
@@ -213,3 +214,6 @@ Current ignored sensitive/local artifacts:
 3. Add Agent Network pattern badges and sorting.
 4. Add production deployment and backup instructions.
 5. Decide whether raw export parsing should become a one-shot admin backfill command or stay as a local developer utility.
+6. Add retention job for pruning `raw_api_logs` after configurable days.
+7. Add disk usage and last-cleanup timestamps to Status page.
+8. Add Kalshi/Polymarket exchange integrations (Zone 3).

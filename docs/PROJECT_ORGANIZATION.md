@@ -33,7 +33,9 @@ This guide keeps the Sports Terminal repo from drifting as Buckeye ingestion, pa
 | Pattern logic | `backend/src/patterns/` | Detection, persistence, summaries, evidence |
 | Risk alerts | `backend/src/risk/` | Wager alert rules, independent of UI |
 | Odds pipeline | `backend/src/odds/` | Providers, snapshots, movements, book health |
-| Frontend SPA | `frontend/public/index.html` | UI sections, client fetches, local rendering |
+| Frontend SPA shell | `frontend/public/index.html` | Static layout and section markup |
+| Frontend modules | `frontend/public/js/` | Browser module homes for boot, API, WebSocket, Buckeye, Performance, navigation, settings |
+| Frontend styles | `frontend/public/css/terminal.css` | Shared terminal visual system |
 
 ## Data and Generated Files
 
@@ -43,8 +45,7 @@ Keep these out of source control:
 - `backend/dist/`
 - `node_modules/`
 - `backend/node_modules/`
-- `docs/agentobject.md`
-- `docs/agentslistharz.md`
+- sensitive raw Buckeye export captures
 - `docs/*.exe`
 
 Reference `.docx` files live in `docs/archive/reference/`. Raw markdown exports are local sensitive inputs and are ignored because the local hierarchy parser can read them during backfill.
@@ -102,6 +103,6 @@ Before ending a substantial task:
 
 ## Naming and Versioning
 
-- Use v5.3 for the current always-on ingestion/status/pattern baseline.
+- Use v5.31 for the current always-on ingestion/status/pattern/raw-API visibility baseline.
 - Keep future speculative work out of the current tracker unless it is an explicit next step.
 - Prefer concrete route/table/function names in docs over broad labels.

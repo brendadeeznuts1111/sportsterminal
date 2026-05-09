@@ -8,9 +8,15 @@ import type { Database } from '../database';
 
 export const DEFAULT_SENSITIVE_FIELDS = [
   'password',
+  'passwordfix',
+  'passcode',
+  'passwd',
   'pin',
+  'sms',
   'smsphonenumber',
   'phone',
+  'phonenumber',
+  'mobile',
   'email',
   'creditcard',
   'cardnumber',
@@ -21,13 +27,25 @@ export const DEFAULT_SENSITIVE_FIELDS = [
   'routingnumber',
   'secret',
   'token',
+  'jwt',
   'bearer',
   'authorization',
   'apikey',
+  'api_key',
   'authtoken',
+  'session',
   'cf_clearance',
   'cf_bm',
+  '__cf_bm',
+  'cloudflare',
   'cookie',
+];
+
+const SENSITIVE_VALUE_PATTERNS = [
+  /Bearer\s+[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/gi,
+  /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g,
+  /\bcf_clearance=[^;&\s"]+/gi,
+  /\b__cf_bm=[^;&\s"]+/gi,
 ];
 
 export interface RawLogEntry {
@@ -85,7 +103,7 @@ export class RawApiLogger {
         responseJson,
         agentId: entry.agentId || null,
         durationMs: entry.durationMs || null,
-        requestParams: entry.requestParams || null,
+        requestParams: entry.requestParams ? redactSensitiveJsonString(entry.requestParams) : null,
         statusCode: entry.statusCode || null,
       });
 
@@ -205,6 +223,10 @@ export function redactSensitiveFields(
   value: unknown,
   sensitiveFields: string[] = DEFAULT_SENSITIVE_FIELDS
 ): unknown {
+  if (typeof value === 'string') {
+    return redactSensitiveText(value);
+  }
+
   if (Array.isArray(value)) {
     return value.map((item) => redactSensitiveFields(item, sensitiveFields));
   }
@@ -226,10 +248,38 @@ export function redactSensitiveFields(
   return result;
 }
 
-function redactSensitiveJsonString(json: string): string {
+export function redactSensitiveJsonString(json: string): string {
   try {
     return JSON.stringify(redactSensitiveFields(JSON.parse(json)));
   } catch {
-    return json;
+    return redactSensitiveText(json);
   }
+}
+
+export function redactSensitiveText(text: string): string {
+  let redacted = text;
+  for (const pattern of SENSITIVE_VALUE_PATTERNS) {
+    redacted = redacted.replace(pattern, (match) => {
+      const [name] = match.split('=');
+      if (match.includes('=')) return `${name}=REDACTED`;
+      return 'REDACTED';
+    });
+  }
+
+  try {
+    const params = new URLSearchParams(redacted);
+    let changed = false;
+    for (const [key] of params.entries()) {
+      const lowerKey = key.toLowerCase();
+      if (DEFAULT_SENSITIVE_FIELDS.some((field) => lowerKey.includes(field))) {
+        params.set(key, 'REDACTED');
+        changed = true;
+      }
+    }
+    if (changed) return params.toString();
+  } catch {
+    // Not a query string.
+  }
+
+  return redacted;
 }

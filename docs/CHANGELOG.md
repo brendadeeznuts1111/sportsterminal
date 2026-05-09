@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased - v5.3
+## Unreleased - v5.31
 
 ### Added
 
@@ -23,15 +23,27 @@
 - Enterprise tab goals covering sidebar workflows, readiness standards, data contracts, and operational UX principles.
 - Audit analytics engine contract covering raw logs, archive tables, poller state, retention, and test expectations.
 - Complete URLPattern route registration for existing route modules.
+- **Audit & Analytics Engine** — 7 new database tables (`raw_api_logs`, `wager_archive`, `access_logs`, `master_snapshots`, `weekly_figures`, `agent_performance`, `audit_logs`) with full indexes, watermark-based incremental polling, and batched PII-redacted raw API logging.
+- **9 analytics API endpoints** — `/api/betting/velocity`, `/api/betting/live-vs-pre`, `/api/logs/access`, `/api/master/history`, `/api/performance/summary`, `/api/performance/details`, `/api/export/wagers`, `/api/export/access-logs`, `/api/export/performance`.
+- **Performance dashboard tab** — Master health card, bet velocity chart (Chart.js line+bar), live vs pregame donut, access log monitor with new-IP highlighting, sortable agent performance table with expandable detail, CSV export buttons. All updated in real-time via WebSocket.
+- **Up tab (Error Tracking & Recovery)** — Real-time error monitoring, poller health dashboard, watermark status, error history table, and recovery matrix with 12 error types and their automatic/manual recovery paths.
+- **API endpoint status dashboard** — Live health checks for all 32+ endpoints in the Status tab, grouped by category with response codes and timing.
+- **Comprehensive API documentation** — `docs/API_ENDPOINTS.md` with real JSON responses captured from the live server, covering all endpoints plus error handling, recovery flows, rate limiting, and CORS.
+- **v5.31 UI polish and raw API observability** — collapsible sidebar groups with persisted state, clearer topbar ingestion/socket/wager chips, and a redacted Raw API Archive panel in Performance.
+- **Frontend module organization** — `index.html` is now a static shell, shared CSS lives in `/css/terminal.css`, and `/js/app.js` loads as a browser module with focused module homes for WebSocket, API, Buckeye, Performance, navigation, and settings work.
 
 ### Changed
 
 - Browser disconnect no longer stops Buckeye ingestion.
 - Database wrapper now uses Bun SQL while preserving the app's local DB API shape.
 - Odds and Buckeye recurring jobs now run through managed scheduler loops.
-- README, Buckeye scope, and implementation tracker now describe the v5.3 architecture.
+- README, Buckeye scope, and implementation tracker now describe the v5.31 architecture.
+- `RawApiLogger` upgraded to batched inserts (25/batch, 250ms flush) with PII redaction.
+- `ScraperManager` now includes 5-min access log poller, 30-min master snapshot poller, and daily archive refresh — all with watermark-based recovery.
+- Frontend sidebar now includes Performance and Up tabs between Status and Settings.
 
 ### Notes
 
 - `Bun.scheduler` is not available in the local Bun 1.3.13 runtime, so recurring work uses managed `Bun.sleep` loops.
 - Raw Buckeye hierarchy/player exports remain ignored because they can contain sensitive customer and agent data.
+- All 84 backend tests pass with 0 failures. 4 performance cache tests are intentionally skipped (Redis not configured).

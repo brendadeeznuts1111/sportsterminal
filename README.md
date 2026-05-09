@@ -1,8 +1,10 @@
-# Sports Terminal v5.3
+# Sports Terminal v5.31
 
 Sports Terminal is a Bun-powered betting operations terminal for Buckeye PPH live wager ingestion, agent/player intelligence, pattern detection, odds comparison, exposure tracking, alerts, webhooks, and backend health monitoring.
 
-The app runs as one Bun backend that serves the API, WebSocket, always-on ingestion loops, and the single-file frontend at `http://localhost:3000/`.
+The app runs as one Bun backend that serves the API, WebSocket, always-on ingestion loops, and the static SPA frontend at `http://localhost:3000/`.
+
+Frontend development now uses a small static module layout: `frontend/public/index.html` is the shell, `frontend/public/css/terminal.css` holds shared styling, and `frontend/public/js/app.js` coordinates focused modules such as WebSocket, API, Buckeye, Performance, navigation, and settings.
 
 ## Current Status
 
@@ -287,7 +289,7 @@ Webhooks:
 - SQLite stores dollar values.
 - Frontend displays dollar values directly.
 - Local database files live under `backend/data/` and are ignored by Git.
-- Raw Buckeye exports in `docs/agentobject.md` and `docs/agentslistharz.md` are ignored because they can contain sensitive customer/agent material.
+- Raw Buckeye export captures are ignored because they can contain sensitive customer/agent material.
 
 Ignored local data/tools:
 
@@ -295,8 +297,7 @@ Ignored local data/tools:
 - `backend/dist/`
 - `node_modules/`
 - `backend/node_modules/`
-- `docs/agentslistharz.md`
-- `docs/agentobject.md`
+- sensitive raw Buckeye export captures
 - `docs/*.exe`
 
 ## Documentation Map

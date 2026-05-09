@@ -79,16 +79,46 @@ Suggested payload:
 
 ## Frontend Requirements
 
-The future Performance tab should include:
+The Performance tab (implemented) includes:
 
 - Master health card with last snapshot age and live/stale indicator.
-- Betting velocity chart with auto-pause when the tab is hidden.
-- Live-vs-pre split for the selected date/window.
-- Access log table with clickable IP filters and first-seen labels.
-- Agent performance table with virtualization when rows exceed 500.
+- Betting velocity chart (Chart.js line+bar) with auto-pause when the tab is hidden.
+- Live-vs-pre donut chart for the selected date/window, clickable to filter positions.
+- Access log table with clickable IP filters and first-seen labels, new-IP highlighting in red.
+- Agent performance table with virtualization when rows exceed 500, sortable by handle/win-loss/agent, expandable detail with weekly trend & sport breakdown.
 - Export controls with progress, estimated row count, and generated file size.
 - Loading, empty, stale, and error states matching the existing dark terminal theme.
 - Keyboard support: `/` focuses search and `?` opens shortcut help.
+- Real-time WebSocket updates via `wager.new` events updating the velocity chart.
+
+## Error Tracking & Recovery (Up Tab)
+
+The Up tab (implemented) provides:
+
+- **Summary Cards**: Backend status, active agents, poller health, API endpoint health.
+- **Agent Poller Status**: Per-agent error count, auth status, last poll time, backoff state.
+- **Poller Watermarks**: Vaulted agent status and poller cursor positions.
+- **Error History**: Table with time, agent, error description, and recovery status.
+- **Recovery Matrix**: 6 recovery cards explaining every error scenario with automatic/manual recovery paths.
+
+### Poller Backoff Strategy
+
+```
+consecutiveErrors=1 → 10s
+consecutiveErrors=2 → 20s
+consecutiveErrors=3 → 40s
+consecutiveErrors=4+ → 60s (cap)
+success → 5s (reset)
+```
+
+### Watermark Keys
+
+| Key | Poller | Interval |
+|-----|--------|----------|
+| `last_access_log_poll.{agentId}` | Access Logs | 5 min |
+| `last_master_snapshot.{agentId}` | Master Snapshots | 30 min |
+| `last_daily_archive_refresh.{agentId}` | Daily Archive | 24 hours |
+| `last_agent_performance.{agentId}` | Agent Performance | 15 min |
 
 ## Retention
 
@@ -110,3 +140,4 @@ Default retention should favor safety:
 | Pollers | Cursor updates only after successful insert |
 | API | Filters, pagination, and empty states behave consistently |
 | Frontend | Loading, error, keyboard, export progress, and live WebSocket update smoke tests |
+| Error recovery | Backoff sequence, token renewal, watermark persistence, and graceful degradation |

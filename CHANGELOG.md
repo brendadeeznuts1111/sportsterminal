@@ -1,5 +1,17 @@
 # Changelog
 
+## v5.31 — 2026-05-09
+
+### Added
+- Collapsible sidebar groups with persisted browser state for enterprise operator navigation.
+- Raw API Archive visibility inside Performance with redacted metadata, filters, freshness cards, and safe JSON inspection.
+- Static frontend module layout: `index.html` is now the shell, shared CSS lives in `/css/terminal.css`, and app code loads through `/js/app.js`.
+
+### Changed
+- Topbar operator strip now separates backend ingestion health, latest wager freshness, UI WebSocket state, and toast state.
+- Raw API logging now redacts sensitive response and request parameter fields before persistence.
+- Buckeye cards now make the `/api/wagers?limit=500` archive window explicit and refresh from the backend even when the browser WebSocket is offline.
+
 ## v5.3 — 2026-05-09
 
 ### Added

@@ -392,6 +392,40 @@ Delivery log for a webhook.
 
 ## 10. Audit & Analytics
 
+### `GET /api/analytics/raw-logs`
+
+Redacted Buckeye API archive rows for operator inspection.
+
+**Query params:** `endpoint`, `agentId`, `status` (`success`, `warning`, `error`, or numeric code), `days` (default 7), `limit` (default 50, max 500), `includeBody=1`.
+
+**Response 200:**
+```json
+{
+  "logs": [
+    {
+      "id": 1,
+      "endpoint": "/api/buckeye/account-info",
+      "fetched_at": "2026-05-09 12:00:00",
+      "agent_id": "BILLY666",
+      "duration_ms": 42,
+      "status_code": 200,
+      "request_params": "{\"agentId\":\"BILLY666\"}",
+      "request_params_summary": "agentId=BILLY666"
+    }
+  ],
+  "count": 1,
+  "days": 7,
+  "endpoint": null,
+  "agentId": null,
+  "status": null,
+  "includeBody": false
+}
+```
+
+When `includeBody=1`, each row also includes `response_json`. The value is already redacted by `RawApiLogger`; callers must still render it as escaped text, never HTML.
+
+---
+
 ### `GET /api/betting/velocity?minutes=30`
 
 Bet ticker velocity — wager count and handle per minute over the last N minutes.

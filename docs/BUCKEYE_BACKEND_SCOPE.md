@@ -1,4 +1,4 @@
-# Buckeye PPH Backend v5.3 - Integration Scope
+# Buckeye PPH Backend v5.31 - Integration Scope
 
 ## Executive Summary
 
@@ -366,6 +366,47 @@ Pattern deltas should stay small for high-frequency updates. Prefer agent ID, co
 - Do not stop live ingestion just because the UI disconnects.
 - If one vaulted agent fails restore, continue restoring the rest.
 - Treat old Pinnacle/reference comparisons as best effort unless a reference snapshot was captured at wager ingest time.
+- Raw API logging is fire-and-forget — never let a logging failure propagate to the caller.
+- All pollers use watermark-based recovery — cursors persist across restarts.
+- Exponential backoff on errors: 5s → 10s → 20s → 40s → max 60s, reset on success.
+- Token renewal every 15 min; fallback to password re-login (max 3 attempts), then stop agent.
+
+## Audit & Analytics Layer
+
+The Audit & Analytics Engine (implemented May 2026) adds:
+
+### Database Tables
+- `raw_api_logs` — Batched, PII-redacted response audit trail
+- `wager_archive` — Immutable wager archive with raw JSON preservation
+- `access_logs` — Watermark-based incremental access log storage
+- `master_snapshots` — 30-min account balance/book snapshots
+- `weekly_figures` — Weekly figure report archive
+- `agent_performance` — Raw agent performance report archive
+- `audit_logs` — Operator/system action trail
+- `watermarks` — Restart-safe poller cursors
+
+### Polling Schedule
+| Poller | Interval | Watermark Key |
+|--------|----------|---------------|
+| Access Logs | 5 min | `last_access_log_poll.{agentId}` |
+| Master Snapshots | 30 min | `last_master_snapshot.{agentId}` |
+| Daily Archive | 24 hours | `last_daily_archive_refresh.{agentId}` |
+| Agent Performance | 15 min | `last_agent_performance.{agentId}` |
+
+### Analytics Endpoints
+- `GET /api/betting/velocity` — Wager count and handle per minute
+- `GET /api/betting/live-vs-pre` — Live vs pregame volume split
+- `GET /api/logs/access` — Access log monitor with new-IP detection
+- `GET /api/master/history` — Master account snapshot history
+- `GET /api/performance/summary` — Agent performance summary
+- `GET /api/performance/details` — Agent deep dive with trend + sport breakdown
+- `GET /api/export/wagers` — CSV export of wager archive
+- `GET /api/export/access-logs` — CSV export of access logs
+- `GET /api/export/performance` — CSV export of weekly figures
+
+### Frontend Tabs
+- **Performance** — Master health card, velocity chart (Chart.js), live vs pregame donut, access log monitor, agent performance table, CSV exports. Real-time WebSocket updates.
+- **Up** — Error tracking dashboard with poller health, watermark status, error history, and recovery matrix.
 
 ---
 
@@ -376,6 +417,10 @@ bun test
 bun run build
 Invoke-RestMethod http://localhost:3000/health
 Invoke-RestMethod http://localhost:3000/api/buckeye/vault-status
+Invoke-RestMethod http://localhost:3000/api/betting/velocity?minutes=10
+Invoke-RestMethod http://localhost:3000/api/betting/live-vs-pre
+Invoke-RestMethod http://localhost:3000/api/master/history?limit=5
+Invoke-RestMethod http://localhost:3000/api/performance/summary
 ```
 
 For endpoint work, add or update route tests and at least one synthetic fixture that mirrors the observed Buckeye response shape.

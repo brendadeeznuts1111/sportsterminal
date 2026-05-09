@@ -52,6 +52,14 @@ Every production tab should include:
 - Drill-down links to the most relevant entity: wager, game, player, agent, pattern, alert, or provider.
 - Exports only when the exported fields and source freshness are unambiguous.
 
+## Navigation And Operator Chrome
+
+- Sidebar groups are collapsible by category and remember operator preference in `sportsTerminal.sidebar.groups.v531`.
+- The active section must remain visible even when its category is collapsed.
+- Sidebar buttons use stable `data-section` attributes so keyboard shortcuts and tests do not depend on DOM index order.
+- The topbar separates backend ingestion health from browser WebSocket state; an offline UI socket must not imply Buckeye polling stopped.
+- Raw API evidence lives under Performance as redacted metadata first, with optional escaped JSON inspection for investigation.
+
 ## Data Contract Requirements
 
 Enterprise tabs should not depend on ambiguous frontend-only derivation for core numbers. Backend/API responses should provide:
@@ -120,4 +128,3 @@ Use this scale to classify tabs in the tracker:
 | 2 | Live operational | Auto-refresh/live update, filters, stale states, and drill-down. |
 | 3 | Actionable | Acknowledge, mute, export, retry, or configure actions with audit-safe behavior. |
 | 4 | Assisted decisioning | Patterns, recommendations, grouped alerts, and evidence-backed confidence. |
-
