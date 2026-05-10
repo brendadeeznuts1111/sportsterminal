@@ -126,7 +126,7 @@ export function registerBuckeyeRoutes(
         } else {
           const ok = await api.login();
           if (!ok) {
-            throw new Error('Login failed — invalid credentials or site unreachable');
+            throw new ApiError(401, 'Login failed — invalid credentials or site unreachable');
           }
         }
 
@@ -163,7 +163,7 @@ export function registerBuckeyeRoutes(
         } else {
           const ok = await api.login();
           if (!ok) {
-            throw new Error('Login failed — invalid credentials or site unreachable');
+            throw new ApiError(401, 'Login failed — invalid credentials or site unreachable');
           }
         }
 
@@ -202,7 +202,7 @@ export function registerBuckeyeRoutes(
         } else {
           const ok = await api.login();
           if (!ok) {
-            throw new Error('Login failed — invalid credentials or site unreachable');
+            throw new ApiError(401, 'Login failed — invalid credentials or site unreachable');
           }
         }
 
@@ -292,7 +292,7 @@ export function registerBuckeyeRoutes(
         } else {
           const ok = await api.login();
           if (!ok) {
-            throw new Error('Login failed — invalid credentials or site unreachable');
+            throw new ApiError(401, 'Login failed — invalid credentials or site unreachable');
           }
         }
 
@@ -343,7 +343,7 @@ export function registerBuckeyeRoutes(
         } else {
           const ok = await api.login();
           if (!ok) {
-            throw new Error('Login failed — invalid credentials or site unreachable');
+            throw new ApiError(401, 'Login failed — invalid credentials or site unreachable');
           }
         }
 
@@ -473,7 +473,7 @@ export function registerBuckeyeRoutes(
       );
       const ok = await api.login();
       if (!ok) {
-        throw new Error('Login failed — invalid credentials or site unreachable');
+        throw new ApiError(401, 'Login failed — invalid credentials or site unreachable');
       }
       // Try one getBetTicker to confirm data access
       const wagers = await api.getBetTicker();
@@ -672,7 +672,7 @@ async function callManagerOperation(
 
   const extra = opMap[operation];
   if (!extra) {
-    throw new Error(`Unknown operation: ${operation}`);
+    throw new ApiError(400, `Unknown operation: ${operation}`);
   }
 
   return api.callManagerOperation(operation, extra);
