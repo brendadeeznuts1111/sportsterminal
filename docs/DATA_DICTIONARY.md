@@ -782,7 +782,7 @@ Health and metrics:
 | Route | Method | Meaning |
 |-------|--------|---------|
 | `/health` | GET | Backend health summary |
-| `/api/health/system-status` | GET | Consolidated System Status issue feed for scraper errors, action queues, raw API failures, Player 360 source errors, offline books, and critical patterns |
+| `/api/health/system-status` | GET | Consolidated System Status issue feed for scraper errors, action queues, raw API failures, Player 360 source errors, offline books, critical patterns, and cheap local `dataFlows` evidence for wagers, archive, player transactions, hierarchy, player-agent map, patterns, and exposure inputs |
 | `/metrics` | GET | Scraper/action queue counters |
 
 Local read-only audit:

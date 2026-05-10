@@ -202,8 +202,11 @@ export async function initDatabase(): Promise<AppDatabase> {
   // Migration: add seq_number to players if missing (pre-2026-05-09 schema)
   try {
     await db.exec('ALTER TABLE players ADD COLUMN seq_number INTEGER');
-  } catch {
-    // Column already exists — safe to ignore
+  } catch (err: any) {
+    // Only ignore "duplicate column" errors; rethrow everything else
+    if (!err?.message?.toLowerCase()?.includes('duplicate column name')) {
+      throw err;
+    }
   }
 
   await db.exec(`
@@ -756,7 +759,7 @@ async function createPostMigrationIndexes(db: AppDatabase): Promise<void> {
  * Migrate existing database tables to match current schema.
  * SQLite does not support ALTER TABLE DROP COLUMN, but ADD COLUMN is safe.
  */
-export async function migrateDatabase(db: any) {
+export async function migrateDatabase(db: Database) {
   try {
     // Check if odds_snapshots has spread_home_price
     const columns = await db.all(`PRAGMA table_info(odds_snapshots)`);
@@ -1184,76 +1187,85 @@ export async function migrateDatabase(db: any) {
       );
     }
     await seedBuckeyeSportTypes(db);
-  } catch (err) {
+  } catch (err: any) {
     console.error('📊 Migration error:', err);
+    throw new Error(`Database migration failed: ${err?.message || err}`);
   }
 }
 
-async function removeLegacyWagerTypeConstraint(db: any): Promise<void> {
+async function removeLegacyWagerTypeConstraint(db: Database): Promise<void> {
   const row = await db.get<{ sql: string | null }>(
     `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'wagers'`
   );
   if (!row?.sql || !row.sql.includes('wager_type IN')) return;
 
-  await db.exec('DROP TABLE IF EXISTS wagers_rebuilt');
-  await db.exec(`
-    CREATE TABLE wagers_rebuilt (
-      wager_number INTEGER PRIMARY KEY,
-      agent_id TEXT NOT NULL,
-      customer_id TEXT NOT NULL,
-      login TEXT NOT NULL,
-      wager_type TEXT,
-      amount_wagered INTEGER NOT NULL,
-      to_win_amount INTEGER NOT NULL,
-      volume_amount INTEGER NOT NULL,
-      insert_datetime TEXT NOT NULL,
-      ticket_writer TEXT NOT NULL,
-      short_desc TEXT NOT NULL,
-      vip TEXT NOT NULL,
-      agent_login TEXT NOT NULL,
-      sport TEXT,
-      parsed_game TEXT,
-      parsed_market TEXT,
-      parsed_side TEXT,
-      parsed_price REAL,
-      parsed_period TEXT,
-      matched_event_id TEXT,
-      pin_reference_json TEXT,
-      raw_json TEXT,
-      scraped_at TEXT NOT NULL
-    )
-  `);
-  await db.exec(`
-    INSERT OR REPLACE INTO wagers_rebuilt (
-      wager_number, agent_id, customer_id, login, wager_type, amount_wagered,
-      to_win_amount, volume_amount, insert_datetime, ticket_writer, short_desc,
-      vip, agent_login, sport, parsed_game, parsed_market, parsed_side,
-      parsed_price, parsed_period, matched_event_id, pin_reference_json, raw_json,
-      scraped_at
-    )
-    SELECT
-      wager_number, agent_id, customer_id, login, wager_type, amount_wagered,
-      to_win_amount, volume_amount, insert_datetime, ticket_writer, short_desc,
-      vip, agent_login, sport, parsed_game, parsed_market, parsed_side,
-      parsed_price, parsed_period, matched_event_id, pin_reference_json, raw_json,
-      scraped_at
-    FROM wagers
-  `);
-  await db.exec('DROP TABLE wagers');
-  await db.exec('ALTER TABLE wagers_rebuilt RENAME TO wagers');
-  await db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_wagers_agent ON wagers(agent_login);
-    CREATE INDEX IF NOT EXISTS idx_wagers_datetime ON wagers(insert_datetime);
-    CREATE INDEX IF NOT EXISTS idx_wagers_alert ON wagers(ticket_writer) WHERE ticket_writer = 'ALERT';
-    CREATE INDEX IF NOT EXISTS idx_wagers_sport ON wagers(sport);
-    CREATE INDEX IF NOT EXISTS idx_wagers_login_datetime ON wagers(login, insert_datetime DESC);
-    CREATE INDEX IF NOT EXISTS idx_wagers_agent_datetime ON wagers(agent_login, insert_datetime DESC);
-    CREATE INDEX IF NOT EXISTS idx_wagers_ticket_datetime ON wagers(ticket_writer, insert_datetime DESC);
-    CREATE INDEX IF NOT EXISTS idx_wagers_sport_datetime ON wagers(sport, insert_datetime DESC);
-    CREATE INDEX IF NOT EXISTS idx_wagers_event_time ON wagers(matched_event_id, insert_datetime DESC);
-    CREATE INDEX IF NOT EXISTS idx_wagers_game_side_time ON wagers(parsed_game, parsed_market, parsed_side, insert_datetime DESC);
-  `);
-  console.log('📊 Migration: rebuilt wagers without legacy wager_type CHECK constraint');
+  // Wrap the full table rebuild in a transaction for safety
+  await db.exec('BEGIN EXCLUSIVE');
+  try {
+    await db.exec('DROP TABLE IF EXISTS wagers_rebuilt');
+    await db.exec(`
+      CREATE TABLE wagers_rebuilt (
+        wager_number INTEGER PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        customer_id TEXT NOT NULL,
+        login TEXT NOT NULL,
+        wager_type TEXT,
+        amount_wagered INTEGER NOT NULL,
+        to_win_amount INTEGER NOT NULL,
+        volume_amount INTEGER NOT NULL,
+        insert_datetime TEXT NOT NULL,
+        ticket_writer TEXT NOT NULL,
+        short_desc TEXT NOT NULL,
+        vip TEXT NOT NULL,
+        agent_login TEXT NOT NULL,
+        sport TEXT,
+        parsed_game TEXT,
+        parsed_market TEXT,
+        parsed_side TEXT,
+        parsed_price REAL,
+        parsed_period TEXT,
+        matched_event_id TEXT,
+        pin_reference_json TEXT,
+        raw_json TEXT,
+        scraped_at TEXT NOT NULL
+      )
+    `);
+    await db.exec(`
+      INSERT OR REPLACE INTO wagers_rebuilt (
+        wager_number, agent_id, customer_id, login, wager_type, amount_wagered,
+        to_win_amount, volume_amount, insert_datetime, ticket_writer, short_desc,
+        vip, agent_login, sport, parsed_game, parsed_market, parsed_side,
+        parsed_price, parsed_period, matched_event_id, pin_reference_json, raw_json,
+        scraped_at
+      )
+      SELECT
+        wager_number, agent_id, customer_id, login, wager_type, amount_wagered,
+        to_win_amount, volume_amount, insert_datetime, ticket_writer, short_desc,
+        vip, agent_login, sport, parsed_game, parsed_market, parsed_side,
+        parsed_price, parsed_period, matched_event_id, pin_reference_json, raw_json,
+        scraped_at
+      FROM wagers
+    `);
+    await db.exec('DROP TABLE wagers');
+    await db.exec('ALTER TABLE wagers_rebuilt RENAME TO wagers');
+    await db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_wagers_agent ON wagers(agent_login);
+      CREATE INDEX IF NOT EXISTS idx_wagers_datetime ON wagers(insert_datetime);
+      CREATE INDEX IF NOT EXISTS idx_wagers_alert ON wagers(ticket_writer) WHERE ticket_writer = 'ALERT';
+      CREATE INDEX IF NOT EXISTS idx_wagers_sport ON wagers(sport);
+      CREATE INDEX IF NOT EXISTS idx_wagers_login_datetime ON wagers(login, insert_datetime DESC);
+      CREATE INDEX IF NOT EXISTS idx_wagers_agent_datetime ON wagers(agent_login, insert_datetime DESC);
+      CREATE INDEX IF NOT EXISTS idx_wagers_ticket_datetime ON wagers(ticket_writer, insert_datetime DESC);
+      CREATE INDEX IF NOT EXISTS idx_wagers_sport_datetime ON wagers(sport, insert_datetime DESC);
+      CREATE INDEX IF NOT EXISTS idx_wagers_event_time ON wagers(matched_event_id, insert_datetime DESC);
+      CREATE INDEX IF NOT EXISTS idx_wagers_game_side_time ON wagers(parsed_game, parsed_market, parsed_side, insert_datetime DESC);
+    `);
+    await db.exec('COMMIT');
+    console.log('📊 Migration: rebuilt wagers without legacy wager_type CHECK constraint');
+  } catch (err) {
+    await db.exec('ROLLBACK').catch(() => {});
+    throw err;
+  }
 }
 
 export async function seedBuckeyeSportTypes(db: Database): Promise<void> {

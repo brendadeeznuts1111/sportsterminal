@@ -5,6 +5,7 @@
 ### Added
 
 - **System Status issue rollup** — `/api/health/system-status` now consolidates scraper errors, action queue backlog, raw API failures, Player 360 source errors, offline books, and critical/high patterns into a single operator issue feed.
+- **System Status data flows** — `/api/health/system-status` now includes `operationalStatus`, `riskStatus`, and local `dataFlows` evidence for wagers, archive reconciliation, Player 360 ledgers, hierarchy, player-agent maps, patterns, and exposure inputs.
 - **Player 360 real-data contract map** — `/api/v1/players/:id/intelligence-map` now includes field-level UI mappings, source freshness, endpoint coverage, explicit contract mismatches, and real/probe/missing status for each profile source.
 - **Player 360 Status/Docs hardening** — the modal Status and Docs panels now render the live intelligence-map payload and no longer fill missing sources with static live rows.
 - **Player 360 hybrid hotset refresh** — heavy Buckeye sources now expose per-player TTL, policy, scale class, last attempt, last success, and next refresh metadata instead of encouraging all-player polling.

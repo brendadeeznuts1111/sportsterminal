@@ -63,6 +63,8 @@ Consolidated System Status issue feed for operator bug/risk tracking. Rolls up s
 ```json
 {
   "status": "warning",
+  "operationalStatus": "ok",
+  "riskStatus": "warning",
   "generatedAt": "2026-05-09T23:35:00.000Z",
   "summary": {
     "activeAgents": 1,
@@ -72,9 +74,20 @@ Consolidated System Status issue feed for operator bug/risk tracking. Rolls up s
     "critical": 0,
     "warning": 0
   },
+  "dataFlows": {
+    "liveWagers": {"status": "live", "rowCount": 25654, "lastSeen": "2026-05-10T00:33:23.905Z"},
+    "wagerArchive": {"status": "live", "rowCount": 25654, "distinctWagers": 25654, "reconciled": true},
+    "playerTransactions": {"status": "live", "rowCount": 1979630},
+    "agentHierarchy": {"status": "live", "rowCount": 2288, "roots": 3, "maxLevel": 17},
+    "playerAgentMap": {"status": "live", "rowCount": 56028, "orphanCount": 0},
+    "patterns": {"status": "live", "rowCount": 929, "last24h": 929},
+    "exposureInputs": {"status": "live", "rowCount": 25654, "sportCount": 26, "agentCount": 485}
+  },
   "issues": []
 }
 ```
+
+`status` is the overall operator status. `operationalStatus` excludes pattern/risk detections so a healthy data pipeline is distinguishable from a high-risk betting day. `dataFlows` is computed from local tables only and is safe to poll from the Status page.
 
 ### `GET /api/stats`
 

@@ -224,4 +224,23 @@ describe('API route registration', () => {
     expect(response?.headers.get('Access-Control-Allow-Methods')).toContain('DELETE');
     expect(response?.headers.get('Access-Control-Allow-Headers')).toContain('X-Admin-Token');
   });
+
+  it('does not reuse cached routers across different dependency instances', async () => {
+    const depsFor = (marker: string) => ({
+      scraperManager: {
+        getDatabase: () => ({ run: async () => ({ lastID: 1, changes: 1 }) }),
+        getLiveWagers: () => [{ marker }],
+      } as any,
+      oddsPoller: {} as any,
+    });
+    const request = new Request('http://localhost/api/wagers/live');
+
+    const first = await routeRequest(new URL('http://localhost/api/wagers/live'), request, depsFor('first'));
+    const second = await routeRequest(new URL('http://localhost/api/wagers/live'), request, depsFor('second'));
+    const firstBody = await first?.json();
+    const secondBody = await second?.json();
+
+    expect(firstBody[0].marker).toBe('first');
+    expect(secondBody[0].marker).toBe('second');
+  });
 });

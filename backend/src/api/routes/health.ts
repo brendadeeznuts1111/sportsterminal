@@ -207,13 +207,24 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
               SUM(CASE WHEN last_error IS NOT NULL THEN 1 ELSE 0 END) AS errors,
               MAX(updated_at) AS last_seen
        FROM player_source_status`, []);
+  const dataFlows = await buildDataFlowSummary(db);
+
+  addDataFlowIssues(issues, dataFlows, Number(metrics.activeAgents || 0));
 
   issues.sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || Number(b.count || 0) - Number(a.count || 0));
   const critical = issues.filter((issue) => issue.severity === 'critical').length;
   const warning = issues.filter((issue) => issue.severity === 'warning').length;
+  const operationalIssues = issues.filter((issue) => issue.category !== 'patterns');
+  const operationalCritical = operationalIssues.filter((issue) => issue.severity === 'critical').length;
+  const operationalWarning = operationalIssues.filter((issue) => issue.severity === 'warning').length;
+  const riskIssues = issues.filter((issue) => issue.category === 'patterns');
+  const riskCritical = riskIssues.filter((issue) => issue.severity === 'critical').length;
+  const riskWarning = riskIssues.filter((issue) => issue.severity === 'warning').length;
 
   return {
     status: critical > 0 ? 'critical' : warning > 0 ? 'warning' : 'ok',
+    operationalStatus: operationalCritical > 0 ? 'critical' : operationalWarning > 0 ? 'warning' : 'ok',
+    riskStatus: riskCritical > 0 ? 'critical' : riskWarning > 0 ? 'warning' : 'ok',
     generatedAt: new Date().toISOString(),
     summary: {
       activeAgents: metrics.activeAgents || 0,
@@ -226,7 +237,12 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
       issues: issues.length,
       critical,
       warning,
+      operationalCritical,
+      operationalWarning,
+      riskCritical,
+      riskWarning,
     },
+    dataFlows,
     issues: issues.slice(0, 25),
     metrics,
     rawApi: {
@@ -282,4 +298,124 @@ function latestTimestamp(current: string | null, candidate: string | null): stri
   if (!candidate) return current;
   if (!current) return candidate;
   return String(candidate) > String(current) ? candidate : current;
+}
+
+async function buildDataFlowSummary(db: any): Promise<any> {
+  const [
+    liveWagers,
+    wagerArchive,
+    playerTransactions,
+    hierarchy,
+    playerAgentMap,
+    patterns,
+    exposure,
+  ] = await Promise.all([
+    safeGet(db,
+      `SELECT COUNT(*) AS row_count, MAX(scraped_at) AS last_seen, MAX(insert_datetime) AS last_event_at
+       FROM wagers`, []),
+    safeGet(db,
+      `SELECT COUNT(*) AS row_count,
+              COUNT(DISTINCT wager_number) AS distinct_wagers,
+              MAX(ingested_at) AS last_seen,
+              MAX(insert_date_time) AS last_event_at
+       FROM wager_archive`, []),
+    safeGet(db,
+      `SELECT COUNT(*) AS row_count, MAX(pulled_at) AS last_seen, MAX(transaction_time) AS last_event_at
+       FROM player_transactions`, []),
+    safeGet(db,
+      `SELECT COUNT(*) AS row_count,
+              SUM(CASE WHEN COALESCE(parent_agent_id, '') = '' THEN 1 ELSE 0 END) AS roots,
+              MAX(level) AS max_level,
+              MAX(last_refreshed) AS last_seen
+       FROM agent_hierarchy`, []),
+    safeGet(db,
+      `SELECT COUNT(*) AS row_count,
+              SUM(CASE WHEN ah.agent_id IS NULL THEN 1 ELSE 0 END) AS orphan_count,
+              MAX(pam.last_refreshed) AS last_seen
+       FROM player_agent_map pam
+       LEFT JOIN agent_hierarchy ah ON ah.agent_id = pam.agent_id AND ah.provider = pam.provider`, []),
+    safeGet(db,
+      `SELECT COUNT(*) AS row_count,
+              SUM(CASE WHEN detected_at >= datetime('now', '-24 hours') THEN 1 ELSE 0 END) AS last24h,
+              MAX(detected_at) AS last_seen
+       FROM detected_patterns`, []),
+    safeGet(db,
+      `SELECT COUNT(*) AS wager_count,
+              COUNT(DISTINCT NULLIF(sport, '')) AS sport_count,
+              COUNT(DISTINCT NULLIF(agent_login, '')) AS agent_count,
+              SUM(amount_wagered) AS total_amount,
+              MAX(scraped_at) AS last_seen
+       FROM wagers`, []),
+  ]);
+
+  return {
+    liveWagers: flow('liveWagers', liveWagers?.row_count, liveWagers?.last_seen, {
+      lastEventAt: liveWagers?.last_event_at || null,
+    }),
+    wagerArchive: flow('wagerArchive', wagerArchive?.row_count, wagerArchive?.last_seen, {
+      distinctWagers: Number(wagerArchive?.distinct_wagers || 0),
+      lastEventAt: wagerArchive?.last_event_at || null,
+      reconciled: Number(wagerArchive?.row_count || 0) === Number(wagerArchive?.distinct_wagers || 0),
+    }),
+    playerTransactions: flow('playerTransactions', playerTransactions?.row_count, playerTransactions?.last_seen, {
+      lastEventAt: playerTransactions?.last_event_at || null,
+    }),
+    agentHierarchy: flow('agentHierarchy', hierarchy?.row_count, hierarchy?.last_seen, {
+      roots: Number(hierarchy?.roots || 0),
+      maxLevel: Number(hierarchy?.max_level || 0),
+    }),
+    playerAgentMap: flow('playerAgentMap', playerAgentMap?.row_count, playerAgentMap?.last_seen, {
+      orphanCount: Number(playerAgentMap?.orphan_count || 0),
+    }),
+    patterns: flow('patterns', patterns?.row_count, patterns?.last_seen, {
+      last24h: Number(patterns?.last24h || 0),
+    }),
+    exposureInputs: flow('exposureInputs', exposure?.wager_count, exposure?.last_seen, {
+      sportCount: Number(exposure?.sport_count || 0),
+      agentCount: Number(exposure?.agent_count || 0),
+      totalAmount: Number(exposure?.total_amount || 0),
+    }),
+  };
+}
+
+function flow(name: string, count: unknown, lastSeen: unknown, extra: Record<string, unknown> = {}): any {
+  const rowCount = Number(count || 0);
+  return {
+    name,
+    status: rowCount > 0 ? 'live' : 'empty',
+    rowCount,
+    lastSeen: lastSeen || null,
+    ...extra,
+  };
+}
+
+function addDataFlowIssues(issues: any[], dataFlows: any, activeAgents: number): void {
+  if (activeAgents > 0 && dataFlows.liveWagers.rowCount === 0) {
+    issues.push(dataFlowIssue('critical', 'Live wager table is empty', 'Active agents are present, but the live wagers table has no rows.', dataFlows.liveWagers));
+  }
+  if (dataFlows.wagerArchive.rowCount > 0 && !dataFlows.wagerArchive.reconciled) {
+    issues.push(dataFlowIssue('warning', 'Wager archive has duplicate wager numbers', 'Archive row count does not match distinct wager numbers.', dataFlows.wagerArchive));
+  }
+  if (dataFlows.agentHierarchy.rowCount > 0 && (dataFlows.agentHierarchy.roots !== 3 || dataFlows.agentHierarchy.maxLevel !== 17)) {
+    issues.push(dataFlowIssue('warning', 'Agent hierarchy shape changed', `Expected 3 roots and max level 17; saw ${dataFlows.agentHierarchy.roots} roots and max level ${dataFlows.agentHierarchy.maxLevel}.`, dataFlows.agentHierarchy));
+  }
+  if (dataFlows.playerAgentMap.orphanCount > 0) {
+    issues.push(dataFlowIssue('critical', 'Player-agent map has orphan rows', `${dataFlows.playerAgentMap.orphanCount} mapping row(s) reference a missing agent.`, dataFlows.playerAgentMap));
+  }
+  if (activeAgents > 0 && dataFlows.exposureInputs.rowCount === 0) {
+    issues.push(dataFlowIssue('warning', 'Exposure inputs are empty', 'Positions and exposure need live wager rows before they can render meaningful totals.', dataFlows.exposureInputs));
+  }
+}
+
+function dataFlowIssue(severity: string, title: string, detail: string, flowSummary: any): any {
+  return {
+    severity,
+    category: 'data-flow',
+    title,
+    detail,
+    source: flowSummary.name,
+    count: Number(flowSummary.rowCount || flowSummary.orphanCount || 0),
+    lastSeen: flowSummary.lastSeen || null,
+    action: 'Run bun run integrity:check, then compare the affected API endpoint with the data flow summary.',
+  };
 }

@@ -483,14 +483,44 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
 /**
  * Route a request through the URLPattern router.
  * Returns a Response or null if no route matched.
+ *
+ * Router is created once per deps/rateLimiter combo and cached
+ * to avoid rebuilding 60+ route patterns on every request.
  */
+const routerCache = new WeakMap<
+  RouterDeps,
+  WeakMap<object, { router: UrlPatternRouter; loggedDispatch: (url: URL, request: Request) => Promise<Response | null> }>
+>();
+const noRateLimiterCacheKey = {};
+
+function getCachedRouter(deps: RouterDeps, rateLimiter?: RateLimiter) {
+  const limiterKey = rateLimiter || noRateLimiterCacheKey;
+  let limiterCache = routerCache.get(deps);
+  if (!limiterCache) {
+    limiterCache = new WeakMap();
+    routerCache.set(deps, limiterCache);
+  }
+
+  let cached = limiterCache.get(limiterKey);
+  if (!cached) {
+    const router = createRouter(deps, rateLimiter);
+    const loggedDispatch = wrapRouterWithLogging((url, request) => router.dispatch(request), {
+      db: deps.scraperManager?.getDatabase?.(),
+      enabled: true,
+    });
+    cached = { router, loggedDispatch };
+    limiterCache.set(limiterKey, cached);
+  }
+  return cached;
+}
+
 export async function routeRequest(
   url: URL,
   request: Request,
   deps: RouterDeps,
   rateLimiter?: RateLimiter
 ): Promise<Response | null> {
-  const router = createRouter(deps, rateLimiter);
+  const { loggedDispatch } = getCachedRouter(deps, rateLimiter);
 
   // Rate limiting
   if (rateLimiter) {
@@ -514,11 +544,6 @@ export async function routeRequest(
     const adminResponse = requireAdminTokenIfConfigured(request);
     if (adminResponse) return adminResponse;
   }
-
-  const loggedDispatch = wrapRouterWithLogging((url, request) => router.dispatch(request), {
-    db: deps.scraperManager?.getDatabase?.(),
-    enabled: true,
-  });
 
   return loggedDispatch(url, request);
 }

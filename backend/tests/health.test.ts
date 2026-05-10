@@ -47,6 +47,8 @@ describe('system status health route', () => {
     expect(body.status).toBe('critical');
     expect(body.summary.rawApiFailures24h).toBe(2);
     expect(body.summary.playerSourceErrors).toBe(3);
+    expect(body.operationalStatus).toBe('critical');
+    expect(body.riskStatus).toBe('critical');
     expect(body.issues.some((issue: any) => issue.source === 'raw_api_logs')).toBe(true);
     expect(body.issues.some((issue: any) => issue.source === 'ActionQueue')).toBe(true);
     expect(body.issues.some((issue: any) => issue.source === 'book_health')).toBe(true);
@@ -93,5 +95,63 @@ describe('system status health route', () => {
     expect(authIssues[0].detail).toContain('player_transactions');
     expect(authIssues[0].detail).toContain('teaser_profile');
     expect(body.issues.some((issue: any) => issue.detail.includes('parse error'))).toBe(true);
+  });
+
+  test('includes cheap data-flow evidence for wagers, hierarchy, player maps, patterns, and exposure', async () => {
+    const db = {
+      all: async () => [],
+      get: async (sql: string) => {
+        if (sql.includes('FROM wagers') && sql.includes('MAX(scraped_at)') && sql.includes('COUNT(DISTINCT NULLIF(sport')) {
+          return { wager_count: 25, sport_count: 4, agent_count: 6, total_amount: 12500, last_seen: '2026-05-09T20:20:00Z' };
+        }
+        if (sql.includes('FROM wagers') && sql.includes('MAX(insert_datetime)')) {
+          return { row_count: 25, last_seen: '2026-05-09T20:20:00Z', last_event_at: '2026-05-09T20:19:00Z' };
+        }
+        if (sql.includes('FROM wager_archive')) {
+          return { row_count: 25, distinct_wagers: 25, last_seen: '2026-05-09T20:21:00Z', last_event_at: '2026-05-09T20:19:00Z' };
+        }
+        if (sql.includes('FROM player_transactions')) {
+          return { row_count: 10, last_seen: '2026-05-09T20:22:00Z', last_event_at: '2026-05-09T20:18:00Z' };
+        }
+        if (sql.includes('FROM agent_hierarchy')) {
+          return { row_count: 2288, roots: 3, max_level: 17, last_seen: '2026-05-09T20:23:00Z' };
+        }
+        if (sql.includes('FROM player_agent_map')) {
+          return { row_count: 56019, orphan_count: 0, last_seen: '2026-05-09T20:24:00Z' };
+        }
+        if (sql.includes('FROM detected_patterns')) {
+          return { row_count: 99, last24h: 12, last_seen: '2026-05-09T20:25:00Z' };
+        }
+        if (sql.includes('FROM raw_api_logs')) return { total: 0, failures: 0, last_seen: null };
+        if (sql.includes('FROM player_source_status')) return { total: 0, errors: 0, last_seen: null };
+        return null;
+      },
+    };
+    const scraperManager = {
+      getDatabase: () => db,
+      getMetrics: () => ({
+        activeAgents: 1,
+        agents: [{ agentId: 'BILLY666', lastPoll: '2026-05-09T20:20:00Z', errorCount: 0, authenticated: true }],
+        actionQueue: { totalQueued: 0, queues: {} },
+        counters: { wagers_total: 25, alerts_triggered_total: 0, errors_total: 0 },
+      }),
+    } as any;
+
+    const response = await registerHealthRoutes(
+      new URL('http://localhost/api/health/system-status'),
+      new Request('http://localhost/api/health/system-status'),
+      scraperManager
+    );
+    const body = await response!.json();
+
+    expect(body.dataFlows.liveWagers.rowCount).toBe(25);
+    expect(body.dataFlows.wagerArchive.reconciled).toBe(true);
+    expect(body.dataFlows.agentHierarchy.roots).toBe(3);
+    expect(body.dataFlows.agentHierarchy.maxLevel).toBe(17);
+    expect(body.dataFlows.playerAgentMap.rowCount).toBe(56019);
+    expect(body.dataFlows.playerAgentMap.orphanCount).toBe(0);
+    expect(body.dataFlows.patterns.last24h).toBe(12);
+    expect(body.dataFlows.exposureInputs.sportCount).toBe(4);
+    expect(body.status).toBe('ok');
   });
 });
