@@ -32,6 +32,7 @@ const EnvSchema = z.object({
   DB_PATH: z.string().default("buckeye_cache.sqlite"),
   ADMIN_API_KEY: z.string().optional(),
   JWT_SECRET: z.string().optional(),
+  PROXY_API_KEY_HASH: z.string().optional(),
 
   // Feature flags
   ENABLE_METRICS: z.enum(["true", "false"]).default("true"),
@@ -132,8 +133,8 @@ try {
 // ==========================================
 // 2b. OPTIONAL PASSWORD-HASHED API KEY
 // ==========================================
-const hashedKey = Bun.env.PROXY_API_KEY_HASH;
-const plainKey = Bun.env.PROXY_API_KEY;
+const hashedKey = parsedEnv.PROXY_API_KEY_HASH;
+const plainKey = parsedEnv.PROXY_API_KEY;
 if (hashedKey && !plainKey) {
   console.error("[preload] PROXY_API_KEY_HASH provided but no PROXY_API_KEY for verification");
   process.exit(1);
@@ -155,7 +156,7 @@ const OriginalDatabase = Database;
     super(filename, options);
     try {
       this.run("PRAGMA journal_mode = WAL;");
-      this.run("PRAGMA busy_timeout = 5000;");
+      this.run("PRAGMA busy_timeout = 30000;");
       this.run("PRAGMA foreign_keys = ON;");
       this.run("PRAGMA synchronous = NORMAL;");
     } catch (e) {

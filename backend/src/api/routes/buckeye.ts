@@ -8,6 +8,7 @@ import type { BuckeyeSecretStatus, BunSecretVault } from '../../services/BunSecr
 import { createToken } from '../../auth/jwt';
 import { getEnv } from '../../config/env';
 import { proxyCall } from '../../services/ProxyClient';
+import { ProxyClient, type ProxyCredentialProvider } from '../../lib/proxyClient';
 import { z } from 'zod';
 import { validateQuery, formatZodError, webLogQuerySchema, connectBodySchema } from '../middleware/validate';
 
@@ -616,13 +617,9 @@ function handleProxyCompatibleRoute(
       const search = Object.fromEntries(url.searchParams.entries());
       const endpoint = `/api/proxy/${path}`;
       const agentId = String(body.agentID || body.agentId || body.customerID || search.agentID || search.agentId || search.customerID || '');
-      return proxyCall(scraperManager, {
-        endpoint,
-        method: request.method === 'GET' ? 'GET' : 'POST',
-        agentId: agentId || undefined,
-        body: { ...search, ...body },
-        includeBuckeyeAuth: request.method !== 'GET',
-      });
+      // Use the new lib/proxyClient for fresh proxy data
+      const client = new ProxyClient(scraperManager);
+      return client.call(endpoint, { ...search, ...body }, agentId || undefined);
     }, corsHeaders);
   }
 

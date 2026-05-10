@@ -151,3 +151,10 @@ export function json(data: unknown, status = 200, headers: HeadersInit = {}) {
     headers: { "Content-Type": "application/json", ...cors, ...headers },
   });
 }
+
+/** Write a file atomically by writing to a temp file then renaming it. */
+export async function atomicWrite(filePath: string, content: string | Blob | ArrayBufferView): Promise<void> {
+  const tempPath = filePath + ".tmp";
+  await Bun.write(tempPath, content);
+  await Bun.rename(tempPath, filePath);
+}

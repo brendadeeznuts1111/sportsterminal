@@ -1,4 +1,4 @@
-# AGENTS.md — Sports Terminal v5.42
+# AGENTS.md — Sports Terminal
 
 Always run commands from repo root `C:\Users\bobby\sportsterminal\` (not a subdirectory).
 
@@ -6,10 +6,13 @@ Always run commands from repo root `C:\Users\bobby\sportsterminal\` (not a subdi
 
 | Command | Description |
 |---------|-------------|
-| `bun run dev` | Hot-reload dev server (backend + WebSocket) |
-| `bun run start` | Production server |
+| `bun run dev` | Hot-reload backend server (port 3000) |
+| `bun run start` | Production backend server |
 | `bun run build` | Build backend to `backend/dist/` |
 | `bun run serve` | Static frontend-only server on port 3001 |
+| `bun run proxy:dev` | Hot-reload standalone proxy (port 3001) |
+| `bun run proxy:start` | Production proxy |
+| `bun run proxy:build` | Compile proxy to `dist/proxy-server` |
 | `bun run db:reset` | Delete SQLite DB (recreated on next dev start) |
 | `bun run db:migrate` | Run SQLite migrations |
 | `bun run stop` | Kill stale process on port 3000 |
@@ -21,28 +24,35 @@ Always run commands from repo root `C:\Users\bobby\sportsterminal\` (not a subdi
 | `bun run --cwd backend lint` | ESLint (allows 500 warnings) |
 | `bun run --cwd backend lint:strict` | ESLint (allows 50 warnings) |
 | `bun run --cwd backend typecheck` | `tsc --noEmit` check |
+| `bun run smoke:backend` | Backend smoke tests |
+| `bun run smoke:proxy` | Proxy smoke tests |
+| `bun run integrity:check` | SQLite integrity checks (wagers, archive, hierarchy) |
+| `bun run artifacts:check` | Guard against committing sensitive/local artifacts |
+| `bun run generate:openapi` | Generate OpenAPI spec |
+| `bun run probe:player360` | Probe player360 contracts |
+| `bun run backfill:hierarchy` | Hierarchy backfill script |
 
 **After editing backend code, always run:** `bun run --cwd backend typecheck && bun run --cwd backend lint`
 
 ## Architecture
 
-Monorepo with one Bun workspace (`backend`). Frontend is a static SPA in `frontend/public/` — no build step, served directly by the backend. Standalone proxy in `proxy-enhanced.ts` (not part of backend workspace).
+Monorepo with one Bun workspace (`backend`). Frontend is a static SPA in `frontend/public/` — no build step, served directly by the backend. The proxy (`proxy-enhanced.ts`) is a standalone script at repo root, **not** part of the backend workspace and must be run separately.
 
-**Backend port: 3000. Proxy port: 3001** (configurable via `PROXY_PORT`).
+**Backend port: 3000. Proxy port: 3001** (configurable via `PORT` / `PROXY_PORT`).
 
 ### Backend `backend/src/`
 
 ```
 index.ts              Bun HTTP server + WebSocket (/ws) + static serving
-database.ts           Bun.SQL SQLite wrapper, schema init, migrations
+database.ts           Bun.SQL SQLite/Postgres wrapper, schema init, migrations
 config/env.ts         loadEnv() — validates PORT, JWT_SECRET, BUCKEYE_BASE_URL
 api/
-  router.ts           UrlPatternRouter — all /api/* routes registered here
+  router.ts           UrlPatternRouter — 105+ route registrations
   UrlPatternRouter.ts Custom URLPattern-based router
   routes/             Handler modules per domain (16 files)
-  middleware/          auth.ts, apiLogger.ts
+  middleware/         auth.ts, apiLogger.ts
   rateLimiter.ts      Per-IP rate limiting
-  helpers.ts           corsHeaders, requireAdminTokenIfConfigured
+  helpers.ts          corsHeaders, requireAdminTokenIfConfigured
 scrapers/
   BuckeyeAPI.ts       HTTP client for fantasy402.com (~2400 lines)
   ScraperManager.ts   Always-on polling lifecycle, backoff, vault restore
@@ -58,18 +68,21 @@ services/
   CrossReferenceService.ts  Player cross-reference
   GeoIpService.ts           Geo-IP enrichment
   HierarchyBackfillService.ts Hierarchy backfill
+  EnhancedProxyHealth.ts    Proxy health aggregation
+  ProxyClient.ts            HTTP client to standalone proxy
+  ProxyHealth.ts            Legacy proxy health checker
 odds/                  OddsPoller + providers (DemoOddsProvider, TheOddsApiProvider)
 patterns/             Pattern detection and persistence
 player360/            Player 360 deep-dive logic
 risk/AlertEngine.ts   Alert detection rules
-types/                 Shared TypeScript interfaces
-utils/                 Shared utilities
+types/                Shared TypeScript interfaces
+utils/                Shared utilities
 ```
 
 ### Proxy `proxy-enhanced.ts`
 
 ```
-ENDPOINT_MAP (48 entries)           — Buckeye API catalog with cacheTTLs and categories
+ENDPOINT_MAP (48+ entries)           — Buckeye API catalog with cacheTTLs and categories
 PROXY_ALIAS_MAP                     — Friendly-name → Buckeye endpoint fallbacks
 TAXONOMY_MAP                        — Taxonomy level → endpoint/shape config
 normalizeResponse()                  — 18+ Buckeye shape normalizers
@@ -111,11 +124,19 @@ runRiskEngine()                      — Background task (30s interval)
 | `wsClientBatching` | `ENABLE_WS_CLIENT_BATCHING` | true | Per-subscriber WS batch intervals |
 | `memoryCache` | `ENABLE_MEMORY_CACHE` | true | Hot endpoint 2s TTL cache |
 | `requestDedupe` | `ENABLE_REQUEST_DEDUPE` | true | Inflight request deduplication |
-| `tokenCache` | `ENABLE_TOKEN_CACHE` | true | 5s TTL token cache |
-| `responseNormalize` | `ENABLE_RESPONSE_NORMALIZE` | false | Gate for Buckeye shape normalizers |
-| `requestSampling` | `ENABLE_REQUEST_SAMPLING` | true | Controls log sampling via `LOG_SAMPLE_RATE` |
+| `tokenCache` | `ENABLE_TOKEN_MEM_CACHE` | true | 5s TTL token cache |
+| `responseNormalize` | `ENABLE_RESPONSE_NORMALIZE` | true | Gate for Buckeye shape normalizers |
+| `requestSampling` | `SAMPLE_RATE` < 1 | true | Controls log sampling via `LOG_SAMPLE_RATE` |
 
 ## Critical Conventions
+
+### Preload script (`scripts/preload.ts`)
+`bunfig.toml` sets `preload = ["./scripts/preload.ts"]` — this runs before **every** `bun run`, `bun test`, and `bun build`:
+- Zod-validates proxy environment variables (exits on invalid config)
+- Patches `bun:sqlite` Database constructor to always enable WAL, `busy_timeout = 5000`, `foreign_keys = ON`, `synchronous = NORMAL`
+- Injects default 30s fetch timeout (`sportsTerminalFetch`; only patches global `fetch` if `ENABLE_GLOBAL_FETCH_TIMEOUT=true`)
+- Starts structured logger that flushes every 5s
+- Prints demo-mode banner when `DEMO_MODE=true`
 
 ### Amount units (don't get this wrong)
 - **Buckeye API returns cents** — `AmountWagered: 2500` = $25.00
@@ -155,14 +176,14 @@ runRiskEngine()                      — Background task (30s interval)
 
 ## Where to find things
 
-- **All API routes**: `backend/src/api/router.ts` — 80+ routes via `UrlPatternRouter`
+- **All API routes**: `backend/src/api/router.ts` — 105+ routes via `UrlPatternRouter`
 - **Route handlers**: `backend/src/api/routes/` — one file per domain
 - **Frontend entry**: `frontend/public/index.html` → `js/app.js`
 - **Frontend WS**: `frontend/public/js/ws-client.js`
 - **Database schema**: `backend/src/database.ts` — all table definitions and migrations
 - **Buckeye API client**: `backend/src/scrapers/BuckeyeAPI.ts` — auth, wager, access-log, performance calls
 - **Env validation**: `backend/src/config/env.ts` — all env vars and their constraints
-- **Proxy endpoint catalog**: `proxy-enhanced.ts` — `ENDPOINT_MAP` (51 entries), `getEndpointMeta()`, `getEndpointDescription()`
+- **Proxy endpoint catalog**: `proxy-enhanced.ts` — `ENDPOINT_MAP` (48+ entries), `getEndpointMeta()`, `getEndpointDescription()`
 - **Proxy feature flags**: `config.ts` — `FeatureFlags` interface with `analytics`, `riskEngine`, `requestSampling`
 - **Proxy analytics algorithms**: `detectSyndicates()`, `correlateSharpMoney()`, `computeExpectedValue()`, `computePredictiveSharpness()`, `simulateLineAdjustments()`
 - **Proxy background engines**: `runRiskEngine()` (30s), `evaluateLineAdjustments()` (60s)
@@ -197,7 +218,7 @@ runRiskEngine()                      — Background task (30s interval)
 
 Tests in `backend/tests/*.test.ts`. Run from repo root with `bun test`.
 
-Test files: `actionQueue`, `analytics`, `api`, `auth`, `health`, `odds`, `patterns`, `performance`, `players`, `proxy-enhanced-config`, `rateLimiter`, `raw-api-logger`, `router`, `scheduler`, `webhook`.
+Test files: `actionQueue`, `analytics`, `api`, `auth`, `health`, `health-enhanced`, `odds`, `patterns`, `performance`, `players`, `proxy-client`, `proxy-enhanced-config`, `rateLimiter`, `raw-api-logger`, `router`, `scheduler`, `webhook`.
 
 Database tests use `:memory:` SQLite. No external services required.
 
@@ -222,3 +243,4 @@ Database tests use `:memory:` SQLite. No external services required.
 - `bunfig.toml` enables OSV install-time security scanner
 - Risk config webhooks are stored in SQLite — never log threshold values in responses
 - Line adjustment logs contain game IDs and line movements — treat as sensitive
+- Run `bun run artifacts:check` before commits to catch accidental sensitive-file staging

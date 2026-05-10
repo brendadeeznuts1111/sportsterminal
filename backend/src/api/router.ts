@@ -4,6 +4,7 @@
  * Falls through to 404 if no route matches.
  */
 import { corsHeaders, requireAdminTokenIfConfigured } from './helpers';
+import { ProxyClient } from '../lib/proxyClient';
 import { RateLimiter } from './rateLimiter';
 import { requireAuth } from './middleware/auth';
 import { registerHealthRoutes } from './routes/health';
@@ -430,6 +431,92 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
   // Log operations
   router.post('/api/proxy/Log/:operation', async (url, request) => {
     return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+
+  // ========== LIVE PROXY ROUTES (/api/live/*) ==========
+  // These bypass local caching and return fresh proxy data.
+  // Old /api/agents/downline still returns cached local data.
+  router.post('/api/live/agentDownline', async (url, request) => {
+    const body = await request.json() as Record<string, unknown>;
+    const agentID = String(body.agentID || body.agentId || url.searchParams.get('agentID') || '');
+    const client = new ProxyClient(deps.scraperManager);
+    return Response.json(await client.agentDownline(agentID));
+  });
+
+  router.post('/api/live/agentBilling', async (url, request) => {
+    const body = await request.json() as Record<string, unknown>;
+    const agentID = String(body.agentID || body.agentId || url.searchParams.get('agentID') || '');
+    const week = String(body.week || url.searchParams.get('week') || '0');
+    const client = new ProxyClient(deps.scraperManager);
+    return Response.json(await client.agentBilling(agentID, week));
+  });
+
+  router.post('/api/live/playerInfo', async (url, request) => {
+    const body = await request.json() as Record<string, unknown>;
+    const playerID = String(body.playerID || body.playerId || url.searchParams.get('playerID') || '');
+    const agentID = String(body.agentID || body.agentId || url.searchParams.get('agentID') || '');
+    const client = new ProxyClient(deps.scraperManager);
+    return Response.json(await client.playerInfo(playerID, agentID));
+  });
+
+  router.post('/api/live/dynamicLive', async (url, request) => {
+    const body = await request.json() as Record<string, unknown>;
+    const agentID = String(body.agentID || body.agentId || url.searchParams.get('agentID') || '');
+    const client = new ProxyClient(deps.scraperManager);
+    return Response.json(await client.dynamicLive(agentID));
+  });
+
+  router.post('/api/live/leagueLines', async (url, request) => {
+    const body = await request.json() as Record<string, unknown>;
+    const league = String(body.league || url.searchParams.get('league') || '');
+    const sport = String(body.sport || url.searchParams.get('sport') || '');
+    const agentID = String(body.agentID || body.agentId || url.searchParams.get('agentID') || '');
+    const client = new ProxyClient(deps.scraperManager);
+    return Response.json(await client.leagueLines(league, sport, agentID));
+  });
+
+  router.post('/api/live/sportsLeagues', async (url, request) => {
+    const body = await request.json() as Record<string, unknown>;
+    const agentID = String(body.agentID || body.agentId || url.searchParams.get('agentID') || '');
+    const client = new ProxyClient(deps.scraperManager);
+    return Response.json(await client.sportsLeagues(agentID));
+  });
+
+  router.post('/api/live/gameVolume', async (url, request) => {
+    const body = await request.json() as Record<string, unknown>;
+    const gameId = String(body.gameId || body.gameID || url.searchParams.get('gameId') || '');
+    const agentID = String(body.agentID || body.agentId || url.searchParams.get('agentID') || '');
+    const client = new ProxyClient(deps.scraperManager);
+    return Response.json(await client.gameVolume(gameId, agentID));
+  });
+
+  router.post('/api/live/pending', async (url, request) => {
+    const body = await request.json() as Record<string, unknown>;
+    const date = String(body.date || url.searchParams.get('date') || '');
+    const agentID = String(body.agentID || body.agentId || url.searchParams.get('agentID') || '');
+    const client = new ProxyClient(deps.scraperManager);
+    return Response.json(await client.pending(date, agentID));
+  });
+
+  router.post('/api/live/betTicker', async (url, request) => {
+    const body = await request.json() as Record<string, unknown>;
+    const agentID = String(body.agentID || body.agentId || url.searchParams.get('agentID') || '');
+    const client = new ProxyClient(deps.scraperManager);
+    return Response.json(await client.betTicker(agentID));
+  });
+
+  router.post('/api/live/scoresLive', async (url, request) => {
+    const body = await request.json() as Record<string, unknown>;
+    const agentID = String(body.agentID || body.agentId || url.searchParams.get('agentID') || '');
+    const client = new ProxyClient(deps.scraperManager);
+    return Response.json(await client.scoresLive(agentID));
+  });
+
+  router.post('/api/live/Manager/:operation', async (url, request) => {
+    const body = await request.json() as Record<string, unknown>;
+    const operation = url.pathname.replace('/api/live/Manager/', '');
+    const client = new ProxyClient(deps.scraperManager);
+    return Response.json(await client.manager(operation, body));
   });
 
   // Performance cache routes. Keep status before :agentId so it does not

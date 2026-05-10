@@ -7,10 +7,11 @@ import { heapStats as jscHeapStats } from "bun:jsc";
 import { randomUUID } from "node:crypto";
 import { watch } from "node:fs";
 import { CONFIG, reloadFromEnv } from "./config";
-import { CircuitBreaker, logger, hashPayload as utilsHashPayload, fetchWithRetry as utilsFetchWithRetry, requestContext, json as utilsJson } from "./utils";
+import { CircuitBreaker, logger, hashPayload as utilsHashPayload, fetchWithRetry as utilsFetchWithRetry, requestContext, json as utilsJson, atomicWrite } from "./utils";
 import { fetchWithTimeout } from "./utils/fetchWithTimeout";
 import { getAllEndpoints, ENDPOINT_COUNTS, TEST_SUMMARY } from "./endpoint-index";
 import type { ServerWebSocket, WebSocketHandler } from "bun";
+import { z } from "zod";
 
 type JsonObject = Record<string, unknown>;
 
@@ -430,6 +431,7 @@ function getEndpointDescription(key: string): string {
 // ==========================================
 let shuttingDown = false;
 let activeRequests = 0;
+let currentReqId: string | undefined;
 
 // ==========================================
 // CIRCUIT BREAKER INSTANCE
@@ -478,9 +480,23 @@ db.run = function (...args: any[]) {
   return result;
 };
 
-const dbRead = CONFIG.dbPath === ":memory:"
-  ? db
-  : new Database(CONFIG.dbPath, { readonly: true });
+const readPool: Database[] = [];
+for (let i = 0; i < 3; i++) {
+  const conn = CONFIG.dbPath === ":memory:" ? db : new Database(CONFIG.dbPath, { readonly: true });
+  if (conn !== db) {
+    conn.run("PRAGMA journal_mode = WAL;");
+    conn.run("PRAGMA busy_timeout = 30000;");
+  }
+  readPool.push(conn);
+}
+let readPoolIndex = 0;
+function getReadDb(): Database {
+  const conn = readPool[readPoolIndex];
+  readPoolIndex = (readPoolIndex + 1) % readPool.length;
+  return conn;
+}
+
+const dbRead = readPool[0];
 
 db.run(`
   CREATE TABLE IF NOT EXISTS tokens (
@@ -806,7 +822,7 @@ setInterval(() => {
 setInterval(async () => {
   try {
     const backupDir = "./backups";
-    await Bun.write(`${backupDir}/.keep`, "").catch(() => {});
+    await atomicWrite(`${backupDir}/.keep`, "").catch(() => {});
     const backupPath = `${backupDir}/proxy-${Date.now()}.db`;
     db.run(`VACUUM INTO '${backupPath}'`);
     logger.log("info", "backup", `SQLite hot backup created`, { path: backupPath });
@@ -1086,6 +1102,27 @@ async function readBody(req: Request): Promise<JsonObject> {
   return Object.fromEntries(new URLSearchParams(text)) as JsonObject;
 }
 
+// Lightweight Zod body validator
+async function safeParseBody<T>(req: Request, schema: z.ZodSchema<T>): Promise<{ success: true; data: T } | { success: false; error: string }> {
+  try {
+    const raw = await readBody(req);
+    const data = schema.parse(raw);
+    return { success: true, data };
+  } catch (err: unknown) {
+    const message = err instanceof z.ZodError
+      ? err.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")
+      : err instanceof Error ? err.message : String(err);
+    return { success: false, error: message };
+  }
+}
+
+const SampleRateSchema = z.object({ rate: z.coerce.number().min(0).max(1) });
+const RateLimitOverrideSchema = z.object({
+  endpoint: z.string().min(1, "endpoint required"),
+  limit: z.coerce.number().positive("limit must be > 0"),
+  window: z.coerce.number().positive("window must be > 0"),
+});
+
 function parseJsonValue<T>(text: string | null | undefined, fallback: T): T {
   if (!text) return fallback;
   try {
@@ -1128,6 +1165,8 @@ function hashPayloadImpl(payload: unknown): string {
 
 function json(data: unknown, status = 200, headers: Record<string, string> = {}, acceptEncoding = "") {
   const body = JSON.stringify(data, null, 2);
+  const responseHeaders: Record<string, string> = { "Content-Type": "application/json", ...cors, ...headers };
+  if (currentReqId && !responseHeaders["X-Request-ID"]) responseHeaders["X-Request-ID"] = currentReqId;
   const gzip = (Bun as unknown as { gzipSync?: (input: string) => Uint8Array }).gzipSync;
   if (CONFIG.features.responseCompression && gzip && acceptEncoding.includes("gzip") && body.length > 1024) {
     const compressed = gzip(body);
@@ -1135,10 +1174,10 @@ function json(data: unknown, status = 200, headers: Record<string, string> = {},
     bytes.set(compressed);
     return new Response(bytes.buffer as ArrayBuffer, {
       status,
-      headers: { "Content-Type": "application/json", "Content-Encoding": "gzip", ...cors, ...headers },
+      headers: { "Content-Encoding": "gzip", ...responseHeaders },
     });
   }
-  return new Response(body, { status, headers: { "Content-Type": "application/json", ...cors, ...headers } });
+  return new Response(body, { status, headers: responseHeaders });
 }
 
 function shouldLog(): boolean {
@@ -4106,6 +4145,7 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
 
     const acceptEncoding = req.headers.get("accept-encoding") || "";
     const ctx = requestContext(req);
+    currentReqId = ctx.reqId;
 
     // ---- / ----
     if (path === "/" || path === "") {
@@ -4222,14 +4262,11 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
     if (path === "/api/proxy/admin/sample-rate" && req.method === "POST") {
       const authErr = adminApiKeyAuth(req);
       if (authErr) return authErr;
-      const body = await readBody(req);
-      const rate = Number(body.rate);
-      if (Number.isFinite(rate) && rate >= 0 && rate <= 1) {
-        (CONFIG.features as any).sampleRate = rate;
-        logger.log("info", "admin", `Sample rate changed to ${rate}`);
-        return json({ success: true, sampleRate: rate });
-      }
-      return json({ error: "Invalid rate (0-1)" }, 400);
+      const parsed = await safeParseBody(req, SampleRateSchema);
+      if (!parsed.success) return json({ error: parsed.error }, 400);
+      CONFIG.sampleRate = parsed.data.rate;
+      logger.log("info", "admin", `Sample rate changed to ${parsed.data.rate}`);
+      return json({ success: true, sampleRate: parsed.data.rate });
     }
 
     if (path === "/admin" && req.method === "GET") {
@@ -5973,13 +6010,9 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       }
 
       if (req.method === "POST") {
-        const body = await readBody(req);
-        const endpoint = String(body.endpoint || "");
-        const limit = Number(body.limit);
-        const window = Number(body.window);
-        if (!endpoint || !Number.isFinite(limit) || limit <= 0 || !Number.isFinite(window) || window <= 0) {
-          return json({ error: "endpoint, limit, and window are required" }, 400);
-        }
+        const parsed = await safeParseBody(req, RateLimitOverrideSchema);
+        if (!parsed.success) return json({ error: parsed.error }, 400);
+        const { endpoint, limit, window } = parsed.data;
         setRateLimitOverrideStmt.run({ $endpoint: endpoint, $limit: limit, $window: window });
         rateLimitOverrides.set(endpoint, { limit, window });
         return json({ success: true, endpoint, limit, window });
@@ -6162,7 +6195,9 @@ async function shutdown(signal: string) {
   getLineAdjLog.finalize();
   getRecentLineAdjLog.finalize();
   db.close();
-  if (dbRead !== db) dbRead.close();
+  for (const conn of readPool) {
+    if (conn !== db) conn.close();
+  }
 
   logger.info("Shutdown complete");
   process.exit(0);
