@@ -297,6 +297,78 @@ export interface BuckeyeWebLogRow {
   raw: Record<string, unknown>;
 }
 
+export interface BuckeyeHierarchyAgent {
+  AgentID?: string;
+  Login?: string;
+  ParentAgentID?: string;
+  Level?: string | number;
+  ChildCount?: string | number;
+  PlayerCount?: string | number;
+  SeqNumber?: string | number;
+  AgentType?: string;
+  HeadCountRateM?: string | number;
+  InetHeadCountRateM?: string | number;
+  CasinoHeadCountRateM?: string | number;
+  LiveBettingRateM?: string | number;
+  LiveBetting2RateM?: string | number;
+  LiveCasinoRateM?: string | number;
+  PropBuilderRateM?: string | number;
+  FlashBetsRate?: string | number;
+  ExtPropsRate?: string | number;
+  CrashRate?: string | number;
+  FantasyRate?: string | number;
+  AmigoTechRate?: string | number;
+  [key: string]: unknown;
+}
+
+export interface BuckeyeHierarchyPlayer {
+  customerID?: string;
+  Login?: string;
+  NameFirst?: string;
+  NameLast?: string;
+  Password?: string;
+  Agent?: string;
+  SeqNumber?: string | number;
+  [key: string]: unknown;
+}
+
+export interface BuckeyeAgentHierarchy {
+  GENERAL: BuckeyeHierarchyAgent[];
+  PLAYERS: BuckeyeHierarchyPlayer[];
+}
+
+export interface BuckeyePlayerListItem {
+  customerID?: string;
+  Login?: string;
+  NameFirst?: string;
+  NameLast?: string;
+  Password?: string;
+  Agent?: string;
+  [key: string]: unknown;
+}
+
+export interface BuckeyePlayersList {
+  LIST: BuckeyePlayerListItem[];
+}
+
+export interface BuckeyeWagerRaw {
+  WagerNumber?: string | number;
+  AgentID?: string;
+  CustomerID?: string;
+  Login?: string;
+  WagerType?: string;
+  AmountWagered?: string | number;
+  ToWinAmount?: string | number;
+  VolumeAmount?: string | number;
+  InsertDateTime?: string;
+  TicketWriter?: string;
+  ShortDesc?: string;
+  VIP?: string;
+  AgentLogin?: string;
+  AgentId?: string;
+  [key: string]: unknown;
+}
+
 export interface BuckeyeAccountFeatureFlag {
   key: string;
   value: boolean;
@@ -603,7 +675,7 @@ export class BuckeyeAPI {
    * Fetch agent hierarchy from the Manager API.
    * Returns the raw GENERAL array with agent tree data.
    */
-  async getAgentHierarchy(): Promise<any> {
+  async getAgentHierarchy(): Promise<BuckeyeAgentHierarchy> {
     if (!this.loggedIn) {
       throw new Error('Not authenticated. Call login() first.');
     }
@@ -649,7 +721,7 @@ export class BuckeyeAPI {
    * Fetch player/customer list from the Manager API.
    * Returns { LIST: [...] } with customerID, Login, NameFirst, Password, Agent.
    */
-  async getPlayersList(): Promise<any> {
+  async getPlayersList(): Promise<BuckeyePlayersList> {
     if (!this.loggedIn) {
       throw new Error('Not authenticated. Call login() first.');
     }
@@ -1476,7 +1548,7 @@ export class BuckeyeAPI {
     }
   }
 
-  private normalizeWager(raw: any): EnrichedWager {
+  private normalizeWager(raw: BuckeyeWagerRaw): EnrichedWager {
     // Buckeye API returns amounts in cents; convert to dollars
     const amountWagered = (Number(raw.AmountWagered) || 0) / 100;
     const toWinAmount = (Number(raw.ToWinAmount) || 0) / 100;
