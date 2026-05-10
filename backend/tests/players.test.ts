@@ -484,6 +484,26 @@ describe('player archive routes', () => {
     expect(body.transactions).toHaveLength(0);
   });
 
+  test('free-play confidence is computed from row text and invalid groupBy defaults to player', async () => {
+    await db.run(
+      `INSERT INTO player_transactions
+        (id, customer_id, login, agent_id, agent_login, document_number, tran_code, tran_type, amount, balance, description, entered_by, category, transaction_time, raw_json)
+       VALUES
+        ('fp-candidate', 'PLAYER1', 'PLAYER1', 'A1', 'AGENT1', 'FP-5', 'C', 'F', 15, 65, 'Promotional Credit', 'PromoDesk', 'freeplay_issued', '2026-05-04 08:00:00', '{"Description":"Promotional Credit"}')`
+    );
+
+    const res = await registerFreePlayAnalysisRoutes(
+      new URL('http://localhost/api/freeplay/analysis?playerId=PLAYER1&groupBy=bad-value'),
+      new Request('http://localhost/api/freeplay/analysis?playerId=PLAYER1&groupBy=bad-value'),
+      scraperManager as any
+    );
+    const body = await res!.json();
+
+    expect(body.filters.groupBy).toBe('player');
+    expect(body.totals.sourceConfidence).toBe('candidate');
+    expect(body.transactions.find((row: any) => row.id === 'fp-candidate').sourceConfidence).toBe('candidate');
+  });
+
   test('player intelligence map reports source coverage, freshness, and gaps', async () => {
     const res = await registerPlayerIntelligenceMapRoutes(
       new URL('http://localhost/api/players/PLAYER1/intelligence-map'),

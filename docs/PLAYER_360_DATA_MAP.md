@@ -45,7 +45,7 @@ Hot players are players with a wager in the last 24 hours, an opened profile, an
 | Intelligence map | `/api/v1/players/:playerId/intelligence-map` | Source freshness, watermarks, raw API probe history |
 | Deposits | `/api/v1/players/:playerId/deposits` | `deposits` plus login-IP match against `access_logs` |
 | Transaction ledger | `/api/v1/players/:playerId/transactions` | Combined `getTransactionList` / `getTransactionHistory` / `getReportDeletedTransactions` ledger: wager wins/losses, credits/debits, deleted rows, balances, document numbers. Pass `category=freeplay` to return only free-play rows. |
-| Free-play analysis | `/api/v1/freeplay/analysis?playerId=&agentId=&from=&to=&groupBy=player\|agent\|day` | Aggregates `player_transactions` categories `freeplay_issued`, `freeplay_redeemed`, `freeplay_expired`, and `freeplay_adjustment` into totals and grouped rows with `sourceConfidence`. |
+| Free-play analysis | `/api/v1/freeplay/analysis?playerId=&agentId=&from=&to=&groupBy=player\|agent\|day` | Aggregates `player_transactions` categories `freeplay_issued`, `freeplay_redeemed`, `freeplay_expired`, and `freeplay_adjustment` into totals and grouped rows with response-computed `sourceConfidence`. |
 | Account | `/api/v1/players/:playerId/account-snapshots` | `customer_snapshots` |
 | Links | `/api/v1/players/:playerId/links` and `/links/check` | `player_links`, derived from access-log overlap |
 | Notes and flags | `/api/v1/players/:playerId/notes`, `/flags` | Manual operator tables |
@@ -109,6 +109,8 @@ Observed rows include:
 `getTransactionHistory` and `getReportDeletedTransactions` use the same local contract. The parser also accepts common aliases such as `TransactionDateTime`, `TransactionDate`, `TransactionType`, `TransactionCode`, `Customer`, `Credit`, `Debit`, `AgentId`, `MasterAgentID`, and `DeletedBy` so field-name drift in Buckeye payloads does not blank the Player 360 ledger. Deleted report rows use `deleted-<DocumentNumber>` as the local row ID so they do not overwrite active ledger documents.
 
 Free-play classification is intentionally conservative until exact Buckeye `TranType` examples are proven. The manuals confirm that Promotional Credit/Debit changes balance without counting as deposit/withdrawal and without affecting daily figure, while Free Plays have a separate balance, pending free-play risk, add/subtract transactions, and a transaction table. Rows are promoted only when description/raw text includes terms such as `free play`, `freeplay`, `fp`, `bonus play`, `promo`, `redeem`, `expired`, or `credit pct`; ambiguous `F`/`H` rows without those terms remain normal credit/debit/other categories.
+
+`sourceConfidence` is not persisted in `player_transactions`. The profile, transaction filter, and free-play analysis routes compute it from each row's `tran_type`, `description`, and `raw_json` so older backfilled ledger rows do not require a schema migration. Explicit free-play text is `confirmed`; promotional/FP-adjacent rows that passed conservative classification but lack explicit free-play wording are `candidate`.
 
 `freePlaySummary.outstandingEstimate` is ledger-derived. Treat it as an estimate until a raw Buckeye free-play balance source is captured.
 

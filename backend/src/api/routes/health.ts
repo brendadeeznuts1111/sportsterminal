@@ -92,15 +92,21 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
        ORDER BY count DESC, last_seen DESC
        LIMIT 8`, []);
   for (const row of rawApiFailures) {
+    const statusCode = Number(row.status_code || 0);
+    const upstreamCategory = categorizeUpstreamFailure(statusCode);
     issues.push({
-      severity: Number(row.status_code) >= 500 ? 'critical' : 'warning',
+      severity: statusCode >= 500 ? 'critical' : 'warning',
       category: 'api',
       title: `${row.endpoint} returned ${row.status_code}`,
-      detail: `${row.count} failed call${Number(row.count) === 1 ? '' : 's'} in the last 24 hours${row.agent_id ? ` for ${row.agent_id}` : ''}.`,
+      detail: `${row.count} ${upstreamCategory} call${Number(row.count) === 1 ? '' : 's'} in the last 24 hours${row.agent_id ? ` for ${row.agent_id}` : ''}.`,
       source: 'raw_api_logs',
       count: Number(row.count || 0),
       lastSeen: row.last_seen || null,
-      action: 'Open the Raw API Archive and inspect the redacted response body for the endpoint.',
+      action: statusCode === 401 || statusCode === 403
+        ? 'Refresh Buckeye credentials/Cloudflare cookie, then verify the agent returns to authenticated state.'
+        : statusCode === 504
+          ? 'Treat as upstream timeout: retry after backoff and inspect Raw API Archive if it persists.'
+          : 'Open the Raw API Archive and inspect the redacted response body for the endpoint.',
     });
   }
 
@@ -111,7 +117,27 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
        GROUP BY source_key, agent_id
        ORDER BY count DESC, last_seen DESC
        LIMIT 8`, []);
+  const authBuckets = new Map<string, any>();
   for (const row of playerSourceErrors) {
+    if (isBuckeyeAuthFailure(row.last_error)) {
+      const key = row.agent_id || 'unknown-agent';
+      const bucket = authBuckets.get(key) || {
+        severity: 'warning',
+        category: 'player360',
+        title: `Player 360 probes paused by Buckeye auth for ${key}`,
+        detail: '',
+        source: 'player_source_status',
+        count: 0,
+        lastSeen: null,
+        action: 'Refresh the Buckeye session/Cloudflare cookie once, then retry Player 360 probes; repeated per-player failures are grouped here.',
+        sourceKeys: new Set<string>(),
+      };
+      bucket.count += Number(row.count || 0);
+      bucket.lastSeen = latestTimestamp(bucket.lastSeen, row.last_seen);
+      bucket.sourceKeys.add(row.source_key || 'unknown_source');
+      authBuckets.set(key, bucket);
+      continue;
+    }
     issues.push({
       severity: Number(row.count) >= 5 ? 'critical' : 'warning',
       category: 'player360',
@@ -122,6 +148,13 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
       lastSeen: row.last_seen || null,
       action: 'Open the Player 360 Status tab for an affected player and check source freshness.',
     });
+  }
+  for (const bucket of authBuckets.values()) {
+    const sourceKeys = [...bucket.sourceKeys].sort();
+    delete bucket.sourceKeys;
+    bucket.detail = `${bucket.count} source refresh error${bucket.count === 1 ? '' : 's'} were caused by an expired or missing Buckeye session across ${sourceKeys.join(', ')}.`;
+    if (bucket.count >= 20) bucket.severity = 'critical';
+    issues.push(bucket);
   }
 
   const offlineBooks = await safeAll(db,
@@ -227,4 +260,26 @@ function severityRank(severity: string): number {
   if (severity === 'critical') return 3;
   if (severity === 'warning') return 2;
   return 1;
+}
+
+function isBuckeyeAuthFailure(error: unknown): boolean {
+  const text = String(error || '').toLowerCase();
+  return text.includes('not authenticated')
+    || text.includes('401 unauthorized')
+    || text.includes('403 forbidden')
+    || text.includes('authorization required')
+    || text.includes('cloudflare');
+}
+
+function categorizeUpstreamFailure(statusCode: number): string {
+  if (statusCode === 401 || statusCode === 403) return 'Buckeye auth/session failure';
+  if (statusCode === 504) return 'upstream timeout';
+  if (statusCode >= 500) return 'upstream/server failure';
+  return 'failed';
+}
+
+function latestTimestamp(current: string | null, candidate: string | null): string | null {
+  if (!candidate) return current;
+  if (!current) return candidate;
+  return String(candidate) > String(current) ? candidate : current;
 }

@@ -17,6 +17,7 @@
     "db:migrate": "bun run --cwd backend scripts/migrate.ts",
     "probe:player360": "bun run --cwd backend scripts/probe-player360.ts",
     "backfill:hierarchy": "bun run --cwd backend scripts/backfill-hierarchy.ts",
+    "integrity:check": "bun run --cwd . backend/scripts/integrity-check.ts",
     "status": "bun run scripts/status.js",
     "stop": "bun run scripts/stop.js",
     "clean-start": "bun run stop && bun run dev",

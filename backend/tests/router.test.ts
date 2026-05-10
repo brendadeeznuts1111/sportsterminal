@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 
-import { createRouter } from '../src/api/router';
+import { createRouter, routeRequest } from '../src/api/router';
+import { RateLimiter } from '../src/api/rateLimiter';
 
 function createTestRouter() {
   return createRouter({
@@ -113,5 +114,24 @@ describe('API route registration', () => {
     expect(router.match('GET', '/api/v1/freeplay/analysis')).not.toBeNull();
     expect(router.match('GET', '/api/v1/logs/access')).not.toBeNull();
     expect(router.match('POST', '/api/v1/players/A17566/flags')).not.toBeNull();
+  });
+
+  it('applies local rate limiting before dispatching routes', async () => {
+    const deps = {
+      scraperManager: {
+        getDatabase: () => ({ run: async () => ({ lastID: 1, changes: 1 }) }),
+        getMetrics: () => ({ activeAgents: 0, agents: [], actionQueue: { totalQueued: 0, queues: {} }, counters: {} }),
+      } as any,
+      oddsPoller: {} as any,
+    };
+    const limiter = new RateLimiter(1, 60_000);
+    const request = new Request('http://localhost/health', { headers: { 'x-real-ip': '198.51.100.10' } });
+
+    const first = await routeRequest(new URL('http://localhost/health'), request, deps, limiter);
+    const second = await routeRequest(new URL('http://localhost/health'), request, deps, limiter);
+
+    expect(first?.status).toBe(200);
+    expect(second?.status).toBe(429);
+    expect(second?.headers.get('Retry-After')).toBeTruthy();
   });
 });

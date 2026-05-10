@@ -456,6 +456,8 @@ Category mapping:
 
 Player 360 stores all rows in `player_transactions`. Only deposit-like rows are copied into `deposits`, so wager wins/losses remain ledger rows instead of becoming fake deposits.
 
+Free-play `sourceConfidence` is response-computed from `tran_type`, `description`, and `raw_json`; it is intentionally not a persisted `player_transactions` column.
+
 ## Buckeye `getTransactionHistory`
 
 Request fields:
@@ -781,6 +783,12 @@ Health and metrics:
 | `/health` | GET | Backend health summary |
 | `/api/health/system-status` | GET | Consolidated System Status issue feed for scraper errors, action queues, raw API failures, Player 360 source errors, offline books, and critical patterns |
 | `/metrics` | GET | Scraper/action queue counters |
+
+Local read-only audit:
+
+| Command | Meaning |
+|---------|---------|
+| `bun run integrity:check` | Reconciles `wagers` and `wager_archive`, checks for legacy wager-type constraints, blank wager identities, orphan `player_agent_map` rows, expected hierarchy shape, zero-amount wager anomalies, and newly observed wager type codes. |
 
 Buckeye:
 

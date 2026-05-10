@@ -58,7 +58,7 @@ Server health check with uptime and active agent info.
 
 ### `GET /api/health/system-status`
 
-Consolidated System Status issue feed for operator bug/risk tracking. Rolls up scraper errors, action queue backlog, recent raw API failures, Player 360 source errors, offline odds books, and critical/high patterns.
+Consolidated System Status issue feed for operator bug/risk tracking. Rolls up scraper errors, action queue backlog, recent raw API failures, grouped Player 360 source errors, offline odds books, and critical/high patterns. Repeated Player 360 failures caused by an expired Buckeye session are grouped into one agent-level issue so operators can distinguish session/upstream failures from parser or database bugs.
 
 ```json
 {
@@ -297,6 +297,18 @@ Aggregates free-play rows from `player_transactions`.
 Query params: `playerId`, `agentId`, `from`, `to`, `groupBy=player|agent|day`.
 
 Response totals include `issued`, `redeemed`, `expired`, `adjustments`, `outstandingEstimate`, `transactionCount`, and `sourceConfidence`. Groups use the same totals contract.
+
+`sourceConfidence` is computed at response time from `tranType`, `description`, and `rawJson`; it is not stored as a `player_transactions` column. Rows with explicit `free play`, `freeplay`, or `bonus play` text are `confirmed`; broader promotional/free-play candidates remain `candidate`.
+
+### Local Integrity Check
+
+Run the read-only local integrity audit without calling Buckeye:
+
+```bash
+bun run integrity:check
+```
+
+The check reconciles `wagers` against `wager_archive`, verifies the legacy `wager_type IN (...)` constraint is gone, checks blank wager identities, checks orphan `player_agent_map` rows, and validates the expected seeded hierarchy shape (`3` roots, `2288` agents, max level `17`). It flags anomalies such as zero-amount wagers or newly observed wager type codes without deleting data.
 
 ---
 

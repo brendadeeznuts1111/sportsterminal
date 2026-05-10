@@ -73,6 +73,21 @@ describe('RawApiLogger', () => {
     expect(insert!.params[4]).not.toContain('cookie');
   });
 
+  it('redacts bearer tokens, jwt values, and Cloudflare cookies from plain text', () => {
+    const redacted = redactSensitiveFields({
+      text: 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJCSUxMWSJ9.signature; Cookie: cf_clearance=abc123; __cf_bm=def456',
+      nested: 'token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJCSUxMWSJ9.signature&cf_clearance=abc123',
+    }) as any;
+
+    expect(redacted.text).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+    expect(redacted.text).not.toContain('abc123');
+    expect(redacted.text).not.toContain('def456');
+    expect(redacted.nested).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+    expect(redacted.nested).not.toContain('abc123');
+    expect(redacted.nested).toContain('token=REDACTED');
+    expect(redacted.nested).toContain('cf_clearance=REDACTED');
+  });
+
   it('filters raw API logs and only includes body when requested', async () => {
     const calls: Array<{ sql: string; params: unknown[] }> = [];
     const db = {
