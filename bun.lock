@@ -6,6 +6,8 @@
       "name": "sportsterminal",
       "devDependencies": {
         "@bun-security-scanner/osv": "^1.0.0",
+        "@types/node": "^25.6.2",
+        "bun-types": "^1.3.13",
       },
     },
     "backend": {
@@ -21,6 +23,7 @@
         "@types/bun": "latest",
         "bun-types": "latest",
         "eslint": "^10.3.0",
+        "typescript": "^6.0.3",
         "typescript-eslint": "^8.59.2",
       },
     },

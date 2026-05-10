@@ -7,7 +7,7 @@
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
 
 export interface LogMeta {
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 function writeLog(level: LogLevel, message: string, meta?: LogMeta): void {
@@ -84,7 +84,7 @@ export function logRequest(
 /**
  * Log a database query.
  */
-export function logQuery(sql: string, params?: any[]): void {
+export function logQuery(sql: string, params?: unknown[]): void {
   if (process.env.DEBUG === 'true') {
     const logMeta: LogMeta = {
       operation: 'database_query',
@@ -138,14 +138,14 @@ export function logPattern(
  */
 export function logScraper(
   agentId: string,
-  operation: string,
+  scraperOperation: string,
   error?: string,
   meta?: LogMeta
 ): void {
   const logMeta: LogMeta = {
     operation: 'scraper_operation',
     agentId,
-    operation,
+    scraperOperation,
     error,
     ...meta,
   };
@@ -160,13 +160,13 @@ export function logScraper(
  * Log a cache operation.
  */
 export function logCache(
-  operation: string,
+  cacheOperation: string,
   key: string,
   meta?: LogMeta
 ): void {
   const logMeta: LogMeta = {
     operation: 'cache_operation',
-    operation,
+    cacheOperation,
     key,
     ...meta,
   };

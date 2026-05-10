@@ -10,19 +10,26 @@ import {
   BuckeyeCredentials,
   type BuckeyeAgentPerformanceOptions,
   type BuckeyeAgentPerformanceResult,
+  type BuckeyeAccountInfoResult,
+  type BuckeyeAgentHierarchy,
   type BuckeyeCustomerSnapshot,
+  type BuckeyeCustomerSnapshotResult,
   type BuckeyeDepositRow,
   type BuckeyeManagerSnapshotResult,
+  type BuckeyeTransactionListResult,
   type BuckeyeTransactionRow,
+  type BuckeyePlayersList,
   type BuckeyeWeeklyFigureOptions,
+  type BuckeyeWeeklyFigureResult,
   type BuckeyeWebLogOptions,
   type BuckeyeWebLogRow,
+  type BuckeyeUiConfigResult,
 } from './BuckeyeAPI';
 import { LiveAgentTree } from './LiveAgentTree';
-import { evaluateWager, Alert } from '../risk/AlertEngine';
+import { evaluateWager, Alert, type EnrichedWager } from '../risk/AlertEngine';
 import { WebhookService } from '../services/WebhookService';
 import { PatternService } from '../patterns/PatternService';
-import { ActionQueue } from '../actions/ActionQueue';
+import { ActionQueue, type ActionResult } from '../actions/ActionQueue';
 import { backfillAgentsAndPlayers } from '../services/HierarchyBackfillService';
 import type { BunSecretVault } from '../services/BunSecretVault';
 import { PerformanceCache } from '../services/PerformanceCache';
@@ -62,10 +69,166 @@ interface Player360Candidate {
   agentLogin: string;
 }
 
+type SqlRow = Record<string, unknown>;
+
+interface CountRow {
+  count: number;
+}
+
+interface TotalRow {
+  total: number | null;
+}
+
+interface PersistedAgentHierarchyRow {
+  id: string;
+  login: string | null;
+  parent_agent_id: string | null;
+  level: number | null;
+  child_count: number | null;
+  player_count: number | null;
+  seq_number: number | null;
+  agent_type: string | null;
+  head_count_rate_m: number | null;
+  inet_head_count_rate_m: number | null;
+  casino_head_count_rate_m: number | null;
+  live_betting_rate_m: number | null;
+  live_betting2_rate_m: number | null;
+  live_casino_rate_m: number | null;
+  prop_builder_rate_m: number | null;
+  flash_bets_rate: number | null;
+  ext_props_rate: number | null;
+  crash_rate: number | null;
+  fantasy_rate: number | null;
+  amigo_tech_rate: number | null;
+}
+
+interface BuckeyeSportTypeRow {
+  raw_value: string;
+  label: string;
+  sort_order: number;
+  source: string;
+  updated_at: string;
+}
+
+interface ExposureWagerRow {
+  volume_amount?: number | null;
+  amount_wagered?: number | null;
+  sport?: string | null;
+  short_desc?: string | null;
+  ticket_writer?: string | null;
+  agent_login?: string | null;
+  login?: string | null;
+}
+
+interface PlayerLinkRow {
+  ip_address: string;
+  players: string | null;
+  playerCount: number;
+  lastSeen: string | null;
+}
+
+interface LooseBuckeyeRow {
+  [key: string]: unknown;
+  Agent?: unknown;
+  agent?: unknown;
+}
+
+type LooseBuckeyeData = Record<string, unknown> & {
+  GENERAL: LooseBuckeyeRow[];
+  [index: number]: LooseBuckeyeRow;
+};
+
+type ManagerAgentHierarchyResult = Omit<BuckeyeAgentHierarchy, 'PLAYERS'> & {
+  PLAYERS?: BuckeyeAgentHierarchy['PLAYERS'];
+  message?: string;
+  error?: string;
+};
+
+type ManagerPlayersListResult = BuckeyePlayersList & {
+  message?: string;
+  error?: string;
+};
+
+type ManagerWeeklyFigureResult = Partial<Omit<BuckeyeWeeklyFigureResult, 'data'>> & {
+  data: LooseBuckeyeData | null;
+  message?: string;
+  error?: string;
+};
+
+type ManagerSnapshotResult = Partial<Omit<BuckeyeManagerSnapshotResult, 'message' | 'sportsType'>> & {
+  data?: null;
+  message?: unknown;
+  error?: string;
+  sportsType: LooseBuckeyeData;
+};
+
+type ManagerAgentPerformanceResult = Partial<Omit<BuckeyeAgentPerformanceResult, 'data'>> & {
+  data: LooseBuckeyeData | null;
+  message?: string;
+  error?: string;
+};
+
+interface PlayerProfileRow extends SqlRow {
+  wager_count?: number;
+  total_volume?: number;
+}
+
+interface PlayerDetailsResult {
+  playerId: string;
+  profile: PlayerProfileRow;
+  agents: string[];
+}
+
+interface ScraperAgentMetrics {
+  agentId: string;
+  isPolling: boolean;
+  lastPoll: string | null;
+  errorCount: number;
+  consecutiveErrors: number;
+  lastError: string | null;
+  authenticated: boolean;
+  currentPollMs: number;
+  reloginAttempts: number;
+  player360Active: boolean;
+}
+
+interface ScraperMetrics {
+  activeAgents: number;
+  agents: ScraperAgentMetrics[];
+  actionQueue: ReturnType<ActionQueue['getMetrics']>;
+  counters: {
+    wagers_total: number;
+    alerts_triggered_total: number;
+    errors_total: number;
+  };
+}
+
+interface ParsedBalanceSnapshot {
+  balances?: {
+    current?: number;
+    available?: number;
+    percentBook?: number;
+  };
+}
+
+function asRecord(value: unknown): SqlRow | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as SqlRow
+    : null;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function emptyBuckeyeData(): LooseBuckeyeData {
+  return { GENERAL: [] };
+}
+
 function getAgentPerformanceRawRows(data: unknown): unknown[] {
-  if (!data || typeof data !== 'object') return [];
-  const payload = data as any;
-  if (Array.isArray(payload?.INFO?.LIST)) return payload.INFO.LIST;
+  const payload = asRecord(data);
+  const info = asRecord(payload?.INFO);
+  if (Array.isArray(info?.LIST)) return info.LIST;
   if (Array.isArray(payload?.LIST)) return payload.LIST;
   return [];
 }
@@ -120,7 +283,7 @@ export class BuckeyeScraperManager {
   private webhookService: WebhookService;
   private patternService: PatternService;
   private actionQueue: ActionQueue;
-  private accountInfoCache: Map<string, { data: any; timestamp: number }> = new Map();
+  private accountInfoCache: Map<string, { data: BuckeyeAccountInfoResult; timestamp: number }> = new Map();
   private accountInfoCacheTtlMs: number = 5 * 60 * 1000;
   private wagerCount: number = 0;
   private alertCount: number = 0;
@@ -302,7 +465,7 @@ export class BuckeyeScraperManager {
     await this.pollAgent(agentId);
   }
 
-  async forceAccessLogRefresh(agentId: string): Promise<any> {
+  async forceAccessLogRefresh(agentId: string): Promise<{ fetched: number; inserted: number; patterns: number }> {
     return this.refreshAccessLogs(agentId);
   }
 
@@ -313,7 +476,7 @@ export class BuckeyeScraperManager {
   }
 
   private async refreshPlayer360OnDemand(playerId: string, _reason: string): Promise<void> {
-    const row = await this.db.get<any>(
+    const row = await this.db.get<Player360Candidate>(
       `SELECT
         COALESCE(NULLIF(customer_id, ''), NULLIF(login, '')) AS customerId,
         COALESCE(NULLIF(login, ''), NULLIF(customer_id, '')) AS login,
@@ -415,7 +578,7 @@ export class BuckeyeScraperManager {
   /**
    * Get agent data from database.
    */
-  async getAgentData(agentId: string): Promise<any> {
+  async getAgentData(agentId: string): Promise<SqlRow> {
     const wagers = await this.db.all(
       'SELECT * FROM wagers WHERE agent_login = ? ORDER BY insert_datetime DESC LIMIT 200',
       [agentId]
@@ -440,12 +603,12 @@ export class BuckeyeScraperManager {
   /**
    * Get global stats.
    */
-  async getStats(): Promise<any> {
-    const totalWagers = await this.db.get('SELECT COUNT(*) as count FROM wagers');
-    const totalVolume = await this.db.get('SELECT SUM(amount_wagered) as total FROM wagers');
-    const agentCount = await this.db.get('SELECT COUNT(DISTINCT agent_login) as count FROM wagers');
-    const alertCount = await this.db.get('SELECT COUNT(*) as count FROM alerts WHERE is_resolved = 0');
-    const liveCount = await this.db.get("SELECT COUNT(*) as count FROM wagers WHERE ticket_writer = 'GSLIVE'");
+  async getStats(): Promise<SqlRow> {
+    const totalWagers = await this.db.get<CountRow>('SELECT COUNT(*) as count FROM wagers');
+    const totalVolume = await this.db.get<TotalRow>('SELECT SUM(amount_wagered) as total FROM wagers');
+    const agentCount = await this.db.get<CountRow>('SELECT COUNT(DISTINCT agent_login) as count FROM wagers');
+    const alertCount = await this.db.get<CountRow>('SELECT COUNT(*) as count FROM alerts WHERE is_resolved = 0');
+    const liveCount = await this.db.get<CountRow>("SELECT COUNT(*) as count FROM wagers WHERE ticket_writer = 'GSLIVE'");
 
     return {
       totalWagers: totalWagers?.count || 0,
@@ -459,7 +622,7 @@ export class BuckeyeScraperManager {
   /**
    * Get all wagers (paginated).
    */
-  async getWagers(limit: number = 200, offset: number = 0): Promise<any[]> {
+  async getWagers(limit: number = 200, offset: number = 0): Promise<SqlRow[]> {
     return this.db.all(
       'SELECT * FROM wagers ORDER BY insert_datetime DESC LIMIT ? OFFSET ?',
       [limit, offset]
@@ -469,7 +632,7 @@ export class BuckeyeScraperManager {
   /**
    * Get alert wagers.
    */
-  async getAlertWagers(): Promise<any[]> {
+  async getAlertWagers(): Promise<SqlRow[]> {
     return this.db.all(
       "SELECT * FROM wagers WHERE ticket_writer = 'ALERT' ORDER BY insert_datetime DESC LIMIT 200"
     );
@@ -478,7 +641,7 @@ export class BuckeyeScraperManager {
   /**
    * Get live (GSLIVE) wagers.
    */
-  async getLiveWagers(): Promise<any[]> {
+  async getLiveWagers(): Promise<SqlRow[]> {
     return this.db.all(
       "SELECT * FROM wagers WHERE ticket_writer = 'GSLIVE' ORDER BY insert_datetime DESC LIMIT 200"
     );
@@ -487,7 +650,7 @@ export class BuckeyeScraperManager {
   /**
    * Get top agents by volume.
    */
-  async getAgents(): Promise<any[]> {
+  async getAgents(): Promise<SqlRow[]> {
     return this.db.all(
       `SELECT agent_login,
         COUNT(*) as wager_count,
@@ -503,7 +666,7 @@ export class BuckeyeScraperManager {
   /**
    * Get active alerts.
    */
-  async getAlerts(): Promise<any[]> {
+  async getAlerts(): Promise<SqlRow[]> {
     return this.db.all(
       'SELECT * FROM alerts WHERE is_resolved = 0 ORDER BY created_at DESC LIMIT 100'
     );
@@ -512,7 +675,7 @@ export class BuckeyeScraperManager {
   /**
    * Get agent downline derived from wager data.
    */
-  async getAgentDownline(): Promise<any[]> {
+  async getAgentDownline(): Promise<SqlRow[]> {
     return this.db.all(
       `SELECT
         agent_login,
@@ -534,24 +697,24 @@ export class BuckeyeScraperManager {
    * Get real agent hierarchy from Buckeye API.
    * Returns raw GENERAL array or empty object if not authenticated.
    */
-  async getAgentHierarchy(agentId?: string): Promise<any> {
+  async getAgentHierarchy(agentId?: string): Promise<ManagerAgentHierarchyResult> {
     const instance = agentId
       ? this.agents.get(agentId)
       : Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
 
     if (!instance || !instance.api.isAuthenticated()) {
-      return { GENERAL: [], message: 'Not authenticated to Buckeye' };
+      return { GENERAL: [], PLAYERS: [], message: 'Not authenticated to Buckeye' };
     }
     try {
       const data = await instance.api.getAgentHierarchy();
       return data;
-    } catch (err: any) {
-      console.error('[ScraperManager] getAgentHierarchy error:', err.message);
-      return { GENERAL: [], error: err.message };
+    } catch (err) {
+      console.error('[ScraperManager] getAgentHierarchy error:', errorMessage(err));
+      return { GENERAL: [], PLAYERS: [], error: errorMessage(err) };
     }
   }
 
-  async getBuckeyePlayersList(agentId?: string): Promise<any> {
+  async getBuckeyePlayersList(agentId?: string): Promise<ManagerPlayersListResult> {
     const instance = agentId
       ? this.agents.get(agentId)
       : Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
@@ -562,15 +725,15 @@ export class BuckeyeScraperManager {
     try {
       const data = await instance.api.getPlayersList();
       return data;
-    } catch (err: any) {
-      console.error('[ScraperManager] getBuckeyePlayersList error:', err.message);
-      return { LIST: [], error: err.message };
+    } catch (err) {
+      console.error('[ScraperManager] getBuckeyePlayersList error:', errorMessage(err));
+      return { LIST: [], error: errorMessage(err) };
     }
   }
 
-  async getPersistedAgentHierarchy(): Promise<any> {
+  async getPersistedAgentHierarchy(): Promise<SqlRow> {
     try {
-      const rows = await this.db.all(
+      const rows = await this.db.all<PersistedAgentHierarchyRow>(
         `SELECT
           id,
           login,
@@ -605,7 +768,7 @@ export class BuckeyeScraperManager {
       }
 
       return {
-        GENERAL: rows.map((row: any) => ({
+        GENERAL: rows.map((row) => ({
           AgentID: row.id,
           SeqNumber: row.seq_number,
           Level: row.level,
@@ -633,13 +796,13 @@ export class BuckeyeScraperManager {
         },
         source: 'database',
       };
-    } catch (err: any) {
-      console.error('[ScraperManager] getPersistedAgentHierarchy error:', err.message);
-      return { GENERAL: [], source: 'database', error: err.message };
+    } catch (err) {
+      console.error('[ScraperManager] getPersistedAgentHierarchy error:', errorMessage(err));
+      return { GENERAL: [], source: 'database', error: errorMessage(err) };
     }
   }
 
-  async backfillAgentHierarchy(): Promise<any> {
+  async backfillAgentHierarchy(): Promise<unknown> {
     return backfillAgentsAndPlayers(this.db);
   }
 
@@ -650,7 +813,7 @@ export class BuckeyeScraperManager {
     agentId?: string,
     includeRaw: boolean = false,
     includeAgentParams: boolean = false
-  ): Promise<any> {
+  ): Promise<Partial<Omit<BuckeyeUiConfigResult, 'parsed'>> & { parsed: BuckeyeUiConfigResult['parsed'] | null; message?: string; error?: string }> {
     const instance = agentId
       ? this.agents.get(agentId)
       : Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
@@ -661,16 +824,19 @@ export class BuckeyeScraperManager {
 
     try {
       return await instance.api.getLanguageUiConfig({ includeRaw, includeAgentParams });
-    } catch (err: any) {
-      console.error('[ScraperManager] getBuckeyeUiConfig error:', err.message);
-      return { parsed: null, error: err.message };
+    } catch (err) {
+      console.error('[ScraperManager] getBuckeyeUiConfig error:', errorMessage(err));
+      return { parsed: null, error: errorMessage(err) };
     }
   }
 
   /**
    * Fetch sanitized account info through an active Buckeye session.
    */
-  async getBuckeyeAccountInfo(agentId?: string, force: boolean = false): Promise<any> {
+  async getBuckeyeAccountInfo(
+    agentId?: string,
+    force: boolean = false
+  ): Promise<Partial<Omit<BuckeyeAccountInfoResult, 'accountInfo'>> & { accountInfo: BuckeyeAccountInfoResult['accountInfo'] | null; message?: string; error?: string }> {
     const instance = agentId
       ? this.agents.get(agentId)
       : Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
@@ -689,9 +855,9 @@ export class BuckeyeScraperManager {
       const data = await instance.api.getAccountInfoOwner();
       this.accountInfoCache.set(cacheKey, { data, timestamp: Date.now() });
       return data;
-    } catch (err: any) {
-      console.error('[ScraperManager] getBuckeyeAccountInfo error:', err.message);
-      return { accountInfo: null, error: err.message };
+    } catch (err) {
+      console.error('[ScraperManager] getBuckeyeAccountInfo error:', errorMessage(err));
+      return { accountInfo: null, error: errorMessage(err) };
     }
   }
 
@@ -701,7 +867,7 @@ export class BuckeyeScraperManager {
   async getWeeklyFigureByAgentLite(
     agentId?: string,
     options: BuckeyeWeeklyFigureOptions = {}
-  ): Promise<any> {
+  ): Promise<ManagerWeeklyFigureResult> {
     const instance = agentId
       ? this.agents.get(agentId)
       : Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
@@ -720,21 +886,23 @@ export class BuckeyeScraperManager {
           persistError instanceof Error ? persistError.message : persistError
         );
       }
-      return result;
-    } catch (err: any) {
-      console.error('[ScraperManager] getWeeklyFigureByAgentLite error:', err.message);
-      return { data: null, error: err.message };
+      return result as ManagerWeeklyFigureResult;
+    } catch (err) {
+      console.error('[ScraperManager] getWeeklyFigureByAgentLite error:', errorMessage(err));
+      return { data: null, error: errorMessage(err) };
     }
   }
 
   /**
    * Fetch Buckeye manager bootstrap/report payloads discovered from manager.html.
    */
-  async getBuckeyeManagerSnapshot(agentId?: string): Promise<BuckeyeManagerSnapshotResult | any> {
+  async getBuckeyeManagerSnapshot(
+    agentId?: string
+  ): Promise<ManagerSnapshotResult> {
     const instance = this.resolveAgentInstance(agentId);
 
     if (!instance || !instance.api.isAuthenticated()) {
-      return { data: null, message: 'Not authenticated to Buckeye' };
+      return { data: null, sportsType: emptyBuckeyeData(), message: 'Not authenticated to Buckeye' };
     }
 
     try {
@@ -747,16 +915,15 @@ export class BuckeyeScraperManager {
           persistError instanceof Error ? persistError.message : persistError
         );
       }
-      return result;
-    } catch (err: any) {
-      console.error('[ScraperManager] getBuckeyeManagerSnapshot error:', err.message);
-      return { data: null, error: err.message };
+      return result as ManagerSnapshotResult;
+    } catch (err) {
+      console.error('[ScraperManager] getBuckeyeManagerSnapshot error:', errorMessage(err));
+      return { data: null, sportsType: emptyBuckeyeData(), error: errorMessage(err) };
     }
   }
 
   private async persistManagerSnapshot(result: BuckeyeManagerSnapshotResult): Promise<void> {
     if (!result || !result.agentId) return;
-    if (typeof (this.db as any).run !== 'function') return;
     try {
       await this.db.run(
         `INSERT INTO master_snapshots
@@ -788,8 +955,8 @@ export class BuckeyeScraperManager {
     });
   }
 
-  async getBuckeyeSportTypes(): Promise<any[]> {
-    return this.db.all(
+  async getBuckeyeSportTypes(): Promise<BuckeyeSportTypeRow[]> {
+    return this.db.all<BuckeyeSportTypeRow>(
       `SELECT raw_value, label, sort_order, source, updated_at
        FROM buckeye_sport_types
        ORDER BY sort_order ASC`
@@ -802,7 +969,7 @@ export class BuckeyeScraperManager {
       start: '',
       end: '',
     }
-  ): Promise<any> {
+  ): Promise<ManagerAgentPerformanceResult> {
     const instance = this.resolveAgentInstance(agentId);
 
     if (!instance || !instance.api.isAuthenticated()) {
@@ -812,10 +979,10 @@ export class BuckeyeScraperManager {
     try {
       const result = await instance.api.getAgentPerformanceReport(options);
       await this.persistAgentPerformanceReport(result);
-      return result;
-    } catch (err: any) {
-      console.error('[ScraperManager] getBuckeyeAgentPerformanceReport error:', err.message);
-      return { data: null, error: err.message };
+      return result as ManagerAgentPerformanceResult;
+    } catch (err) {
+      console.error('[ScraperManager] getBuckeyeAgentPerformanceReport error:', errorMessage(err));
+      return { data: null, error: errorMessage(err) };
     }
   }
 
@@ -823,11 +990,11 @@ export class BuckeyeScraperManager {
     customerId: string,
     period: string | number = 0,
     agentId?: string
-  ): Promise<any> {
+  ): Promise<ManagerAgentPerformanceResult> {
     const instance = this.resolveAgentInstance(agentId);
 
     if (!instance || !instance.api.isAuthenticated()) {
-      return { data: null, message: 'Not authenticated to Buckeye' };
+      return { data: emptyBuckeyeData(), message: 'Not authenticated to Buckeye' };
     }
 
     try {
@@ -842,17 +1009,17 @@ export class BuckeyeScraperManager {
         `last_player_performance.${instance.credentials.agentId}.${customerId}`,
         result.fetchedAt || new Date().toISOString()
       );
-      return result;
-    } catch (err: any) {
-      console.error('[ScraperManager] getBuckeyePlayerPerformance error:', err.message);
-      return { data: null, error: err.message };
+      return result as ManagerAgentPerformanceResult;
+    } catch (err) {
+      console.error('[ScraperManager] getBuckeyePlayerPerformance error:', errorMessage(err));
+      return { data: emptyBuckeyeData(), error: errorMessage(err) };
     }
   }
 
   async getBuckeyePlayerInfo(
     customerId: string,
     agentId?: string
-  ): Promise<any> {
+  ): Promise<BuckeyeCustomerSnapshotResult | { data: null; message?: string; error?: string }> {
     const instance = this.resolveAgentInstance(agentId);
 
     if (!instance || !instance.api.isAuthenticated()) {
@@ -865,16 +1032,16 @@ export class BuckeyeScraperManager {
         await this.persistCustomerSnapshot(result.snapshot);
       }
       return result;
-    } catch (err: any) {
-      console.error('[ScraperManager] getBuckeyePlayerInfo error:', err.message);
-      return { data: null, error: err.message };
+    } catch (err) {
+      console.error('[ScraperManager] getBuckeyePlayerInfo error:', errorMessage(err));
+      return { data: null, error: errorMessage(err) };
     }
   }
 
   async getBuckeyePlayerTransactions(
     customerId: string,
     agentId?: string
-  ): Promise<any> {
+  ): Promise<BuckeyeTransactionListResult | { data: null; message?: string; error?: string }> {
     const instance = this.resolveAgentInstance(agentId);
 
     if (!instance || !instance.api.isAuthenticated()) {
@@ -885,9 +1052,9 @@ export class BuckeyeScraperManager {
       const start = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       const result = await instance.api.getTransactionList(customerId, { start });
       return result;
-    } catch (err: any) {
-      console.error('[ScraperManager] getBuckeyePlayerTransactions error:', err.message);
-      return { data: null, error: err.message };
+    } catch (err) {
+      console.error('[ScraperManager] getBuckeyePlayerTransactions error:', errorMessage(err));
+      return { data: null, error: errorMessage(err) };
     }
   }
 
@@ -1002,9 +1169,8 @@ export class BuckeyeScraperManager {
     }
   }
 
-  async persistWeeklyFigureReport(report: any): Promise<void> {
+  async persistWeeklyFigureReport(report: BuckeyeWeeklyFigureResult): Promise<void> {
     if (!report || report.data === null) return;
-    if (typeof (this.db as any).run !== 'function') return;
 
     const weekStart = this.resolveWeeklyFigureDate(report.params?.week ?? 0);
     const parsed = report.parsed || {};
@@ -1054,7 +1220,7 @@ export class BuckeyeScraperManager {
   /**
    * Get per-agent performance metrics.
    */
-  async getAgentPerformance(agentId: string): Promise<any> {
+  async getAgentPerformance(agentId: string): Promise<SqlRow> {
     const overview = await this.db.get(
       `SELECT
         COUNT(*) as wager_count,
@@ -1104,8 +1270,8 @@ export class BuckeyeScraperManager {
   /**
    * Get player details from wager data.
    */
-  async getPlayerDetails(playerId: string): Promise<any> {
-    const profile = await this.db.get(
+  async getPlayerDetails(playerId: string): Promise<PlayerDetailsResult> {
+    const profile = await this.db.get<PlayerProfileRow>(
       `SELECT
         login,
         agent_login,
@@ -1124,14 +1290,14 @@ export class BuckeyeScraperManager {
       [playerId]
     );
 
-    const agents = await this.db.all(
+    const agents = await this.db.all<{ agent_login: string }>(
       `SELECT DISTINCT agent_login FROM wagers WHERE login = ?`,
       [playerId]
     );
 
     return {
       playerId,
-      profile: profile && profile.wager_count > 0 ? profile : {},
+      profile: profile && Number(profile.wager_count || 0) > 0 ? profile : {},
       agents: agents.map((a) => a.agent_login),
     };
   }
@@ -1139,7 +1305,7 @@ export class BuckeyeScraperManager {
   /**
    * Get all wagers for a specific player.
    */
-  async getPlayerWagers(playerId: string): Promise<any[]> {
+  async getPlayerWagers(playerId: string): Promise<SqlRow[]> {
     return this.db.all(
       `SELECT * FROM wagers WHERE login = ? ORDER BY insert_datetime DESC LIMIT 200`,
       [playerId]
@@ -1150,8 +1316,8 @@ export class BuckeyeScraperManager {
    * Get player P&L history over N days.
    * Returns daily buckets with volume, risk, and wager count.
    */
-  async getPlayerPnlHistory(playerId: string, days: number = 7): Promise<any[]> {
-    const rows = await this.db.all(
+  async getPlayerPnlHistory(playerId: string, days: number = 7): Promise<SqlRow[]> {
+    const rows = await this.db.all<SqlRow & { day: string }>(
       `SELECT
         date(insert_datetime) as day,
         COUNT(*) as wager_count,
@@ -1166,14 +1332,15 @@ export class BuckeyeScraperManager {
     );
 
     // Fill in missing days with zeros
-    const result = [];
+    const result: SqlRow[] = [];
     const seenDays = new Set(rows.map((r) => r.day));
     for (let i = 0; i < days; i++) {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const dayStr = d.toISOString().split('T')[0];
       if (seenDays.has(dayStr)) {
-        result.push(rows.find((r) => r.day === dayStr));
+        const existingRow = rows.find((r) => r.day === dayStr);
+        if (existingRow) result.push(existingRow);
       } else {
         result.push({
           day: dayStr,
@@ -1193,12 +1360,13 @@ export class BuckeyeScraperManager {
   /**
    * Get sport exposure breakdown with top game per sport.
    */
-  private getWagerExposure(w: any): number {
-    return (w.volume_amount > 0 ? w.volume_amount : w.amount_wagered) || 0;
+  private getWagerExposure(w: ExposureWagerRow): number {
+    const volume = Number(w.volume_amount || 0);
+    return (volume > 0 ? volume : Number(w.amount_wagered || 0)) || 0;
   }
 
-  async getSportExposure(): Promise<any[]> {
-    const wagers = await this.db.all(
+  async getSportExposure(): Promise<SqlRow[]> {
+    const wagers = await this.db.all<ExposureWagerRow>(
       `SELECT * FROM wagers ORDER BY insert_datetime DESC LIMIT 500`
     );
 
@@ -1207,22 +1375,22 @@ export class BuckeyeScraperManager {
     const totalVolume = wagers.reduce((s, w) => s + this.getWagerExposure(w), 0);
 
     // Group by sport
-    const sportGroups: Record<string, any[]> = {};
+    const sportGroups: Record<string, ExposureWagerRow[]> = {};
     for (const w of wagers) {
-      const sport = w.sport || this.parseSport(w.short_desc);
+      const sport = w.sport || this.parseSport(w.short_desc || '');
       if (!sportGroups[sport]) sportGroups[sport] = [];
       sportGroups[sport].push(w);
     }
 
-    const result = [];
+    const result: SqlRow[] = [];
     for (const [sport, sws] of Object.entries(sportGroups)) {
       const sportVolume = sws.reduce((s, w) => s + this.getWagerExposure(w), 0);
       const liveCount = sws.filter(w => w.ticket_writer === 'GSLIVE').length;
 
       // Group by game within sport
-      const gameGroups: Record<string, any[]> = {};
+      const gameGroups: Record<string, ExposureWagerRow[]> = {};
       for (const w of sws) {
-        const game = this.parseGame(w.short_desc);
+        const game = this.parseGame(w.short_desc || '');
         if (!gameGroups[game]) gameGroups[game] = [];
         gameGroups[game].push(w);
       }
@@ -1230,7 +1398,7 @@ export class BuckeyeScraperManager {
       // Find top game by volume
       let topGame = '';
       let topGameVolume = 0;
-      let topGameWagers: any[] = [];
+      let topGameWagers: ExposureWagerRow[] = [];
       for (const [game, gws] of Object.entries(gameGroups)) {
         const gv = gws.reduce((s, w) => s + this.getWagerExposure(w), 0);
         if (gv > topGameVolume) {
@@ -1243,8 +1411,8 @@ export class BuckeyeScraperManager {
       // Find most popular side in top game
       const sideCounts: Record<string, { count: number; volume: number; price: string }> = {};
       for (const w of topGameWagers) {
-        const side = this.parseSide(w.short_desc);
-        const price = this.extractPrice(w.short_desc);
+        const side = this.parseSide(w.short_desc || '');
+        const price = this.extractPrice(w.short_desc || '');
         if (!sideCounts[side]) sideCounts[side] = { count: 0, volume: 0, price };
         sideCounts[side].count++;
         sideCounts[side].volume += this.getWagerExposure(w);
@@ -1274,14 +1442,14 @@ export class BuckeyeScraperManager {
       });
     }
 
-    return result.sort((a, b) => b.total - a.total);
+    return result.sort((a, b) => Number(b.total || 0) - Number(a.total || 0));
   }
 
   /**
    * Get agent exposure breakdown with top customer and top game per agent.
    */
-  async getAgentExposure(): Promise<any[]> {
-    const wagers = await this.db.all(
+  async getAgentExposure(): Promise<SqlRow[]> {
+    const wagers = await this.db.all<ExposureWagerRow>(
       `SELECT * FROM wagers ORDER BY insert_datetime DESC LIMIT 500`
     );
 
@@ -1290,14 +1458,14 @@ export class BuckeyeScraperManager {
     const totalVolume = wagers.reduce((s, w) => s + this.getWagerExposure(w), 0);
 
     // Group by agent
-    const agentGroups: Record<string, any[]> = {};
+    const agentGroups: Record<string, ExposureWagerRow[]> = {};
     for (const w of wagers) {
       const agent = w.agent_login || 'Unknown';
       if (!agentGroups[agent]) agentGroups[agent] = [];
       agentGroups[agent].push(w);
     }
 
-    const result = [];
+    const result: SqlRow[] = [];
     for (const [agent, aws] of Object.entries(agentGroups)) {
       const agentVolume = aws.reduce((s, w) => s + this.getWagerExposure(w), 0);
       const liveCount = aws.filter(w => w.ticket_writer === 'GSLIVE').length;
@@ -1320,7 +1488,7 @@ export class BuckeyeScraperManager {
       // Top game
       const gameGroups: Record<string, { volume: number; count: number }> = {};
       for (const w of aws) {
-        const game = this.parseGame(w.short_desc);
+        const game = this.parseGame(w.short_desc || '');
         if (!gameGroups[game]) gameGroups[game] = { volume: 0, count: 0 };
         gameGroups[game].volume += this.getWagerExposure(w);
         gameGroups[game].count++;
@@ -1350,7 +1518,7 @@ export class BuckeyeScraperManager {
       });
     }
 
-    return result.sort((a, b) => b.total - a.total);
+    return result.sort((a, b) => Number(b.total || 0) - Number(a.total || 0));
   }
 
   getWebhookService(): WebhookService {
@@ -1366,7 +1534,7 @@ export class BuckeyeScraperManager {
     agentId: string;
     wagerNumber: number;
     action: 'accept' | 'decline';
-  }): Promise<any> {
+  }): Promise<ActionResult> {
     const instance = this.agents.get(request.agentId);
     if (!instance || !instance.api.isAuthenticated()) {
       return {
@@ -1385,17 +1553,28 @@ export class BuckeyeScraperManager {
       agentId: request.agentId,
     });
 
-    return { id: request.id, ...result };
+    return {
+      id: request.id,
+      action: request.action,
+      wagerNumber: request.wagerNumber,
+      ...result,
+    };
   }
 
-  getMetrics(): any {
+  getMetrics(): ScraperMetrics {
     return {
       activeAgents: this.agents.size,
       agents: Array.from(this.agents.entries()).map(([id, inst]) => ({
         agentId: id,
-        lastPoll: inst.lastPoll,
+        isPolling: inst.isPolling,
+        lastPoll: inst.lastPoll ? new Date(inst.lastPoll).toISOString() : null,
         errorCount: inst.errorCount,
+        consecutiveErrors: inst.consecutiveErrors,
+        lastError: inst.lastError || null,
         authenticated: inst.api.isAuthenticated(),
+        currentPollMs: inst.currentPollMs,
+        reloginAttempts: inst.reloginAttempts,
+        player360Active: Boolean(inst.player360Task),
       })),
       actionQueue: this.actionQueue.getMetrics(),
       counters: {
@@ -1419,7 +1598,7 @@ export class BuckeyeScraperManager {
       const hierarchy = await instance.api.getAgentHierarchy();
       const agents = Array.isArray(hierarchy?.GENERAL) ? hierarchy.GENERAL : [];
       instance.liveTree = new LiveAgentTree(agents);
-    } catch (err) {
+    } catch {
       console.warn(`[Manager] Live agent tree hierarchy unavailable for ${agentId}; using wager-only deltas`);
       instance.liveTree = new LiveAgentTree([]);
     }
@@ -1595,7 +1774,7 @@ export class BuckeyeScraperManager {
   /**
    * Insert or replace wager in database.
    */
-  private async persistWager(wager: any): Promise<Awaited<ReturnType<PatternService['correlateWager']>>> {
+  private async persistWager(wager: EnrichedWager): Promise<Awaited<ReturnType<PatternService['correlateWager']>>> {
     const correlation = await this.patternService.correlateWager(wager);
     const parsed = correlation.parsed;
 
@@ -1755,7 +1934,7 @@ export class BuckeyeScraperManager {
     );
   }
 
-  async getAccessLogs(limit: number = 200): Promise<any[]> {
+  async getAccessLogs(limit: number = 200): Promise<SqlRow[]> {
     return this.db.all(
       `SELECT * FROM access_logs ORDER BY access_datetime DESC LIMIT ?`,
       [Math.min(Math.max(limit, 1), 500)]
@@ -1975,7 +2154,7 @@ export class BuckeyeScraperManager {
   }
 
   private async getHotPlayersFor360(agentId: string): Promise<Player360Candidate[]> {
-    const rows = await this.db.all<any>(
+    const rows = await this.db.all<Player360Candidate>(
       `SELECT
         COALESCE(NULLIF(wager_archive.customer_id, ''), NULLIF(wager_archive.login, '')) AS customerId,
         COALESCE(NULLIF(wager_archive.login, ''), NULLIF(wager_archive.customer_id, '')) AS login,
@@ -2040,7 +2219,7 @@ export class BuckeyeScraperManager {
       'agent_performance_snapshots',
     ];
     const placeholders = sourceKeys.map(() => '?').join(', ');
-    const rows = await this.db.all<any>(
+    const rows = await this.db.all<Player360Candidate>(
       `SELECT
         COALESCE(NULLIF(wager_archive.customer_id, ''), NULLIF(wager_archive.login, '')) AS customerId,
         COALESCE(NULLIF(wager_archive.login, ''), NULLIF(wager_archive.customer_id, '')) AS login,
@@ -2545,7 +2724,7 @@ export class BuckeyeScraperManager {
   }
 
   private async refreshPlayerLinks(agentId: string): Promise<number> {
-    const rows = await this.db.all<any>(
+    const rows = await this.db.all<PlayerLinkRow>(
       `SELECT
         ip_address,
         GROUP_CONCAT(DISTINCT login_id) AS players,
@@ -2965,7 +3144,7 @@ export class BuckeyeScraperManager {
 
       const result = await instance.api.getAccountInfoOwner();
       const accountInfo = result.accountInfo || {};
-      const parsed = result.parsed || {};
+      const parsed: ParsedBalanceSnapshot = result.parsed || {};
 
       const balance = parsed.balances?.current || accountInfo.balance || 0;
       const availableBalance = parsed.balances?.available || accountInfo.availableBalance || 0;

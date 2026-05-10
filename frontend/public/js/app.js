@@ -1762,9 +1762,9 @@ function renderIncomingBets() {
 
     return `<div class="flex items-center justify-between p-2 rounded border" style="background:${bgColor};border-color:${borderColor};">
       <div class="flex items-center gap-2">
-        <span class="text-xs font-bold">${w.Login}</span>
-        <span class="text-xs" style="color:var(--text-dim);">${w.AgentLogin}</span>
-        <span class="text-xs px-1 rounded" style="background:${WAGER_TYPES[detectWagerType(w)]?.color || '#6b7280'}22;color:${WAGER_TYPES[detectWagerType(w)]?.color || '#6b7280'};">${WAGER_TYPES[detectWagerType(w)]?.label || w.WagerType}</span>
+        <span class="text-xs font-bold">${escapeHtml(w.Login)}</span>
+        <span class="text-xs" style="color:var(--text-dim);">${escapeHtml(w.AgentLogin)}</span>
+        <span class="text-xs px-1 rounded" style="background:${WAGER_TYPES[detectWagerType(w)]?.color || '#6b7280'}22;color:${WAGER_TYPES[detectWagerType(w)]?.color || '#6b7280'};">${escapeHtml(WAGER_TYPES[detectWagerType(w)]?.label || w.WagerType)}</span>
       </div>
       <div class="flex items-center gap-2">
         <span class="text-xs font-mono">$${w.AmountWagered.toLocaleString()}</span>
@@ -1792,8 +1792,8 @@ function renderAlerts() {
 
     return `<div class="flex items-center justify-between p-3 rounded-lg ${severityClass}" id="${id}">
       <div class="flex-1 min-w-0">
-        <div class="text-xs font-bold">${w.AgentLogin} → ${w.Login} ${isFlagged ? '<span class="ml-1 px-1 rounded text-[10px]" style="background:var(--yellow);color:#000;">FLAGGED</span>' : ''}</div>
-        <div class="text-xs mt-0.5" style="color:var(--text-dim);">${w.ShortDesc.substring(0, 60)}...</div>
+        <div class="text-xs font-bold">${escapeHtml(w.AgentLogin)} → ${escapeHtml(w.Login)} ${isFlagged ? '<span class="ml-1 px-1 rounded text-[10px]" style="background:var(--yellow);color:#000;">FLAGGED</span>' : ''}</div>
+        <div class="text-xs mt-0.5" style="color:var(--text-dim);">${escapeHtml(String(w.ShortDesc || '').substring(0, 60))}...</div>
       </div>
       <div class="text-right ml-3 shrink-0">
         <div class="text-xs font-mono font-bold">$${w.AmountWagered.toLocaleString()}</div>
@@ -3273,7 +3273,7 @@ function toggleAuthModal() {
   const savedAgent = localStorage.getItem('agentId') || '';
   content.innerHTML = `
     <div class="space-y-3">
-      <div><label class="text-xs" style="color:var(--text-dim);">Agent ID</label><input id="modalAgentId" type="text" value="${savedAgent}" class="w-full mt-1 text-sm px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" placeholder="Enter agent ID"></div>
+      <div><label class="text-xs" style="color:var(--text-dim);">Agent ID</label><input id="modalAgentId" type="text" value="${escapeHtml(savedAgent)}" class="w-full mt-1 text-sm px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" placeholder="Enter agent ID"></div>
       <div><label class="text-xs" style="color:var(--text-dim);">Password</label><input id="modalPassword" type="password" value="" class="w-full mt-1 text-sm px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" placeholder="Enter password"></div>
       <div><label class="text-xs" style="color:var(--text-dim);">Cloudflare Cookie (optional)</label><input id="modalCfCookie" type="text" value="" class="w-full mt-1 text-sm px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" placeholder="Paste cf_clearance"></div>
       <button class="w-full py-2 rounded-lg text-sm font-medium" style="background:var(--accent);color:#fff;" onclick="modalSignIn()">Connect to Buckeye</button>
@@ -3313,7 +3313,7 @@ function showToast(message, type = 'info') {
   const colors = { success: 'var(--green)', error: 'var(--red)', warning: 'var(--yellow)', info: 'var(--blue)' };
   toast.className = 'toast pointer-events-auto px-4 py-3 rounded-lg border text-sm flex items-center gap-2';
   toast.style.cssText = `background:var(--panel);border-color:${colors[type] || colors.info};color:var(--text);`;
-  toast.innerHTML = `<div class="w-2 h-2 rounded-full" style="background:${colors[type] || colors.info};"></div><span>${message}</span>`;
+  toast.innerHTML = `<div class="w-2 h-2 rounded-full" style="background:${colors[type] || colors.info};"></div><span>${escapeHtml(message)}</span>`;
   container.appendChild(toast);
   setTimeout(() => toast.remove(), 5000);
 }

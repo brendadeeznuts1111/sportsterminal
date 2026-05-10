@@ -18,13 +18,71 @@ import {
 } from '../src/api/routes/players';
 import { registerFreePlayAnalysisRoutes } from '../src/api/routes/freeplay';
 import { registerCrossReferenceRoutes } from '../src/api/routes/cross-reference';
+import type { BuckeyeScraperManager } from '../src/scrapers/ScraperManager';
 
 let db: Database;
-let scraperManager: { getDatabase: () => Database };
+let scraperManager: BuckeyeScraperManager;
+
+function testScraperManager(
+  overrides: {
+    getDatabase?: () => Database;
+    requestPlayer360Refresh?: () => void;
+  } = {}
+): BuckeyeScraperManager {
+  return {
+    getDatabase: overrides.getDatabase ?? (() => db),
+    requestPlayer360Refresh: overrides.requestPlayer360Refresh ?? (() => {}),
+  } as unknown as BuckeyeScraperManager;
+}
+
+interface TransactionRow {
+  id?: string;
+  category: string;
+  sourceConfidence: string;
+}
+
+interface FreePlayGroupRow {
+  key: string;
+  totals: {
+    issued: number;
+  };
+}
+
+interface IntelligenceSourceRow {
+  key: string;
+  status?: string;
+  buckeyeEndpoint?: string;
+  refreshPolicy?: string;
+  ttlSeconds?: number;
+  scaleClass?: string;
+  lastAttemptAt?: string;
+  lastSuccessAt?: string;
+  nextRefreshAt?: string;
+  freshnessState?: string;
+}
+
+interface TabCoverageRow {
+  tab: string;
+  recentUpdateAt?: string;
+  recentUpdateSource?: string;
+  weakestSource?: string;
+}
+
+interface FieldContractRow {
+  field?: string;
+  tab?: string;
+  route?: string;
+  source?: string;
+}
+
+interface KeyedRow {
+  key: string;
+  severity?: string;
+}
 
 beforeEach(async () => {
   db = new AppDatabase(':memory:');
-  scraperManager = { getDatabase: () => db, requestPlayer360Refresh: () => {} };
+  scraperManager = testScraperManager();
   await db.exec(`
     CREATE TABLE wager_archive (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -370,7 +428,7 @@ describe('player archive routes', () => {
     const res = await registerPlayerSearchRoutes(
       new URL('http://localhost/api/players/search?q=PLAYER&agent=AGENT1&sort=wagers'),
       new Request('http://localhost/api/players/search'),
-      scraperManager as any
+      scraperManager
     );
     expect(res?.status).toBe(200);
     const body = await res!.json();
@@ -383,12 +441,11 @@ describe('player archive routes', () => {
 
   test('50k player search stays local while opening one profile enqueues one hotset refresh', async () => {
     let refreshRequests = 0;
-    const trackingManager = {
-      getDatabase: () => db,
+    const trackingManager = testScraperManager({
       requestPlayer360Refresh: () => {
         refreshRequests += 1;
       },
-    };
+    });
 
     await db.exec(`
       WITH digits(n) AS (
@@ -429,7 +486,7 @@ describe('player archive routes', () => {
     const searchRes = await registerPlayerSearchRoutes(
       new URL('http://localhost/api/players/search?q=SCALE&sort=last'),
       new Request('http://localhost/api/players/search'),
-      trackingManager as any
+      trackingManager
     );
     expect(searchRes?.status).toBe(200);
     expect(refreshRequests).toBe(0);
@@ -437,7 +494,7 @@ describe('player archive routes', () => {
     const profileRes = await registerPlayerProfileRoutes(
       new URL('http://localhost/api/players/SCALE1/profile'),
       new Request('http://localhost/api/players/SCALE1/profile'),
-      trackingManager as any
+      trackingManager
     );
     expect(profileRes?.status).toBe(200);
     expect(refreshRequests).toBe(1);
@@ -447,7 +504,7 @@ describe('player archive routes', () => {
     const res = await registerPlayerProfileRoutes(
       new URL('http://localhost/api/players/PLAYER1/profile'),
       new Request('http://localhost/api/players/PLAYER1/profile'),
-      scraperManager as any
+      scraperManager
     );
     expect(res?.status).toBe(200);
     const body = await res!.json();
@@ -488,7 +545,7 @@ describe('player archive routes', () => {
       const res = await handler(
         new URL(`http://localhost/api/players/PLAYER1/${key === 'accountSnapshots' ? 'account-snapshots' : key}`),
         new Request('http://localhost/api/players/PLAYER1'),
-        scraperManager as any
+        scraperManager
       );
       expect(res?.status).toBe(200);
       const body = await res!.json();
@@ -501,21 +558,21 @@ describe('player archive routes', () => {
     const res = await registerPlayerTransactionsRoutes(
       new URL('http://localhost/api/players/PLAYER1/transactions?category=freeplay'),
       new Request('http://localhost/api/players/PLAYER1/transactions?category=freeplay'),
-      scraperManager as any
+      scraperManager
     );
     expect(res?.status).toBe(200);
     const body = await res!.json();
     expect(body.category).toBe('freeplay');
     expect(body.transactions).toHaveLength(3);
-    expect(body.transactions.every((row: any) => String(row.category).startsWith('freeplay_'))).toBe(true);
-    expect(body.transactions.every((row: any) => row.sourceConfidence === 'confirmed')).toBe(true);
+    expect(body.transactions.every((row: TransactionRow) => String(row.category).startsWith('freeplay_'))).toBe(true);
+    expect(body.transactions.every((row: TransactionRow) => row.sourceConfidence === 'confirmed')).toBe(true);
   });
 
   test('free-play analysis aggregates by player, agent, and day', async () => {
     const playerRes = await registerFreePlayAnalysisRoutes(
       new URL('http://localhost/api/freeplay/analysis?playerId=PLAYER1'),
       new Request('http://localhost/api/freeplay/analysis?playerId=PLAYER1'),
-      scraperManager as any
+      scraperManager
     );
     const playerBody = await playerRes!.json();
     expect(playerBody.totals).toMatchObject({
@@ -531,16 +588,16 @@ describe('player archive routes', () => {
     const agentRes = await registerFreePlayAnalysisRoutes(
       new URL('http://localhost/api/freeplay/analysis?groupBy=agent'),
       new Request('http://localhost/api/freeplay/analysis?groupBy=agent'),
-      scraperManager as any
+      scraperManager
     );
     const agentBody = await agentRes!.json();
-    expect(agentBody.groups.find((row: any) => row.key === 'AGENT1').totals.issued).toBe(100);
-    expect(agentBody.groups.find((row: any) => row.key === 'AGENT2').totals.issued).toBe(25);
+    expect(agentBody.groups.find((row: FreePlayGroupRow) => row.key === 'AGENT1').totals.issued).toBe(100);
+    expect(agentBody.groups.find((row: FreePlayGroupRow) => row.key === 'AGENT2').totals.issued).toBe(25);
 
     const dayRes = await registerFreePlayAnalysisRoutes(
       new URL('http://localhost/api/freeplay/analysis?playerId=PLAYER1&groupBy=day'),
       new Request('http://localhost/api/freeplay/analysis?playerId=PLAYER1&groupBy=day'),
-      scraperManager as any
+      scraperManager
     );
     const dayBody = await dayRes!.json();
     expect(dayBody.groups[0].key).toBe('2026-05-01');
@@ -551,7 +608,7 @@ describe('player archive routes', () => {
     const res = await registerFreePlayAnalysisRoutes(
       new URL('http://localhost/api/freeplay/analysis?playerId=NOFREEPLAY'),
       new Request('http://localhost/api/freeplay/analysis?playerId=NOFREEPLAY'),
-      scraperManager as any
+      scraperManager
     );
     expect(res?.status).toBe(200);
     const body = await res!.json();
@@ -578,20 +635,20 @@ describe('player archive routes', () => {
     const res = await registerFreePlayAnalysisRoutes(
       new URL('http://localhost/api/freeplay/analysis?playerId=PLAYER1&groupBy=bad-value'),
       new Request('http://localhost/api/freeplay/analysis?playerId=PLAYER1&groupBy=bad-value'),
-      scraperManager as any
+      scraperManager
     );
     const body = await res!.json();
 
     expect(body.filters.groupBy).toBe('player');
     expect(body.totals.sourceConfidence).toBe('candidate');
-    expect(body.transactions.find((row: any) => row.id === 'fp-candidate').sourceConfidence).toBe('candidate');
+    expect(body.transactions.find((row: TransactionRow) => row.id === 'fp-candidate').sourceConfidence).toBe('candidate');
   });
 
   test('cross-reference endpoint returns linked player, agent, access, free-play, and pattern context', async () => {
     const res = await registerCrossReferenceRoutes(
       new URL('http://localhost/api/cross-reference?playerId=PLAYER1'),
       new Request('http://localhost/api/cross-reference?playerId=PLAYER1'),
-      scraperManager as any
+      scraperManager
     );
     expect(res?.status).toBe(200);
     const body = await res!.json();
@@ -613,7 +670,7 @@ describe('player archive routes', () => {
     const res = await registerCrossReferenceRoutes(
       new URL('http://localhost/api/cross-reference?playerId=UNKNOWN'),
       new Request('http://localhost/api/cross-reference?playerId=UNKNOWN'),
-      scraperManager as any
+      scraperManager
     );
     expect(res?.status).toBe(200);
     const body = await res!.json();
@@ -628,13 +685,13 @@ describe('player archive routes', () => {
     const res = await registerPlayerIntelligenceMapRoutes(
       new URL('http://localhost/api/players/PLAYER1/intelligence-map'),
       new Request('http://localhost/api/players/PLAYER1/intelligence-map'),
-      scraperManager as any
+      scraperManager
     );
     expect(res?.status).toBe(200);
     const body = await res!.json();
     expect(body.profileContract.profile).toBe('/api/v1/players/PLAYER1/profile');
     expect(body.profileContract.tabs.Overview).toContain('/api/v1/players/PLAYER1/profile');
-    expect(body.sources.map((source: any) => source.key)).toEqual([
+    expect(body.sources.map((source: IntelligenceSourceRow) => source.key)).toEqual([
       'wager_archive',
       'agent_performance_snapshots',
       'access_logs',
@@ -647,38 +704,38 @@ describe('player archive routes', () => {
       'player_flags',
       'player_notes',
     ]);
-    expect(body.sources.find((source: any) => source.key === 'wager_archive').status).toBe('live');
-    expect(body.sources.find((source: any) => source.key === 'agent_performance_snapshots').buckeyeEndpoint).toContain('getPerformancePlayer');
-    expect(body.sources.find((source: any) => source.key === 'access_logs').status).toBe('live');
-    expect(body.sources.find((source: any) => source.key === 'player_transactions').status).toBe('live');
-    expect(body.sources.find((source: any) => source.key === 'player_transactions').buckeyeEndpoint).toContain('getTransactionHistory');
-    expect(body.sources.find((source: any) => source.key === 'deleted_transactions').buckeyeEndpoint).toBe('getReportDeletedTransactions');
-    expect(body.sources.find((source: any) => source.key === 'deleted_transactions').refreshPolicy).toBe('on_open');
-    expect(body.sources.find((source: any) => source.key === 'player_transactions').refreshPolicy).toBe('on_open');
-    expect(body.sources.find((source: any) => source.key === 'player_transactions').ttlSeconds).toBe(21600);
-    expect(body.sources.find((source: any) => source.key === 'player_transactions').scaleClass).toBe('heavy');
-    expect(body.sources.find((source: any) => source.key === 'player_transactions').lastAttemptAt).toBe('2026-05-02 08:29:00');
-    expect(body.sources.find((source: any) => source.key === 'player_transactions').lastSuccessAt).toBe('2026-05-02 08:30:00');
-    expect(body.sources.find((source: any) => source.key === 'player_transactions').nextRefreshAt).toBeTruthy();
-    expect(body.sources.find((source: any) => source.key === 'player_transactions').freshnessState).toBeTruthy();
-    expect(body.sources.find((source: any) => source.key === 'deposits').status).toBe('live');
-    expect(body.sources.find((source: any) => source.key === 'customer_snapshots').status).toBe('live');
-    expect(body.sources.find((source: any) => source.key === 'teaser_profile').status).toBe('probe');
-    expect(body.sources.find((source: any) => source.key === 'teaser_profile').buckeyeEndpoint).toBe('getTeaserProfile');
-    expect(body.sources.find((source: any) => source.key === 'teaser_profile').refreshPolicy).toBe('on_open');
-    expect(body.tabCoverage.find((row: any) => row.tab === 'Deposits').recentUpdateAt).toBeTruthy();
-    expect(body.tabCoverage.find((row: any) => row.tab === 'Deposits').recentUpdateSource).toBeTruthy();
-    expect(body.tabCoverage.find((row: any) => row.tab === 'Deposits').weakestSource).toBeTruthy();
-    expect(body.fieldContract.find((row: any) => row.field === 'stats.totalVolume').source).toContain('wager_archive');
-    expect(body.fieldContract.find((row: any) => row.field === 'stats.riskScore').source).toContain('getPerformancePlayer');
-    expect(body.fieldContract.find((row: any) => row.tab === 'Status / Docs').route).toContain('/intelligence-map');
-    expect(body.contractMismatches.map((row: any) => row.key)).toContain('closing_line_feed');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'wager_archive').status).toBe('live');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'agent_performance_snapshots').buckeyeEndpoint).toContain('getPerformancePlayer');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'access_logs').status).toBe('live');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'player_transactions').status).toBe('live');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'player_transactions').buckeyeEndpoint).toContain('getTransactionHistory');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'deleted_transactions').buckeyeEndpoint).toBe('getReportDeletedTransactions');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'deleted_transactions').refreshPolicy).toBe('on_open');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'player_transactions').refreshPolicy).toBe('on_open');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'player_transactions').ttlSeconds).toBe(21600);
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'player_transactions').scaleClass).toBe('heavy');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'player_transactions').lastAttemptAt).toBe('2026-05-02 08:29:00');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'player_transactions').lastSuccessAt).toBe('2026-05-02 08:30:00');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'player_transactions').nextRefreshAt).toBeTruthy();
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'player_transactions').freshnessState).toBeTruthy();
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'deposits').status).toBe('live');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'customer_snapshots').status).toBe('live');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'teaser_profile').status).toBe('probe');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'teaser_profile').buckeyeEndpoint).toBe('getTeaserProfile');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'teaser_profile').refreshPolicy).toBe('on_open');
+    expect(body.tabCoverage.find((row: TabCoverageRow) => row.tab === 'Deposits').recentUpdateAt).toBeTruthy();
+    expect(body.tabCoverage.find((row: TabCoverageRow) => row.tab === 'Deposits').recentUpdateSource).toBeTruthy();
+    expect(body.tabCoverage.find((row: TabCoverageRow) => row.tab === 'Deposits').weakestSource).toBeTruthy();
+    expect(body.fieldContract.find((row: FieldContractRow) => row.field === 'stats.totalVolume').source).toContain('wager_archive');
+    expect(body.fieldContract.find((row: FieldContractRow) => row.field === 'stats.riskScore').source).toContain('getPerformancePlayer');
+    expect(body.fieldContract.find((row: FieldContractRow) => row.tab === 'Status / Docs').route).toContain('/intelligence-map');
+    expect(body.contractMismatches.map((row: KeyedRow) => row.key)).toContain('closing_line_feed');
     expect(body.freshness.wager_archive.rowCount).toBe(2);
     expect(body.freshness.watermarks.player360.value.players).toBe(1);
-    expect(body.gaps.map((gap: any) => gap.key)).toContain('closing_line_feed');
-    expect(body.gaps.map((gap: any) => gap.key)).toContain('withdrawals');
-    expect(body.gaps.map((gap: any) => gap.key)).toContain('kyc_documents');
-    expect(body.gaps.map((gap: any) => gap.key)).toContain('source_of_funds');
+    expect(body.gaps.map((gap: KeyedRow) => gap.key)).toContain('closing_line_feed');
+    expect(body.gaps.map((gap: KeyedRow) => gap.key)).toContain('withdrawals');
+    expect(body.gaps.map((gap: KeyedRow) => gap.key)).toContain('kyc_documents');
+    expect(body.gaps.map((gap: KeyedRow) => gap.key)).toContain('source_of_funds');
     expect(body.coverage.haveNow).toContain('live wagers');
     expect(body.coverage.haveNow).toContain('transaction ledger');
     expect(body.coverage.canReuse).toContain('getTransactionList/getTransactionHistory/getReportDeletedTransactions ledger');
@@ -691,19 +748,19 @@ describe('player archive routes', () => {
     const res = await registerPlayerIntelligenceMapRoutes(
       new URL('http://localhost/api/players/UNKNOWN/intelligence-map'),
       new Request('http://localhost/api/players/UNKNOWN/intelligence-map'),
-      scraperManager as any
+      scraperManager
     );
     expect(res?.status).toBe(200);
     const body = await res!.json();
-    expect(body.sources.find((source: any) => source.key === 'wager_archive').status).toBe('missing');
-    expect(body.contractMismatches.find((row: any) => row.key === 'missing_wager_archive').severity).toBe('critical');
+    expect(body.sources.find((source: IntelligenceSourceRow) => source.key === 'wager_archive').status).toBe('missing');
+    expect(body.contractMismatches.find((row: KeyedRow) => row.key === 'missing_wager_archive').severity).toBe('critical');
   });
 
   test('player export streams csv', async () => {
     const res = await registerPlayerExportRoutes(
       new URL('http://localhost/api/players/PLAYER1/export/wagers'),
       new Request('http://localhost/api/players/PLAYER1/export/wagers'),
-      scraperManager as any
+      scraperManager
     );
     expect(res?.headers.get('Content-Type')).toContain('text/csv');
     const csv = await res!.text();
@@ -718,7 +775,7 @@ describe('player archive routes', () => {
         method: 'POST',
         body: JSON.stringify({ flag_type: 'suspicious_pattern', severity: 'high', label: 'Suspicious Pattern' }),
       }),
-      scraperManager as any
+      scraperManager
     );
     expect(flagRes?.status).toBe(200);
     expect((await flagRes!.json()).flagId).toBeGreaterThan(0);
@@ -729,7 +786,7 @@ describe('player archive routes', () => {
         method: 'POST',
         body: JSON.stringify({ note_type: 'telegram', body: 'Telegram: @fresh' }),
       }),
-      scraperManager as any
+      scraperManager
     );
     expect(noteRes?.status).toBe(200);
     expect((await noteRes!.json()).noteId).toBeGreaterThan(0);
@@ -737,7 +794,7 @@ describe('player archive routes', () => {
     const linkRes = await registerPlayerLinkCheckRoutes(
       new URL('http://localhost/api/players/PLAYER1/links/check'),
       new Request('http://localhost/api/players/PLAYER1/links/check', { method: 'POST' }),
-      scraperManager as any
+      scraperManager
     );
     expect(linkRes?.status).toBe(200);
     const linkBody = await linkRes!.json();

@@ -21,7 +21,7 @@ export interface BuckeyeSecretStatus {
 export interface SecretStore {
   get(options: { service: string; name: string }): Promise<string | null>;
   set(options: { service: string; name: string; value: string }): Promise<void>;
-  delete(options: { service: string; name: string }): Promise<void>;
+  delete(options: { service: string; name: string }): Promise<void | boolean>;
 }
 
 export class BunSecretVault {

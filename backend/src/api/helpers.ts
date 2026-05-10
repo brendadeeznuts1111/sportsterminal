@@ -26,9 +26,9 @@ export function parseRequiredId(value: string | undefined): number {
   return parsed;
 }
 
-export async function readJsonBody(request: Request): Promise<any> {
+export async function readJsonBody<T = Record<string, never>>(request: Request): Promise<T> {
   try {
-    return await request.json();
+    return await request.json() as T;
   } catch {
     throw new ApiError(400, 'Malformed JSON body');
   }
@@ -47,7 +47,7 @@ export function requireAdminTokenIfConfigured(request: Request): Response | null
 }
 
 export interface ParsedLocalAgentExport {
-  agents: any[];
+  agents: LocalAgentExportRow[];
   players: Array<{
     customerId: string;
     login: string;
@@ -65,6 +65,12 @@ export interface ParsedLocalAgentExport {
   };
 }
 
+type LocalAgentExportRow = Record<string, unknown>;
+type BuckeyeLocalExport = {
+  GENERAL?: LocalAgentExportRow[];
+  PLAYERS?: LocalAgentExportRow[];
+};
+
 export async function parseAgentHierarchyAndPlayers(): Promise<ParsedLocalAgentExport> {
   const agentCandidates = ['docs/agentobject.md', '../docs/agentobject.md'];
   const combinedCandidates = ['docs/agentslistharz.md', '../docs/agentslistharz.md'];
@@ -75,7 +81,7 @@ export async function parseAgentHierarchyAndPlayers(): Promise<ParsedLocalAgentE
       const file = Bun.file(path);
       if ((await file.size) === 0) continue;
       const text = await file.text();
-      const parsed = parseLocalJsonPrefix(text);
+      const parsed = parseLocalJsonPrefix(text) as BuckeyeLocalExport | LocalAgentExportRow[];
       const agents = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.GENERAL) ? parsed.GENERAL : [];
       if (agents.length > 0) {
         return buildParsedLocalAgentExport(agents, combined.players, 'docs/agentobject.md');
@@ -103,7 +109,11 @@ export async function parseAgentHierarchyAndPlayers(): Promise<ParsedLocalAgentE
   };
 }
 
-export async function loadLocalAgentHierarchy(): Promise<any> {
+export async function loadLocalAgentHierarchy(): Promise<{
+  GENERAL: LocalAgentExportRow[];
+  meta: ParsedLocalAgentExport['meta'];
+  source: string;
+}> {
   const parsed = await parseAgentHierarchyAndPlayers();
   return {
     GENERAL: parsed.agents,
@@ -112,15 +122,18 @@ export async function loadLocalAgentHierarchy(): Promise<any> {
   };
 }
 
-async function loadLocalAgentExport(candidates: string[]): Promise<{ agents: any[]; players: any[] }> {
+async function loadLocalAgentExport(
+  candidates: string[]
+): Promise<{ agents: LocalAgentExportRow[]; players: LocalAgentExportRow[] }> {
   for (const path of candidates) {
     try {
       const file = Bun.file(path);
       if ((await file.size) === 0) continue;
-      const parsed = parseLocalJsonPrefix(await file.text());
+      const parsed = parseLocalJsonPrefix(await file.text()) as BuckeyeLocalExport | LocalAgentExportRow[];
+      const exportObject = Array.isArray(parsed) ? null : parsed;
       return {
-        agents: Array.isArray(parsed?.GENERAL) ? parsed.GENERAL : Array.isArray(parsed) ? parsed : [],
-        players: Array.isArray(parsed?.PLAYERS) ? parsed.PLAYERS : [],
+        agents: Array.isArray(exportObject?.GENERAL) ? exportObject.GENERAL : Array.isArray(parsed) ? parsed : [],
+        players: Array.isArray(exportObject?.PLAYERS) ? exportObject.PLAYERS : [],
       };
     } catch {
       // Try the next relative path.
@@ -129,7 +142,7 @@ async function loadLocalAgentExport(candidates: string[]): Promise<{ agents: any
   return { agents: [], players: [] };
 }
 
-function parseLocalJsonPrefix(text: string): any {
+function parseLocalJsonPrefix(text: string): unknown {
   try {
     return JSON.parse(text);
   } catch {
@@ -141,7 +154,11 @@ function parseLocalJsonPrefix(text: string): any {
   }
 }
 
-function buildParsedLocalAgentExport(agents: any[], players: any[], source: string): ParsedLocalAgentExport {
+function buildParsedLocalAgentExport(
+  agents: LocalAgentExportRow[],
+  players: LocalAgentExportRow[],
+  source: string
+): ParsedLocalAgentExport {
   const playerCounts = new Map<string, number>();
   const sanitizedPlayers = [];
   for (const player of players) {
@@ -160,13 +177,13 @@ function buildParsedLocalAgentExport(agents: any[], players: any[], source: stri
     playerCounts.set(agent, (playerCounts.get(agent) || 0) + 1);
   }
 
-  const sortedAgents = [...agents].sort((a: any, b: any) => {
+  const sortedAgents = [...agents].sort((a, b) => {
     return (Number(a?.SeqNumber) || 0) - (Number(b?.SeqNumber) || 0);
   });
   const stack: Array<{ level: number; agentId: string }> = [];
   const childCounts = new Map<string, number>();
 
-  const enriched = sortedAgents.map((agent: any) => {
+  const enriched = sortedAgents.map((agent) => {
     const login = String(agent?.Login || agent?.AgentID || '').trim();
     const agentId = String(agent?.AgentID || login).trim();
     const level = Number(agent?.Level) || 1;
@@ -208,7 +225,7 @@ function buildParsedLocalAgentExport(agents: any[], players: any[], source: stri
 }
 
 export function handleAsync(
-  handler: () => Promise<any>,
+  handler: () => Promise<unknown>,
   headers: Record<string, string>
 ): Promise<Response> {
   return handler()

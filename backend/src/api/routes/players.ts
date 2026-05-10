@@ -5,6 +5,7 @@ import { createParamRouteHandler, createRouteHandler } from './base';
 import { ApiError, clampInt, corsHeaders } from '../helpers';
 import { logRequest, logWarn } from '../../utils/logger';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
+import type { Database } from '../../database';
 import {
   classifyPlayer360Freshness,
   getPlayer360SourcePolicy,
@@ -26,12 +27,76 @@ const PLAYER_SORTS: Record<string, string> = {
   agent: 'agentLogin ASC',
 };
 
+type RouteRow = Record<string, unknown>;
+
+interface AgentRow extends RouteRow {
+  agentId?: string;
+  agentLogin?: string;
+  id?: string;
+  login?: string;
+  display_name?: string;
+  displayName?: string;
+  parent_agent_id?: string;
+  parentAgentId?: string;
+  agent_type?: string;
+  level?: number | null;
+  agentType?: string | null;
+  childCount?: number | null;
+  playerCount?: number | null;
+  totalWagerVolume?: number | null;
+}
+
+interface PlayerStatsRow extends RouteRow {
+  wagerCount?: number;
+  totalVolume?: number;
+  totalRisk?: number;
+  agentLogin?: string;
+  favoriteSport?: string;
+}
+
+interface AgentPerformanceRow extends RouteRow {
+  risk?: number;
+  net?: number;
+  lastPulledAt?: string | null;
+}
+
+interface SourceStatusRow extends RouteRow {
+  source_key: string;
+  status?: string;
+  last_attempt_at?: string | null;
+  last_success_at?: string | null;
+  last_error?: string | null;
+  next_refresh_at?: string | null;
+}
+
+interface FreshnessSummary {
+  rowCount: number;
+  lastSeen: string | null;
+}
+
+interface IntelligenceSource extends RouteRow {
+  key: string;
+  label: string;
+  status: string;
+  freshnessState: string;
+  rowCount: number;
+  lastSeen: string | null;
+  lastSuccessAt: string | null;
+  profileUse: string;
+  gap: string;
+  refreshPolicy: string;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 interface PlayerAgentContext {
-  assigned: any | null;
-  lineage: any[];
-  children: any[];
-  siblings: any[];
-  roots: any[];
+  assigned: AgentRow | null;
+  lineage: AgentRow[];
+  children: AgentRow[];
+  siblings: AgentRow[];
+  roots: AgentRow[];
   treeStats: {
     totalAgents: number;
     rootCount: number;
@@ -153,13 +218,13 @@ export const registerPlayerSearchRoutes = createRouteHandler(
        GROUP BY COALESCE(login, customer_id)
        ORDER BY ${orderBy}
        LIMIT 250`;
-    const players = await db.all(
+    const players = await db.all<RouteRow>(
       playerSelect,
       playerParams
     );
 
     const agents = hasAgentTables
-      ? await db.all(
+      ? await db.all<AgentRow>(
         `SELECT DISTINCT
         COALESCE(a.id, p.agent_id, '') AS agentId,
         COALESCE(a.login, p.agent_login, p.agent_id, '') AS agentLogin,
@@ -172,7 +237,7 @@ export const registerPlayerSearchRoutes = createRouteHandler(
        ORDER BY agentLogin ASC, agentId ASC
        LIMIT 500`
       )
-      : await db.all(
+      : await db.all<AgentRow>(
         `SELECT DISTINCT
           COALESCE(agent_id, agent_login, '') AS agentId,
           COALESCE(agent_login, agent_id, '') AS agentLogin,
@@ -184,7 +249,7 @@ export const registerPlayerSearchRoutes = createRouteHandler(
          LIMIT 500`
       );
 
-    const agentOptions = agents.map((row: any) => ({
+    const agentOptions = agents.map((row) => ({
       agentId: row.agentId,
       agentLogin: row.agentLogin,
       level: row.level,
@@ -193,7 +258,7 @@ export const registerPlayerSearchRoutes = createRouteHandler(
 
     return {
       players: players.map(normalizeNumbers),
-      agents: agentOptions.map((row: any) => row.agentLogin),
+      agents: agentOptions.map((row) => row.agentLogin),
       agentOptions,
       filters: { q, agent, from, to, sort },
       count: players.length,
@@ -207,9 +272,7 @@ export const registerPlayerProfileRoutes = createParamRouteHandler(
   async (_url, _req, scraperManager, params) => {
     const playerId = decodeURIComponent(params.playerId);
     logRequest('GET', `/api/players/${playerId}/profile`);
-    if (typeof (scraperManager as any).requestPlayer360Refresh === 'function') {
-      (scraperManager as any).requestPlayer360Refresh(playerId, 'profile_open');
-    }
+    scraperManager.requestPlayer360Refresh(playerId, 'profile_open');
     return getArchivePlayerProfile(scraperManager, playerId);
   }
 );
@@ -230,7 +293,7 @@ export const registerPlayerAgentContextRoutes = createParamRouteHandler(
     );
     return {
       playerId,
-      agentContext: await getPlayerAgentContext(db, playerId, (archiveAgent as any)?.agentLogin || ''),
+      agentContext: await getPlayerAgentContext(db, playerId, String(archiveAgent?.agentLogin || '')),
     };
   }
 );
@@ -294,7 +357,7 @@ export const registerPlayerLinkCheckRoutes = createParamRouteHandler(
     logRequest('POST', `/api/players/${playerId}/links/check`);
     if (!playerId) throw new ApiError(400, 'playerId is required');
     const db = scraperManager.getDatabase();
-    const matches = await db.all<any>(
+    const matches = await db.all<RouteRow>(
       `SELECT
         mine.ip_address,
         other.login_id AS otherPlayer,
@@ -410,10 +473,10 @@ export const registerPlayerDetailsRoutes = createParamRouteHandler(
   }
 );
 
-async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, playerId: string): Promise<any> {
+async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, playerId: string): Promise<RouteRow> {
   if (!playerId) throw new ApiError(400, 'playerId is required');
   const db = scraperManager.getDatabase();
-  const stats = await db.get(
+  const stats = await db.get<PlayerStatsRow>(
     `WITH player_wagers AS (
       SELECT *
       FROM wager_archive
@@ -444,7 +507,7 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
     [playerId, playerId, playerId, playerId]
   );
 
-  const wagers = await db.all(
+  const wagers = await db.all<RouteRow>(
     `SELECT *
      FROM wager_archive
      WHERE login = ? OR customer_id = ?
@@ -453,7 +516,7 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
     [playerId, playerId]
   );
 
-  const weeklyPnl = await db.all(
+  const weeklyPnl = await db.all<RouteRow>(
     `SELECT
       strftime('%Y-%W', insert_date_time) AS week,
       MIN(date(insert_date_time)) AS weekStart,
@@ -468,7 +531,7 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
     [playerId, playerId]
   );
 
-  const sportBreakdown = await db.all(
+  const sportBreakdown = await db.all<RouteRow>(
     `SELECT
       COALESCE(sport, 'Unknown') AS sport,
       COUNT(*) AS wagerCount,
@@ -492,7 +555,7 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
     getPlayerFreePlaySummary(db, playerId),
   ]);
 
-  const accessLogs = await db.all(
+  const accessLogs = await db.all<RouteRow>(
     `SELECT
       l.*,
       (SELECT MIN(prior.access_datetime)
@@ -508,12 +571,12 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
     [playerId]
   );
 
-  const wagerCount = Number((stats as any)?.wagerCount || 0);
-  const totalVolume = Number((stats as any)?.totalVolume || 0);
-  const totalRisk = Number((stats as any)?.totalRisk || 0);
-  let agentPerformance: any = {};
+  const wagerCount = Number(stats?.wagerCount || 0);
+  const totalVolume = Number(stats?.totalVolume || 0);
+  const totalRisk = Number(stats?.totalRisk || 0);
+  let agentPerformance: AgentPerformanceRow | null | undefined;
   try {
-    agentPerformance = await db.get(
+    agentPerformance = await db.get<AgentPerformanceRow>(
       `SELECT
          COUNT(*) AS rowCount,
          SUM(wager_count) AS wagerCount,
@@ -525,19 +588,18 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
        WHERE login = ? OR customer_id = ?`,
       [playerId, playerId]
     );
-  } catch (err: any) {
-    logWarn('Player profile: agent_performance query failed', { playerId, error: err?.message });
-    agentPerformance = {};
+  } catch (err) {
+    logWarn('Player profile: agent_performance query failed', { playerId, error: errorMessage(err) });
   }
-  const performanceRisk = Number((agentPerformance as any)?.risk || 0);
-  const performanceNet = Number((agentPerformance as any)?.net || 0);
+  const performanceRisk = Number(agentPerformance?.risk || 0);
+  const performanceNet = Number(agentPerformance?.net || 0);
   const riskScore = Math.min(100, Math.round(
     (totalVolume >= 50000 ? 70 : totalVolume / 750)
     + (Math.max(totalRisk, performanceRisk) >= 50000 ? 25 : Math.max(totalRisk, performanceRisk) / 2500)
     + Math.min(10, Math.abs(performanceNet) / 5000)
   ));
   const intelligence = buildWagerIntelligence(wagers);
-  const agentContext = await getPlayerAgentContext(db, playerId, (stats as any)?.agentLogin || '');
+  const agentContext = await getPlayerAgentContext(db, playerId, stats?.agentLogin || '');
 
   return {
     playerId,
@@ -546,7 +608,7 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
       totalVolume,
       openBets: wagerCount,
       winRate: 0,
-      favoriteSport: (stats as any)?.favoriteSport || 'Unknown',
+      favoriteSport: stats?.favoriteSport || 'Unknown',
       riskScore,
       avgStake: wagerCount > 0 ? totalVolume / wagerCount : 0,
       clvPercent: intelligence.metrics.clvPercent,
@@ -555,9 +617,9 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
       patternHits: intelligence.metrics.patternHits,
       performanceNet,
       performanceRisk,
-      performanceLastPulledAt: (agentPerformance as any)?.lastPulledAt || null,
+      performanceLastPulledAt: agentPerformance?.lastPulledAt || null,
       agentId: agentContext.assigned?.agentId || '',
-      agentLogin: agentContext.assigned?.login || (stats as any)?.agentLogin || '',
+      agentLogin: agentContext.assigned?.login || stats?.agentLogin || '',
       agentLevel: agentContext.assigned?.level || null,
       agentType: agentContext.assigned?.agentType || '',
       parentAgentId: agentContext.assigned?.parentAgentId || '',
@@ -574,7 +636,7 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
     links,
     flags,
     notes,
-    accessLogs: accessLogs.map((row: any) => ({
+    accessLogs: accessLogs.map((row) => ({
       ...row,
       isNewIp: row.first_seen_30d === row.access_datetime,
       device: extractAccessMeta(row, 'device'),
@@ -588,7 +650,7 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
   };
 }
 
-async function getPlayerAgentContext(db: any, playerId: string, fallbackAgentLogin: string): Promise<PlayerAgentContext> {
+async function getPlayerAgentContext(db: Database, playerId: string, fallbackAgentLogin: string): Promise<PlayerAgentContext> {
   if (!(await hasTables(db, ['agents']))) {
     return {
       assigned: fallbackAgentLogin ? {
@@ -611,19 +673,19 @@ async function getPlayerAgentContext(db: any, playerId: string, fallbackAgentLog
     };
   }
   const assigned = await resolvePlayerAgent(db, playerId, fallbackAgentLogin);
-  const roots = (await db.all(
+  const roots = (await db.all<AgentRow>(
     `SELECT *
      FROM agents
      WHERE provider = 'buckeye' AND level = 1
      ORDER BY seq_number`
-  )).map(formatAgentRow);
-  const treeAgg = await db.all(
+  )).map(formatAgentRow).filter((row): row is AgentRow => row !== null);
+  const treeAgg = await db.all<{ type: string | null; count: number }>(
     `SELECT agent_type AS type, COUNT(*) AS count
      FROM agents
      WHERE provider = 'buckeye'
      GROUP BY agent_type`
   );
-  const totalStats = await db.get(
+  const totalStats = await db.get<{ totalAgents: number; maxLevel: number | null }>(
     `SELECT COUNT(*) AS totalAgents, MAX(level) AS maxLevel
      FROM agents
      WHERE provider = 'buckeye'`
@@ -640,15 +702,15 @@ async function getPlayerAgentContext(db: any, playerId: string, fallbackAgentLog
         totalAgents: Number(totalStats?.totalAgents || 0),
         rootCount: roots.length,
         maxLevel: Number(totalStats?.maxLevel || 0),
-        typeCounts: Object.fromEntries(treeAgg.map((row: any) => [row.type || 'unknown', Number(row.count || 0)])),
+        typeCounts: Object.fromEntries(treeAgg.map((row) => [row.type || 'unknown', Number(row.count || 0)])),
       },
     };
   }
 
   const [lineage, children, siblings] = await Promise.all([
-    getAgentLineage(db, assigned.agentId),
-    getAgentChildren(db, assigned.agentId),
-    assigned.parentAgentId ? getAgentChildren(db, assigned.parentAgentId, assigned.agentId) : Promise.resolve([]),
+    getAgentLineage(db, String(assigned.agentId || '')),
+    getAgentChildren(db, String(assigned.agentId || '')),
+    assigned.parentAgentId ? getAgentChildren(db, assigned.parentAgentId, String(assigned.agentId || '')) : Promise.resolve([]),
   ]);
 
   return {
@@ -661,14 +723,14 @@ async function getPlayerAgentContext(db: any, playerId: string, fallbackAgentLog
       totalAgents: Number(totalStats?.totalAgents || 0),
       rootCount: roots.length,
       maxLevel: Number(totalStats?.maxLevel || 0),
-      typeCounts: Object.fromEntries(treeAgg.map((row: any) => [row.type || 'unknown', Number(row.count || 0)])),
+      typeCounts: Object.fromEntries(treeAgg.map((row) => [row.type || 'unknown', Number(row.count || 0)])),
     },
   };
 }
 
-async function resolvePlayerAgent(db: any, playerId: string, fallbackAgentLogin: string): Promise<any | null> {
+async function resolvePlayerAgent(db: Database, playerId: string, fallbackAgentLogin: string): Promise<AgentRow | null> {
   if (await hasTables(db, ['players'])) {
-    const fromPlayer = await db.get(
+    const fromPlayer = await db.get<AgentRow>(
       `SELECT a.*
        FROM players p
        JOIN agents a ON a.provider = 'buckeye' AND a.id = p.agent_id
@@ -681,7 +743,7 @@ async function resolvePlayerAgent(db: any, playerId: string, fallbackAgentLogin:
     if (fromPlayer) return formatAgentRow(fromPlayer);
   }
 
-  const fromWager = await db.get(
+  const fromWager = await db.get<AgentRow>(
     `SELECT a.*
      FROM agents a
      WHERE a.provider = 'buckeye'
@@ -693,27 +755,28 @@ async function resolvePlayerAgent(db: any, playerId: string, fallbackAgentLogin:
   return fromWager ? formatAgentRow(fromWager) : null;
 }
 
-async function getAgentLineage(db: any, agentId: string): Promise<any[]> {
-  const lineage: any[] = [];
+async function getAgentLineage(db: Database, agentId: string): Promise<AgentRow[]> {
+  const lineage: AgentRow[] = [];
   const seen = new Set<string>();
   let currentId = agentId;
   for (let i = 0; currentId && i < 32; i += 1) {
     if (seen.has(currentId)) break;
     seen.add(currentId);
-    const row = await db.get(
+    const row = await db.get<AgentRow>(
       `SELECT * FROM agents WHERE provider = 'buckeye' AND id = ? LIMIT 1`,
       [currentId]
     );
     if (!row) break;
     const formatted = formatAgentRow(row);
+    if (!formatted) break;
     lineage.unshift(formatted);
     currentId = formatted.parentAgentId || '';
   }
   return lineage;
 }
 
-async function getAgentChildren(db: any, agentId: string, excludeAgentId = ''): Promise<any[]> {
-  const rows = await db.all(
+async function getAgentChildren(db: Database, agentId: string, excludeAgentId = ''): Promise<AgentRow[]> {
+  const rows = await db.all<AgentRow>(
     `SELECT *
      FROM agents
      WHERE provider = 'buckeye'
@@ -723,10 +786,10 @@ async function getAgentChildren(db: any, agentId: string, excludeAgentId = ''): 
      LIMIT 200`,
     [agentId, excludeAgentId]
   );
-  return rows.map(formatAgentRow);
+  return rows.map(formatAgentRow).filter((row): row is AgentRow => row !== null);
 }
 
-function formatAgentRow(row: any): any {
+function formatAgentRow(row: AgentRow | null | undefined): AgentRow | null {
   if (!row) return null;
   return {
     agentId: row.id,
@@ -759,20 +822,20 @@ function escapeLikeJson(value: string): string {
   return String(value).replace(/[%_]/g, '');
 }
 
-async function hasTables(db: any, tableNames: string[]): Promise<boolean> {
+async function hasTables(db: Database, tableNames: string[]): Promise<boolean> {
   try {
-    const rows = await db.all(
+    const rows = await db.all<{ name: string }>(
       `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${tableNames.map(() => '?').join(',')})`,
       tableNames
     );
     return rows.length === tableNames.length;
-  } catch (err: any) {
-    logWarn('hasTables query failed', { error: err?.message });
+  } catch (err) {
+    logWarn('hasTables query failed', { error: errorMessage(err) });
     return false;
   }
 }
 
-async function getPlayerIntelligenceMap(scraperManager: BuckeyeScraperManager, playerId: string): Promise<any> {
+async function getPlayerIntelligenceMap(scraperManager: BuckeyeScraperManager, playerId: string): Promise<RouteRow> {
   if (!playerId) throw new ApiError(400, 'playerId is required');
   const db = scraperManager.getDatabase();
   const endpointBase = `/api/v1/players/${encodeURIComponent(playerId)}`;
@@ -910,9 +973,9 @@ async function getPlayerIntelligenceMap(scraperManager: BuckeyeScraperManager, p
   };
 }
 
-function buildHaveNowCoverage(sources: any[]): string[] {
+function buildHaveNowCoverage(sources: IntelligenceSource[]): string[] {
   const sourceStatus = Object.fromEntries(sources.map((source) => [source.key, source.status]));
-  const rows = [];
+  const rows: string[] = [];
   if (sourceStatus.wager_archive === 'live') rows.push('live wagers', 'archived wagers', 'player stats', 'sport breakdown', 'pattern flags');
   if (sourceStatus.access_logs === 'live') rows.push('access logs');
   if (sourceStatus.agent_performance_snapshots === 'live') rows.push('agent performance enrichment');
@@ -931,12 +994,12 @@ function sourceRow(
   status: string,
   buckeyeEndpoint: string,
   localTable: string,
-  freshness: any,
-  sourceStatus: any,
+  freshness: FreshnessSummary,
+  sourceStatus: SourceStatusRow | undefined,
   profileUse: string,
   gap: string,
   reuse: boolean
-): any {
+): IntelligenceSource {
   const policy = getPlayer360SourcePolicy(key);
   const lastAttemptAt = sourceStatus?.last_attempt_at || null;
   const lastSuccessAt = sourceStatus?.last_success_at || freshness.lastSeen || null;
@@ -974,7 +1037,7 @@ function sourceRow(
   };
 }
 
-function buildPlayer360TabCoverage(sources: any[]): any[] {
+function buildPlayer360TabCoverage(sources: IntelligenceSource[]): RouteRow[] {
   const sourceMap = Object.fromEntries(sources.map((source) => [source.key, source]));
   const rows = [
     { tab: 'Overview', sources: ['wager_archive', 'agent_performance_snapshots', 'customer_snapshots', 'player_flags', 'player_notes'] },
@@ -992,7 +1055,7 @@ function buildPlayer360TabCoverage(sources: any[]): any[] {
     const dated = requiredSources
       .map((source) => ({ source, timestamp: source.lastSuccessAt || source.lastSeen }))
       .filter((row) => row.timestamp && Number.isFinite(new Date(row.timestamp).getTime()))
-      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+      .sort((a, b) => new Date(String(a.timestamp)).getTime() - new Date(String(b.timestamp)).getTime());
     const weakest = requiredSources.find((source) => ['error', 'missing', 'stale', 'probe'].includes(source.freshnessState))
       || dated[0]?.source
       || requiredSources[0];
@@ -1013,7 +1076,7 @@ function buildPlayer360TabCoverage(sources: any[]): any[] {
   });
 }
 
-function buildPlayer360FieldContract(endpointBase: string): any[] {
+function buildPlayer360FieldContract(endpointBase: string): RouteRow[] {
   return [
     { tab: 'Overview', field: 'stats.totalVolume', route: `${endpointBase}/profile`, source: 'wager_archive.amount_wagered', statusRule: 'live when wager_archive rows exist' },
     { tab: 'Overview', field: 'stats.openBets', route: `${endpointBase}/profile`, source: 'wager_archive.status/pending heuristics', statusRule: 'derived from archived wagers' },
@@ -1038,8 +1101,8 @@ function buildPlayer360FieldContract(endpointBase: string): any[] {
   ];
 }
 
-function buildPlayer360ContractMismatches(sources: any[], gaps: any[]): any[] {
-  const mismatches: any[] = [];
+function buildPlayer360ContractMismatches(sources: IntelligenceSource[], gaps: RouteRow[]): RouteRow[] {
+  const mismatches: RouteRow[] = [];
   for (const source of sources) {
     if (source.status === 'missing') {
       mismatches.push({
@@ -1077,44 +1140,44 @@ function buildPlayer360ContractMismatches(sources: any[], gaps: any[]): any[] {
 }
 
 async function sourceFreshness(
-  db: any,
+  db: Database,
   table: string,
   timeColumn: string,
   where: string,
   params: unknown[]
 ): Promise<{ rowCount: number; lastSeen: string | null }> {
   try {
-    const row = await db.get<{ rowCount: number; lastSeen: string | null }>(
+    const row = await db.get(
       `SELECT COUNT(*) AS rowCount, MAX(${timeColumn}) AS lastSeen FROM ${table} WHERE ${where}`,
       params
-    );
+    ) as { rowCount: number; lastSeen: string | null } | undefined;
     return {
       rowCount: Number(row?.rowCount || 0),
       lastSeen: row?.lastSeen || null,
     };
-  } catch (err: any) {
-    logWarn('Source freshness query failed', { table, params, error: err?.message });
+  } catch (err) {
+    logWarn('Source freshness query failed', { table, params, error: errorMessage(err) });
     return { rowCount: 0, lastSeen: null };
   }
 }
 
-async function getPlayerSourceStatusMap(db: any, playerId: string): Promise<Record<string, any>> {
+async function getPlayerSourceStatusMap(db: Database, playerId: string): Promise<Record<string, SourceStatusRow>> {
   try {
-    const rows = await db.all(
+    const rows = await db.all<SourceStatusRow>(
       `SELECT *
        FROM player_source_status
        WHERE customer_id = ? OR login = ?
        ORDER BY updated_at DESC`,
       [playerId, playerId]
     );
-    return Object.fromEntries(rows.map((row: any) => [row.source_key, row]));
-  } catch (err: any) {
-    logWarn('Player source status query failed', { playerId, error: err?.message });
+    return Object.fromEntries(rows.map((row) => [row.source_key, row]));
+  } catch (err) {
+    logWarn('Player source status query failed', { playerId, error: errorMessage(err) });
     return {};
   }
 }
 
-async function getWatermark(db: any, key: string): Promise<any | null> {
+async function getWatermark(db: Database, key: string): Promise<RouteRow | null> {
   const row = await db.get<{ value: string; updated_at: string }>(
     `SELECT value, updated_at FROM watermarks WHERE key = ?`,
     [key]
@@ -1127,7 +1190,7 @@ async function getWatermark(db: any, key: string): Promise<any | null> {
   };
 }
 
-async function rawEndpointProbe(db: any, endpoints: string[]): Promise<{ seen: boolean; lastSeen: string | null }> {
+async function rawEndpointProbe(db: Database, endpoints: string[]): Promise<{ seen: boolean; lastSeen: string | null }> {
   try {
     const placeholders = endpoints.map(() => '?').join(',');
     const row = await db.get<{ seen: number; lastSeen: string | null }>(
@@ -1135,13 +1198,13 @@ async function rawEndpointProbe(db: any, endpoints: string[]): Promise<{ seen: b
       endpoints
     );
     return { seen: Number(row?.seen || 0) > 0, lastSeen: row?.lastSeen || null };
-  } catch (err: any) {
-    logWarn('Watermark query failed', { key, error: err?.message });
+  } catch (err) {
+    logWarn('Raw endpoint probe query failed', { endpoints, error: errorMessage(err) });
     return { seen: false, lastSeen: null };
   }
 }
 
-function parseMaybeJson(value: string): any {
+function parseMaybeJson(value: string): unknown {
   try {
     return JSON.parse(value);
   } catch {
@@ -1149,9 +1212,9 @@ function parseMaybeJson(value: string): any {
   }
 }
 
-async function getPlayerDeposits(scraperManager: BuckeyeScraperManager, playerId: string): Promise<any[]> {
+async function getPlayerDeposits(scraperManager: BuckeyeScraperManager, playerId: string): Promise<RouteRow[]> {
   const db = scraperManager.getDatabase();
-  const rows = await db.all(
+  const rows = await db.all<RouteRow>(
     `SELECT
       d.id,
       d.provider,
@@ -1184,7 +1247,7 @@ async function getPlayerDeposits(scraperManager: BuckeyeScraperManager, playerId
   return rows.map(normalizeNumbers);
 }
 
-async function getPlayerTransactions(scraperManager: BuckeyeScraperManager, playerId: string, category = ''): Promise<any[]> {
+async function getPlayerTransactions(scraperManager: BuckeyeScraperManager, playerId: string, category = ''): Promise<RouteRow[]> {
   const db = scraperManager.getDatabase();
   const where = ['(customer_id = ? OR login = ?)'];
   const params: unknown[] = [playerId, playerId];
@@ -1195,7 +1258,7 @@ async function getPlayerTransactions(scraperManager: BuckeyeScraperManager, play
     where.push('category = ?');
     params.push(category);
   }
-  const rows = await db.all(
+  const rows = await db.all<RouteRow>(
     `SELECT
       id,
       provider,
@@ -1222,15 +1285,15 @@ async function getPlayerTransactions(scraperManager: BuckeyeScraperManager, play
      LIMIT 250`,
     params
   );
-  return rows.map((row: any) => normalizeNumbers({
+  return rows.map((row) => normalizeNumbers({
     ...row,
     sourceConfidence: String(row.category || '').startsWith('freeplay_') ? freePlaySourceConfidence(row) : undefined,
   }));
 }
 
-async function getPlayerFreePlaySummary(db: any, playerId: string): Promise<any> {
+async function getPlayerFreePlaySummary(db: Database, playerId: string): Promise<unknown> {
   const { where, params } = buildFreePlayWhere({ playerId });
-  const rows = await db.all(
+  const rows = await db.all<RouteRow>(
     `SELECT
       id,
       customer_id AS customerId,
@@ -1247,7 +1310,7 @@ async function getPlayerFreePlaySummary(db: any, playerId: string): Promise<any>
      WHERE ${where.join(' AND ')}`,
     params
   );
-  const normalized = rows.map((row: any) => ({
+  const normalized = rows.map((row) => ({
     ...row,
     amount: Number(row.amount || 0),
     sourceConfidence: freePlaySourceConfidence(row),
@@ -1255,9 +1318,9 @@ async function getPlayerFreePlaySummary(db: any, playerId: string): Promise<any>
   return summarizeFreePlay(normalized);
 }
 
-async function getPlayerAccountSnapshots(scraperManager: BuckeyeScraperManager, playerId: string): Promise<any[]> {
+async function getPlayerAccountSnapshots(scraperManager: BuckeyeScraperManager, playerId: string): Promise<RouteRow[]> {
   const db = scraperManager.getDatabase();
-  return db.all(
+  return db.all<RouteRow>(
     `SELECT
       id,
       provider,
@@ -1280,9 +1343,9 @@ async function getPlayerAccountSnapshots(scraperManager: BuckeyeScraperManager, 
   );
 }
 
-async function getPlayerLinks(scraperManager: BuckeyeScraperManager, playerId: string): Promise<any[]> {
+async function getPlayerLinks(scraperManager: BuckeyeScraperManager, playerId: string): Promise<RouteRow[]> {
   const db = scraperManager.getDatabase();
-  return db.all(
+  return db.all<RouteRow>(
     `SELECT *
      FROM player_links
      WHERE player_a = ? OR player_b = ?
@@ -1292,9 +1355,9 @@ async function getPlayerLinks(scraperManager: BuckeyeScraperManager, playerId: s
   );
 }
 
-async function getPlayerFlags(scraperManager: BuckeyeScraperManager, playerId: string): Promise<any[]> {
+async function getPlayerFlags(scraperManager: BuckeyeScraperManager, playerId: string): Promise<RouteRow[]> {
   const db = scraperManager.getDatabase();
-  return db.all(
+  return db.all<RouteRow>(
     `SELECT *
      FROM player_flags
      WHERE customer_id = ?
@@ -1304,9 +1367,9 @@ async function getPlayerFlags(scraperManager: BuckeyeScraperManager, playerId: s
   );
 }
 
-async function getPlayerNotes(scraperManager: BuckeyeScraperManager, playerId: string): Promise<any[]> {
+async function getPlayerNotes(scraperManager: BuckeyeScraperManager, playerId: string): Promise<RouteRow[]> {
   const db = scraperManager.getDatabase();
-  return db.all(
+  return db.all<RouteRow>(
     `SELECT *
      FROM player_notes
      WHERE customer_id = ? AND archived_at IS NULL
@@ -1316,20 +1379,20 @@ async function getPlayerNotes(scraperManager: BuckeyeScraperManager, playerId: s
   );
 }
 
-function normalizeNumbers(row: any): any {
+function normalizeNumbers<T extends RouteRow>(row: T): T {
   if (!row) return row;
-  const next = { ...row };
+  const next: RouteRow = { ...row };
   for (const key of Object.keys(next)) {
     if (/(count|volume|risk|wager|amount|win|pnl|score|bets)$/i.test(key)) {
       const value = Number(next[key]);
       if (Number.isFinite(value)) next[key] = value;
     }
   }
-  return next;
+  return next as T;
 }
 
-function buildWagerIntelligence(rows: any[]): {
-  wagers: any[];
+function buildWagerIntelligence(rows: RouteRow[]): {
+  wagers: RouteRow[];
   metrics: {
     clvPercent: number;
     staleLineHits: number;
@@ -1418,20 +1481,20 @@ function buildWagerIntelligence(rows: any[]): {
   };
 }
 
-function estimateClosingLine(row: any, price: number | null): number | null {
+function estimateClosingLine(row: RouteRow, price: number | null): number | null {
   if (price === null) return null;
   const seed = Math.abs(Number(row.wager_number || row.id || 0)) % 9;
   return price + (seed - 4) * 3;
 }
 
-function parseRawJson(value: unknown): Record<string, any> {
+function parseRawJson(value: unknown): RouteRow {
   if (!value) return {};
-  if (typeof value === 'object') return value as Record<string, any>;
+  if (typeof value === 'object') return value as RouteRow;
   try {
     const parsed = JSON.parse(String(value));
     return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch (err: any) {
-    logWarn('Raw JSON parse failed', { error: err?.message });
+  } catch (err) {
+    logWarn('Raw JSON parse failed', { error: errorMessage(err) });
     return {};
   }
 }
@@ -1442,7 +1505,7 @@ function numberOrNull(value: unknown): number | null {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
-function hasClosingLine(raw: Record<string, any>): boolean {
+function hasClosingLine(raw: RouteRow): boolean {
   return raw.ClosingLine !== undefined || raw.ClosingPrice !== undefined || raw.ClosingOdds !== undefined || raw.closingLine !== undefined || raw.closeLine !== undefined;
 }
 
@@ -1453,7 +1516,7 @@ function classifyPatternSeverity(flags: string[], clvPercent: number): string {
   return '';
 }
 
-function extractAccessMeta(row: any, key: 'device' | 'geo'): string {
+function extractAccessMeta(row: RouteRow, key: 'device' | 'geo'): string {
   const values = [row.data, row.raw_json];
   for (const value of values) {
     if (!value) continue;
@@ -1464,8 +1527,8 @@ function extractAccessMeta(row: any, key: 'device' | 'geo'): string {
         ? parsed?.device || parsed?.Device || parsed?.deviceName || parsed?.userAgent
         : parsed?.geo || parsed?.Geo || parsed?.country || parsed?.city || parsed?.region;
       if (found) return String(found);
-    } catch (err: any) {
-      logWarn('Access log data parse failed', { key, error: err?.message });
+    } catch (err) {
+      logWarn('Access log data parse failed', { key, error: errorMessage(err) });
       if (key === 'device') {
         const deviceMatch = text.match(/(Mobile|Desktop|Windows|Mac|iPhone|Android|Chrome|Safari|Firefox)/i);
         if (deviceMatch) return deviceMatch[0];
@@ -1479,7 +1542,7 @@ function extractAccessMeta(row: any, key: 'device' | 'geo'): string {
   return '';
 }
 
-function csvExport(rows: any[], filename: string): Response {
+function csvExport(rows: RouteRow[], filename: string): Response {
   const csv = toCsv(rows);
   return new Response(csv, {
     headers: {
@@ -1490,7 +1553,7 @@ function csvExport(rows: any[], filename: string): Response {
   });
 }
 
-function toCsv(rows: any[]): string {
+function toCsv(rows: RouteRow[]): string {
   if (!rows.length) return '';
   const headers = Object.keys(rows[0]);
   return [

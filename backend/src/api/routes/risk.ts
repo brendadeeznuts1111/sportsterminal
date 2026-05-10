@@ -3,7 +3,6 @@
  */
 import { createRouteHandler } from './base';
 import { logRequest } from '../../utils/logger';
-import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 
 export const registerRiskAlertRoutes = createRouteHandler('/api/risk/alerts', async (_url, _req, scraperManager) => {
   logRequest('GET', '/api/risk/alerts');

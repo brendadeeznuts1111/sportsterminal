@@ -5,6 +5,7 @@ import { RateLimiter } from '../src/api/rateLimiter';
 import { PerformanceCache } from '../src/services/PerformanceCache';
 import { registerPerformanceRoutes } from '../src/api/routes/performance';
 import type { EnrichedWager } from '../src/risk/AlertEngine';
+import type { RouterDeps } from '../src/api/router';
 
 const PERF_WAGER: EnrichedWager = {
   WagerNumber: 1,
@@ -21,6 +22,31 @@ const PERF_WAGER: EnrichedWager = {
   VIP: '0',
   AgentLogin: 'AGENT1',
 };
+
+interface MockAgentPerformance {
+  totals: {
+    totalWagers: number;
+    totalVolume: number;
+  };
+  rows: Array<{
+    agentId: string;
+    volume: number;
+  }>;
+}
+
+interface MockScraperManager {
+  getAgentPerformance(agentId: string): Promise<MockAgentPerformance>;
+}
+
+function performanceDeps(
+  scraperManager: MockScraperManager,
+  performanceCache?: PerformanceCache
+): RouterDeps {
+  return {
+    scraperManager,
+    performanceCache,
+  } as unknown as RouterDeps;
+}
 
 describe('performance regression', () => {
   test('AlertEngine.evaluateWager completes 10,000 calls under 100ms', () => {
@@ -66,7 +92,7 @@ describe('performance regression', () => {
 });
 
 describe('performance cache routes', () => {
-  let mockScraperManager: any;
+  let mockScraperManager: MockScraperManager;
   let mockPerformanceCache: PerformanceCache;
 
   beforeEach(() => {
@@ -96,8 +122,7 @@ describe('performance cache routes', () => {
     const request = new Request(url.toString(), { method: 'GET' });
 
     const result = await registerPerformanceRoutes(url, request, {
-      scraperManager: mockScraperManager,
-      performanceCache: mockPerformanceCache,
+      ...performanceDeps(mockScraperManager, mockPerformanceCache),
     });
 
     expect(result).not.toBeNull();
@@ -115,15 +140,13 @@ describe('performance cache routes', () => {
 
     // First call — from API
     let result = await registerPerformanceRoutes(url, request, {
-      scraperManager: mockScraperManager,
-      performanceCache: mockPerformanceCache,
+      ...performanceDeps(mockScraperManager, mockPerformanceCache),
     });
     expect(result).not.toBeNull();
 
     // Second call — from cache
     result = await registerPerformanceRoutes(url, request, {
-      scraperManager: mockScraperManager,
-      performanceCache: mockPerformanceCache,
+      ...performanceDeps(mockScraperManager, mockPerformanceCache),
     });
     expect(result).not.toBeNull();
     if (result) {
@@ -137,8 +160,7 @@ describe('performance cache routes', () => {
     const request = new Request(url.toString(), { method: 'GET' });
 
     const result = await registerPerformanceRoutes(url, request, {
-      scraperManager: mockScraperManager,
-      performanceCache: mockPerformanceCache,
+      ...performanceDeps(mockScraperManager, mockPerformanceCache),
     });
 
     expect(result).not.toBeNull();
@@ -155,8 +177,7 @@ describe('performance cache routes', () => {
     const request = new Request(url.toString(), { method: 'DELETE' });
 
     const result = await registerPerformanceRoutes(url, request, {
-      scraperManager: mockScraperManager,
-      performanceCache: mockPerformanceCache,
+      ...performanceDeps(mockScraperManager, mockPerformanceCache),
     });
 
     expect(result).not.toBeNull();
@@ -173,8 +194,7 @@ describe('performance cache routes', () => {
     const request = new Request(url.toString(), { method: 'GET' });
 
     const result = await registerPerformanceRoutes(url, request, {
-      scraperManager: mockScraperManager,
-      performanceCache: mockPerformanceCache,
+      ...performanceDeps(mockScraperManager, mockPerformanceCache),
     });
 
     expect(result).not.toBeNull();
@@ -192,8 +212,7 @@ describe('performance cache routes', () => {
     const request = new Request(url.toString(), { method: 'GET' });
 
     const result = await registerPerformanceRoutes(url, request, {
-      scraperManager: mockScraperManager,
-      performanceCache: undefined,
+      ...performanceDeps(mockScraperManager, undefined),
     });
 
     expect(result).not.toBeNull();

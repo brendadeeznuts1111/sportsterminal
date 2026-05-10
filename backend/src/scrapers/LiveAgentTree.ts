@@ -31,6 +31,14 @@ interface AgentNode {
 
 type AgentUpdateSubscriber = (delta: AgentDelta) => void;
 
+interface AgentTreeSourceRow {
+  SeqNumber?: unknown;
+  Login?: unknown;
+  AgentID?: unknown;
+  Level?: unknown;
+  AgentType?: unknown;
+}
+
 export class LiveAgentTree {
   private nodes: Map<string, AgentNode> = new Map();
   private aliases: Map<string, AgentNode> = new Map();
@@ -47,11 +55,11 @@ export class LiveAgentTree {
     this.roots = [];
 
     const stack: { level: number; node: AgentNode }[] = [];
-    const sortedAgents = [...agents].sort((a: any, b: any) => {
+    const sortedAgents = (agents as AgentTreeSourceRow[]).sort((a, b) => {
       return (Number(a?.SeqNumber) || 0) - (Number(b?.SeqNumber) || 0);
     });
 
-    for (const agent of sortedAgents as any[]) {
+    for (const agent of sortedAgents) {
       const login = String(agent?.Login || agent?.AgentID || '').trim();
       const agentId = String(agent?.AgentID || login).trim();
       if (!login && !agentId) continue;

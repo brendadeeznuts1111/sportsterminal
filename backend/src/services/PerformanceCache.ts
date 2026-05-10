@@ -23,7 +23,16 @@ export interface PerformanceFetcher {
   (agentId: string): Promise<unknown>;
 }
 
-type RedisClient = InstanceType<typeof Bun.redis.constructor>;
+interface RedisClient {
+  get(key: string): Promise<string | null>;
+  setex(key: string, seconds: number, value: string): Promise<unknown>;
+  publish(channel: string, message: string): Promise<unknown>;
+  del(key: string): Promise<unknown>;
+  close(): void;
+  connect(): void | Promise<void>;
+  onconnect?: () => void;
+  onclose?: () => void;
+}
 
 export class PerformanceCache {
   private redis: RedisClient | null = null;
@@ -152,7 +161,7 @@ export class PerformanceCache {
         console.log('[PerformanceCache] Redis disconnected');
       };
       this.redis.connect();
-    } catch (err) {
+    } catch {
       console.warn('[PerformanceCache] Redis unavailable — running in fallback mode');
       this.redis = null;
       this.connected = false;

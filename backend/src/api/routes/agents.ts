@@ -4,9 +4,10 @@
 import { createRouteHandler, createParamRouteHandler, createMethodRouteHandler } from './base';
 import { corsHeaders, loadLocalAgentHierarchy } from '../helpers';
 import { logRequest } from '../../utils/logger';
+import type { Database } from '../../database';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 import { syncAgentProjectionTables, upsertLiveAgentHierarchy } from '../../services/HierarchyBackfillService';
-import { formatAgentNode, normalizeAgentNumbers } from './agentFormatters';
+import { formatAgentNode, normalizeAgentNumbers, type AgentHierarchyRow, type AgentNode } from './agentFormatters';
 import {
   clearAgentHierarchyTreeCache,
   getAgentHierarchyTree,
@@ -67,8 +68,10 @@ export const registerAgentHierarchyRoutes = createRouteHandler('/api/agents/hier
   return localHierarchy.GENERAL.length > 0 ? localHierarchy : liveHierarchy;
 });
 
-function formatLegacyAgentHierarchyRow(agent: any): any {
-  const rates = agent?.rates || {};
+type LegacyAgentRow = Record<string, unknown>;
+
+function formatLegacyAgentHierarchyRow(agent: AgentNode): LegacyAgentRow {
+  const rates = agent.rates as Record<string, unknown> | undefined || {};
   return normalizeAgentNumbers({
     AgentID: agent?.agentId,
     SeqNumber: agent?.seqNumber,
@@ -150,7 +153,7 @@ export async function registerCachedAgentHierarchyTreeRoutes(
   if ((request.headers.get('accept-encoding') || '').includes('gzip')) {
     headers.set('Content-Encoding', 'gzip');
     headers.set('Vary', 'Accept-Encoding');
-    return new Response(payload.gzip, { headers });
+    return new Response(payload.gzip as BodyInit, { headers });
   }
 
   return new Response(payload.json, { headers });
@@ -213,9 +216,16 @@ export const registerAgentAccessLogRoutes = createRouteHandler('/api/agents/acce
   return scraperManager.getAccessLogs();
 });
 
-async function getAgentProfile(db: any, agentId: string): Promise<any> {
+async function getAgentProfile(db: Database, agentId: string): Promise<{
+  agentId?: string;
+  agent: AgentNode | null;
+  players: Record<string, unknown>[];
+  children: AgentNode[];
+  message?: string;
+  counts?: { children: number; players: number };
+}> {
   await syncAgentProjectionTables(db, 'read_through');
-  const row = await db.get(
+  const row = await db.get<AgentHierarchyRow>(
     `SELECT *
      FROM agent_hierarchy
      WHERE provider = 'buckeye'
@@ -228,14 +238,14 @@ async function getAgentProfile(db: any, agentId: string): Promise<any> {
   }
   const agent = formatAgentNode(row);
   const [children, players] = await Promise.all([
-    db.all(
+    db.all<AgentHierarchyRow>(
       `SELECT *
        FROM agent_hierarchy
        WHERE provider = 'buckeye' AND parent_agent_id = ?
        ORDER BY COALESCE(seq_number, 999999999), login`,
       [agent.agentId]
     ),
-    db.all(
+    db.all<Record<string, unknown>>(
       `SELECT player_id AS playerId, player_login AS login, agent_id AS agentId, agent_login AS agentLogin, linked_accounts_json AS linkedAccountsJson, last_refreshed AS lastRefreshed
        FROM player_agent_map
        WHERE provider = 'buckeye' AND agent_id = ?
@@ -255,7 +265,7 @@ async function getAgentProfile(db: any, agentId: string): Promise<any> {
   };
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+function withTimeout<T extends object>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(fallback), ms);
     promise
@@ -265,7 +275,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
       })
       .catch((err) => {
         clearTimeout(timer);
-        resolve({ ...(fallback as any), error: err?.message || String(err) });
+        resolve({ ...fallback, error: err instanceof Error ? err.message : String(err) });
       });
   });
 }

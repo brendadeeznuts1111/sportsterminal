@@ -38,6 +38,17 @@ export interface DbRunResult {
   changes: number;
 }
 
+type UntypedRow = Record<string, unknown>;
+
+interface PragmaColumnRow {
+  name: string;
+}
+
+interface WagerSequenceRow {
+  max_seq: number | null;
+  row_count: number;
+}
+
 export class AppDatabase {
   private db: SQL;
   private dialect: 'sqlite' | 'postgres';
@@ -75,12 +86,14 @@ export class AppDatabase {
     };
   }
 
-  async get<T = any>(sql: string, params: unknown[] = []): Promise<T | null> {
+  // Database callers can provide a row type; untyped SQL falls back to a broad object row.
+  async get<T = UntypedRow>(sql: string, params: unknown[] = []): Promise<T | null> {
     const rows = await this.db.unsafe(sql, params);
     return (rows[0] ?? null) as T | null;
   }
 
-  async all<T = any>(sql: string, params: unknown[] = []): Promise<T[]> {
+  // Database callers can provide a row type; untyped SQL falls back to a broad object row.
+  async all<T = UntypedRow>(sql: string, params: unknown[] = []): Promise<T[]> {
     return (await this.db.unsafe(sql, params)) as T[];
   }
 
@@ -202,9 +215,9 @@ export async function initDatabase(): Promise<AppDatabase> {
   // Migration: add seq_number to players if missing (pre-2026-05-09 schema)
   try {
     await db.exec('ALTER TABLE players ADD COLUMN seq_number INTEGER');
-  } catch (err: any) {
+  } catch (err) {
     // Only ignore "duplicate column" errors; rethrow everything else
-    if (!err?.message?.toLowerCase()?.includes('duplicate column name')) {
+    if (!errorMessage(err).toLowerCase().includes('duplicate column name')) {
       throw err;
     }
   }
@@ -762,9 +775,9 @@ async function createPostMigrationIndexes(db: AppDatabase): Promise<void> {
 export async function migrateDatabase(db: Database) {
   try {
     // Check if odds_snapshots has spread_home_price
-    const columns = await db.all(`PRAGMA table_info(odds_snapshots)`);
-    const hasSpreadHomePrice = columns.some((c: any) => c.name === 'spread_home_price');
-    const hasSpreadAwayPrice = columns.some((c: any) => c.name === 'spread_away_price');
+    const columns = await db.all<PragmaColumnRow>(`PRAGMA table_info(odds_snapshots)`);
+    const hasSpreadHomePrice = columns.some((c) => c.name === 'spread_home_price');
+    const hasSpreadAwayPrice = columns.some((c) => c.name === 'spread_away_price');
 
     if (!hasSpreadHomePrice) {
       await db.exec(`ALTER TABLE odds_snapshots ADD COLUMN spread_home_price REAL`);
@@ -775,8 +788,8 @@ export async function migrateDatabase(db: Database) {
       console.log('📊 Migration: added spread_away_price to odds_snapshots');
     }
 
-    const wagerColumns = await db.all(`PRAGMA table_info(wagers)`);
-    const wagerColumnNames = new Set(wagerColumns.map((c: any) => c.name));
+    const wagerColumns = await db.all<PragmaColumnRow>(`PRAGMA table_info(wagers)`);
+    const wagerColumnNames = new Set(wagerColumns.map((c) => c.name));
     const wagerAdds: Array<[string, string]> = [
       ['parsed_game', 'TEXT'],
       ['parsed_market', 'TEXT'],
@@ -795,8 +808,8 @@ export async function migrateDatabase(db: Database) {
     }
     await removeLegacyWagerTypeConstraint(db);
 
-    const patternColumns = await db.all(`PRAGMA table_info(detected_patterns)`);
-    const patternColumnNames = new Set(patternColumns.map((c: any) => c.name));
+    const patternColumns = await db.all<PragmaColumnRow>(`PRAGMA table_info(detected_patterns)`);
+    const patternColumnNames = new Set(patternColumns.map((c) => c.name));
     if (!patternColumnNames.has('category')) {
       await db.exec(`ALTER TABLE detected_patterns ADD COLUMN category TEXT NOT NULL DEFAULT 'odds'`);
       console.log('📊 Migration: added category to detected_patterns');
@@ -843,8 +856,8 @@ export async function migrateDatabase(db: Database) {
         status_code INTEGER
       )
     `);
-    const rawLogColumns = await db.all(`PRAGMA table_info(raw_api_logs)`);
-    const rawLogColumnNames = new Set(rawLogColumns.map((c: any) => c.name));
+    const rawLogColumns = await db.all<PragmaColumnRow>(`PRAGMA table_info(raw_api_logs)`);
+    const rawLogColumnNames = new Set(rawLogColumns.map((c) => c.name));
     if (!rawLogColumnNames.has('status_code')) {
       await db.exec(`ALTER TABLE raw_api_logs ADD COLUMN status_code INTEGER`);
       console.log('📊 Migration: added status_code to raw_api_logs');
@@ -893,8 +906,8 @@ export async function migrateDatabase(db: Database) {
         raw_json TEXT NOT NULL DEFAULT '{}'
       )
     `);
-    const masterColumns = await db.all(`PRAGMA table_info(master_snapshots)`);
-    const masterColumnNames = new Set(masterColumns.map((c: any) => c.name));
+    const masterColumns = await db.all<PragmaColumnRow>(`PRAGMA table_info(master_snapshots)`);
+    const masterColumnNames = new Set(masterColumns.map((c) => c.name));
     if (!masterColumnNames.has('open_wager_count')) {
       await db.exec(`ALTER TABLE master_snapshots ADD COLUMN open_wager_count INTEGER DEFAULT 0`);
       console.log('📊 Migration: added open_wager_count to master_snapshots');
@@ -1098,8 +1111,8 @@ export async function migrateDatabase(db: Database) {
       CREATE INDEX IF NOT EXISTS idx_player_notes_customer ON player_notes(customer_id, created_at DESC);
     `);
 
-    const agentColumns = await db.all(`PRAGMA table_info(agents)`);
-    const agentColumnNames = new Set(agentColumns.map((c: any) => c.name));
+    const agentColumns = await db.all<PragmaColumnRow>(`PRAGMA table_info(agents)`);
+    const agentColumnNames = new Set(agentColumns.map((c) => c.name));
     const agentAdds: Array<[string, string]> = [
       ['login', 'TEXT'],
       ['display_name', 'TEXT'],
@@ -1129,8 +1142,8 @@ export async function migrateDatabase(db: Database) {
       }
     }
 
-    const playerColumns = await db.all(`PRAGMA table_info(players)`);
-    const playerColumnNames = new Set(playerColumns.map((c: any) => c.name));
+    const playerColumns = await db.all<PragmaColumnRow>(`PRAGMA table_info(players)`);
+    const playerColumnNames = new Set(playerColumns.map((c) => c.name));
     const playerAdds: Array<[string, string]> = [
       ['provider', "TEXT NOT NULL DEFAULT 'buckeye'"],
       ['login', 'TEXT'],
@@ -1168,7 +1181,7 @@ export async function migrateDatabase(db: Database) {
       CREATE INDEX IF NOT EXISTS idx_agent_perf_agent ON agent_performance_snapshots(agent_id, pulled_at DESC);
       CREATE INDEX IF NOT EXISTS idx_agent_perf_report ON agent_performance_snapshots(report_agent_id, start_date, end_date);
     `);
-    const wagerSeq = await db.get(`SELECT MAX(wager_number) as max_seq, COUNT(*) as row_count FROM wagers`);
+    const wagerSeq = await db.get<WagerSequenceRow>(`SELECT MAX(wager_number) as max_seq, COUNT(*) as row_count FROM wagers`);
     if (wagerSeq?.max_seq) {
       await db.run(
         `INSERT INTO ingestion_checkpoints (provider, entity_type, last_seq, last_pull, metadata)
@@ -1187,9 +1200,9 @@ export async function migrateDatabase(db: Database) {
       );
     }
     await seedBuckeyeSportTypes(db);
-  } catch (err: any) {
+  } catch (err) {
     console.error('📊 Migration error:', err);
-    throw new Error(`Database migration failed: ${err?.message || err}`);
+    throw new Error(`Database migration failed: ${errorMessage(err)}`, { cause: err });
   }
 }
 
@@ -1284,7 +1297,7 @@ export async function seedBuckeyeSportTypes(db: Database): Promise<void> {
 }
 
 // Encryption utilities for storing credentials
-export function encryptCredentials(data: any, key: string): string {
+export function encryptCredentials(data: unknown, key: string): string {
   // Use Bun's native crypto for random IV (faster than Node crypto.randomBytes)
   const iv = new Uint8Array(16);
   crypto.getRandomValues(iv);
@@ -1298,7 +1311,7 @@ export function encryptCredentials(data: any, key: string): string {
   return `${Buffer.from(iv).toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
 }
 
-export function decryptCredentials(encryptedData: string, key: string): any {
+export function decryptCredentials(encryptedData: string, key: string): unknown {
   const [iv, authTag, encrypted] = encryptedData.split(':');
 
   const decipher = crypto.createDecipheriv(
@@ -1313,4 +1326,8 @@ export function decryptCredentials(encryptedData: string, key: string): any {
   decrypted += decipher.final('utf8');
 
   return JSON.parse(decrypted);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

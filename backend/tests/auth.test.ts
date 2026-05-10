@@ -6,6 +6,16 @@ import { z } from 'zod';
 
 const TEST_SECRET = 'test-secret-key-for-jwt-unit-tests-32-chars';
 
+function jwtErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const candidate = error as { code?: unknown; name?: unknown };
+  return typeof candidate.code === 'string'
+    ? candidate.code
+    : typeof candidate.name === 'string'
+      ? candidate.name
+      : undefined;
+}
+
 describe('JWT auth', () => {
   test('creates and verifies a valid token', async () => {
     const token = await createToken('TEST_AGENT', TEST_SECRET);
@@ -23,9 +33,9 @@ describe('JWT auth', () => {
     const token = await createToken('TEST_AGENT', TEST_SECRET);
     try {
       await verifyToken(token, 'wrong-secret-key-different-value!!');
-      expect('should have thrown').toBe(false);
-    } catch (err: any) {
-      expect(err.code || err.name).toBeDefined();
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(jwtErrorCode(err)).toBeDefined();
     }
   });
 
@@ -41,18 +51,18 @@ describe('JWT auth', () => {
 
     try {
       await verifyToken(expired, TEST_SECRET);
-      expect('should have thrown').toBe(false);
-    } catch (err: any) {
-      expect(err.code).toBe('ERR_JWT_EXPIRED');
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(jwtErrorCode(err)).toBe('ERR_JWT_EXPIRED');
     }
   });
 
   test('rejects malformed token', async () => {
     try {
       await verifyToken('not.a.jwt.token', TEST_SECRET);
-      expect('should have thrown').toBe(false);
-    } catch (err: any) {
-      expect(err.code || err.name).toBeDefined();
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(jwtErrorCode(err)).toBeDefined();
     }
   });
 
@@ -74,6 +84,12 @@ describe('requireAuth middleware', () => {
   test('allows /api/agents without token', async () => {
     const req = new Request('http://localhost/api/agents');
     const result = await requireAuth(req, '/api/agents');
+    expect(result).toBeNull();
+  });
+
+  test('allows public v1 compatibility paths without token', async () => {
+    const req = new Request('http://localhost/api/v1/players/search?q=A17566');
+    const result = await requireAuth(req, '/api/v1/players/search');
     expect(result).toBeNull();
   });
 

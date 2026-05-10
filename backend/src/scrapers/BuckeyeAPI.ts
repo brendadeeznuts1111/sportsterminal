@@ -460,7 +460,11 @@ export class BuckeyeAPI {
     this.log('Token injected via setToken()');
   }
 
-  private log(...args: any[]) {
+  getAgentId(): string {
+    return this.agentId;
+  }
+
+  private log(...args: unknown[]) {
     if (this.debugMode) console.log('[BuckeyeAPI]', ...args);
   }
 
@@ -575,8 +579,8 @@ export class BuckeyeAPI {
       });
 
       return response.ok;
-    } catch (err: any) {
-      console.warn('[BuckeyeAPI] testAccess failed:', err?.message || err);
+    } catch (err) {
+      console.warn('[BuckeyeAPI] testAccess failed:', err instanceof Error ? err.message : err);
       return false;
     }
   }
@@ -621,8 +625,8 @@ export class BuckeyeAPI {
       throw new Error(`getBetTicker failed: ${response.status} ${response.statusText} - ${text.substring(0, 200)}`);
     }
 
-    const data = await response.json();
-    const list: any[] = data?.LIST || [];
+    const data = await response.json() as { LIST?: BuckeyeWagerRaw[] };
+    const list = Array.isArray(data.LIST) ? data.LIST : [];
 
     this.log('getBetTicker returned', list.length, 'wagers');
 
@@ -1034,6 +1038,13 @@ export class BuckeyeAPI {
 
   async getNewEmailsCount(): Promise<unknown> {
     return this.postManagerOperation('getNewEmailsCount', { acc: this.agentId });
+  }
+
+  async callManagerOperation(
+    operation: BuckeyeManagerOperation,
+    extra: Record<string, string> = {}
+  ): Promise<unknown> {
+    return this.postManagerOperation(operation, extra);
   }
 
   async getCustomerDeposits(customerId: string, options: {
@@ -1497,7 +1508,7 @@ export class BuckeyeAPI {
         continue;
       }
 
-      let data: any = {};
+      let data: unknown;
       try {
         data = JSON.parse(text);
       } catch {
@@ -1505,7 +1516,8 @@ export class BuckeyeAPI {
         continue;
       }
 
-      const list = Array.isArray(data?.LIST) ? data.LIST : [];
+      const payload = asRecord(data);
+      const list = Array.isArray(payload?.LIST) ? payload.LIST.filter(isPlainRecord) : [];
       return list.map(normalizeWebLogRow);
     }
 
@@ -1737,9 +1749,10 @@ const SENSITIVE_ACCOUNT_FIELDS = new Set([
 const LIMIT_FIELD_PATTERN = /(Limit|Max|Minimum|Balance|Payout|Wager|Credit)/i;
 const FEATURE_FIELD_PATTERN = /^(Allow|Deny|Suspend|Can|Use|ReadOnly|PlaceWager|Always|Enforce|Display|Mute|Force|No|Notrue|ZeroBalance|FreePlay|CreditAcct)/;
 
-export function buildAccountInfoResult(agentId: string, data: any): BuckeyeAccountInfoResult {
-  const accountInfo = data?.accountInfo && typeof data.accountInfo === 'object'
-    ? data.accountInfo as Record<string, unknown>
+export function buildAccountInfoResult(agentId: string, data: unknown): BuckeyeAccountInfoResult {
+  const payload = asRecord(data);
+  const accountInfo = payload?.accountInfo && typeof payload.accountInfo === 'object'
+    ? payload.accountInfo as Record<string, unknown>
     : {};
   const { sanitized, redactedFields } = sanitizeAccountInfo(accountInfo);
 
@@ -1748,32 +1761,36 @@ export function buildAccountInfoResult(agentId: string, data: any): BuckeyeAccou
     agentId,
     parsed: parseBuckeyeAccountInfo(accountInfo),
     accountInfo: sanitized,
-    preferenceDate: Array.isArray(data?.preferenceDate) ? data.preferenceDate : [],
-    site: Array.isArray(data?.site) ? data.site : [],
-    server: data?.SERVER || null,
+    preferenceDate: Array.isArray(payload?.preferenceDate) ? payload.preferenceDate : [],
+    site: Array.isArray(payload?.site) ? payload.site : [],
+    server: payload?.SERVER || null,
     redactedFields,
   };
 }
 
-export function parseWeeklyFigureSummary(data: any): BuckeyeWeeklyFigureResult['parsed'] {
-  const summary = Array.isArray(data?.LIST?.ARRAY) ? data.LIST.ARRAY[0] || {} : {};
+export function parseWeeklyFigureSummary(data: unknown): BuckeyeWeeklyFigureResult['parsed'] {
+  const payload = asRecord(data);
+  const list = asRecord(payload?.LIST);
+  const summary = Array.isArray(list?.ARRAY) && isPlainRecord(list.ARRAY[0]) ? list.ARRAY[0] : {};
   return {
     thisWeek: numberValue(summary.ThisWeek),
     active: numberValue(summary.Active),
     today: numberValue(summary.Today),
-    info: stringValue(data?.LIST?.INFO),
+    info: stringValue(list?.INFO),
   };
 }
 
-export function parseAgentPerformanceReport(data: any): BuckeyeAgentPerformanceResult['parsed'] {
-  const rawRows = Array.isArray(data?.INFO?.LIST)
-    ? data.INFO.LIST
-    : Array.isArray(data?.LIST)
-      ? data.LIST
+export function parseAgentPerformanceReport(data: unknown): BuckeyeAgentPerformanceResult['parsed'] {
+  const payload = asRecord(data);
+  const info = asRecord(payload?.INFO);
+  const rawRows = Array.isArray(info?.LIST)
+    ? info.LIST
+    : Array.isArray(payload?.LIST)
+      ? payload.LIST
       : [];
-  const rows = rawRows.map(normalizeAgentPerformanceRow);
+  const rows: BuckeyeAgentPerformanceRow[] = rawRows.map(normalizeAgentPerformanceRow);
   const totals = rows.reduce(
-    (acc, row) => {
+    (acc: Omit<BuckeyeAgentPerformanceRow, 'customerId' | 'agentId' | 'login'>, row: BuckeyeAgentPerformanceRow) => {
       acc.wagerCount += row.wagerCount;
       acc.risk += row.risk;
       acc.toWin += row.toWin;
@@ -1798,7 +1815,7 @@ export function parseAgentPerformanceReport(data: any): BuckeyeAgentPerformanceR
 }
 
 export function parsePlayerPerformanceReport(
-  data: any,
+  data: unknown,
   context: { acc: string; agentID: string }
 ): BuckeyeAgentPerformanceResult['parsed'] {
   const rawRows = extractBuckeyeRows(data);
@@ -1909,10 +1926,12 @@ function sanitizeAgentPerformancePayload(data: unknown): {
   const clone = Array.isArray(data)
     ? [...data]
     : { ...(data as Record<string, unknown>) };
-  const list = Array.isArray((clone as any)?.INFO?.LIST)
-    ? (clone as any).INFO.LIST
-    : Array.isArray((clone as any)?.LIST)
-      ? (clone as any).LIST
+  const cloneRecord = asRecord(clone);
+  const cloneInfo = asRecord(cloneRecord?.INFO);
+  const list = Array.isArray(cloneInfo?.LIST)
+    ? cloneInfo.LIST
+    : Array.isArray(cloneRecord?.LIST)
+      ? cloneRecord.LIST
       : null;
 
   if (!list) {
@@ -1932,10 +1951,10 @@ function sanitizeAgentPerformancePayload(data: unknown): {
     return next;
   });
 
-  if (Array.isArray((clone as any)?.INFO?.LIST)) {
-    (clone as any).INFO = { ...(clone as any).INFO, LIST: sanitizedRows };
-  } else if (Array.isArray((clone as any)?.LIST)) {
-    (clone as any).LIST = sanitizedRows;
+  if (cloneRecord && Array.isArray(cloneInfo?.LIST)) {
+    cloneRecord.INFO = { ...cloneInfo, LIST: sanitizedRows };
+  } else if (cloneRecord && Array.isArray(cloneRecord.LIST)) {
+    cloneRecord.LIST = sanitizedRows;
   }
 
   return { sanitized: clone, redactedFields };
@@ -1986,18 +2005,21 @@ function numberValue(value: unknown): number {
 }
 
 function extractBuckeyeRows(data: unknown): Record<string, unknown>[] {
+  const payload = asRecord(data);
+  const info = asRecord(payload?.INFO);
+  const list = asRecord(payload?.LIST);
   const candidates = [
     data,
-    (data as any)?.INFO?.LIST,
-    (data as any)?.LIST?.ARRAY,
-    (data as any)?.LIST,
-    (data as any)?.data,
-    (data as any)?.Data,
-    (data as any)?.results,
-    (data as any)?.Rows,
-    (data as any)?.rows,
-    (data as any)?.transactions,
-    (data as any)?.deposits,
+    info?.LIST,
+    list?.ARRAY,
+    payload?.LIST,
+    payload?.data,
+    payload?.Data,
+    payload?.results,
+    payload?.Rows,
+    payload?.rows,
+    payload?.transactions,
+    payload?.deposits,
   ];
 
   for (const candidate of candidates) {
@@ -2011,16 +2033,17 @@ function extractBuckeyeRows(data: unknown): Record<string, unknown>[] {
 }
 
 function objectPayload(data: unknown): Record<string, unknown> | null {
+  const payload = asRecord(data);
   const candidates = [
-    (data as any)?.accountInfo,
-    (data as any)?.customerInfo,
-    (data as any)?.customer,
-    (data as any)?.profile,
-    (data as any)?.INFO,
+    payload?.accountInfo,
+    payload?.customerInfo,
+    payload?.customer,
+    payload?.profile,
+    payload?.INFO,
     data,
   ];
   for (const candidate of candidates) {
-    if (isPlainRecord(candidate) && !Array.isArray((candidate as any).LIST)) {
+    if (isPlainRecord(candidate) && !Array.isArray(candidate.LIST)) {
       return candidate as Record<string, unknown>;
     }
   }
@@ -2029,6 +2052,10 @@ function objectPayload(data: unknown): Record<string, unknown> | null {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return isPlainRecord(value) ? value : null;
 }
 
 function payloadLooksUseful(data: unknown): boolean {
@@ -2405,7 +2432,7 @@ function validateReportDateRange(start: string, end: string): void {
   }
 }
 
-function normalizeWebLogRow(raw: any): BuckeyeWebLogRow {
+function normalizeWebLogRow(raw: Record<string, unknown>): BuckeyeWebLogRow {
   return {
     LoginID: String(raw.LoginID || raw.Login || raw.CustomerID || '').trim(),
     IPAddress: String(raw.IPAddress || raw.IP || raw.ip || '').trim(),

@@ -14,13 +14,49 @@ export interface HierarchyBackfillResult {
 
 const PROVIDER = 'buckeye';
 
+interface AgentHierarchySourceRow {
+  AgentID?: unknown;
+  Login?: unknown;
+  ParentAgentID?: unknown;
+  SeqNumber?: unknown;
+  Level?: unknown;
+  AgentType?: unknown;
+  ChildCount?: unknown;
+  PlayerCount?: unknown;
+  HeadCountRateM?: unknown;
+  InetHeadCountRateM?: unknown;
+  CasinoHeadCountRateM?: unknown;
+  LiveBettingRateM?: unknown;
+  LiveBetting2RateM?: unknown;
+  LiveCasinoRateM?: unknown;
+  PropBuilderRateM?: unknown;
+  FlashBetsRate?: unknown;
+  ExtPropsRate?: unknown;
+  CrashRate?: unknown;
+  FantasyRate?: unknown;
+  AmigoTechRate?: unknown;
+}
+
+interface LiveHierarchyPayload {
+  GENERAL?: AgentHierarchySourceRow[];
+  PLAYERS?: LivePlayerSourceRow[];
+}
+
+interface LivePlayerSourceRow {
+  Login?: unknown;
+  customerID?: unknown;
+  Agent?: unknown;
+  NameFirst?: unknown;
+  SeqNumber?: unknown;
+}
+
 export async function backfillAgentsAndPlayers(db: Database): Promise<HierarchyBackfillResult> {
   const parsed = await parseAgentHierarchyAndPlayers();
   const agents = parsed.agents;
   const players = parsed.players;
   const agentLoginToId = new Map<string, string>();
   const agentIds = new Set<string>();
-  for (const agent of [...agents].sort((a: any, b: any) => (Number(a?.SeqNumber) || 0) - (Number(b?.SeqNumber) || 0))) {
+  for (const agent of [...agents].sort((a, b) => (Number(a?.SeqNumber) || 0) - (Number(b?.SeqNumber) || 0))) {
     const login = String(agent.Login || agent.AgentID || '').trim();
     const agentId = String(agent.AgentID || login).trim();
     if (agentId) {
@@ -138,7 +174,11 @@ export async function backfillAgentsAndPlayers(db: Database): Promise<HierarchyB
   }
 }
 
-export async function upsertLiveAgentHierarchy(db: Database, payload: any, source = 'buckeye_api'): Promise<HierarchyBackfillResult> {
+export async function upsertLiveAgentHierarchy(
+  db: Database,
+  payload: LiveHierarchyPayload,
+  source = 'buckeye_api'
+): Promise<HierarchyBackfillResult> {
   const agents = deriveAgentParentLinks(Array.isArray(payload?.GENERAL) ? payload.GENERAL : []);
   const players = Array.isArray(payload?.PLAYERS) ? payload.PLAYERS : [];
   const agentLoginToId = new Map<string, string>();
@@ -235,11 +275,11 @@ export async function upsertLiveAgentHierarchy(db: Database, payload: any, sourc
   }
 }
 
-function deriveAgentParentLinks(rawAgents: any[]): any[] {
-  const sorted = [...rawAgents].sort((a: any, b: any) => (Number(a?.SeqNumber) || 0) - (Number(b?.SeqNumber) || 0));
+function deriveAgentParentLinks(rawAgents: AgentHierarchySourceRow[]): AgentHierarchySourceRow[] {
+  const sorted = [...rawAgents].sort((a, b) => (Number(a?.SeqNumber) || 0) - (Number(b?.SeqNumber) || 0));
   const stack: Array<{ level: number; agentId: string }> = [];
   const childCounts = new Map<string, number>();
-  const enriched = sorted.map((agent: any) => {
+  const enriched = sorted.map((agent) => {
     const login = String(agent?.Login || agent?.AgentID || '').trim();
     const agentId = String(agent?.AgentID || login).trim();
     const level = Number(agent?.Level) || 1;
@@ -333,7 +373,7 @@ async function replaceCurrentAgentIdTempTable(db: Database, agentIds: Set<string
   }
 }
 
-async function upsertAgent(db: Database, agent: any, agentId: string, login: string): Promise<void> {
+async function upsertAgent(db: Database, agent: AgentHierarchySourceRow, agentId: string, login: string): Promise<void> {
   await db.run(
     `INSERT INTO agents
       (id, provider, login, display_name, name, parent_agent_id, level, tier, child_count, player_count,
@@ -433,7 +473,7 @@ async function removeAgentsOutsideCurrentSet(db: Database): Promise<void> {
   );
 }
 
-function normalizeRawAgent(agent: any, agentId: string, login: string): Record<string, unknown> {
+function normalizeRawAgent(agent: AgentHierarchySourceRow, agentId: string, login: string): Record<string, unknown> {
   return {
     AgentID: agentId,
     SeqNumber: agent.SeqNumber,

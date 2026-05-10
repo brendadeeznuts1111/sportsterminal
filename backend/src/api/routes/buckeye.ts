@@ -2,7 +2,7 @@
  * Buckeye-specific routes: UI config, account info, weekly figures, connect test
  */
 import { clampInt, readJsonBody, handleAsync, corsHeaders } from '../helpers';
-import { BuckeyeAPI, type BuckeyeWebLogOptions } from '../../scrapers/BuckeyeAPI';
+import { BuckeyeAPI, type BuckeyeWebLogType } from '../../scrapers/BuckeyeAPI';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 import type { BuckeyeSecretStatus, BunSecretVault } from '../../services/BunSecretVault';
 import { createToken } from '../../auth/jwt';
@@ -10,12 +10,35 @@ import { getEnv } from '../../config/env';
 import { z } from 'zod';
 import { validateQuery, formatZodError, webLogQuerySchema, connectBodySchema } from '../middleware/validate';
 
+type ResumableBuckeyeAPI = BuckeyeAPI & {
+  token: string;
+  loggedIn: boolean;
+};
+
+type ProxyOperationParams = Record<string, string | number | boolean | null | undefined>;
+type WebLogQuery = z.infer<typeof webLogQuerySchema>;
+type ConnectBody = z.infer<typeof connectBodySchema>;
+
+type BuckeyeProxyApi = BuckeyeAPI & {
+  getBetTickerConfig?: () => Promise<unknown>;
+  getListAgentsByAgent?: () => Promise<unknown>;
+  getListVip?: () => Promise<unknown>;
+  getInfoPlayer?: (playerLogin: string) => Promise<unknown>;
+  getAgentManagement?: () => Promise<unknown>;
+  getReportPlayerAnalysis?: (playerLogin: string) => Promise<unknown>;
+  getEnterTransactions?: (playerLogin: string) => Promise<unknown>;
+  getMail?: () => Promise<unknown>;
+  getCryptoInfo?: () => Promise<unknown>;
+  getCryptoAvailable?: () => Promise<unknown>;
+  getConfigWebReportsCustomerAdmin?: () => Promise<unknown>;
+};
+
 export function registerBuckeyeRoutes(
   url: URL,
   request: Request,
   scraperManager: BuckeyeScraperManager,
   secretVault?: BunSecretVault
-): Response | null {
+): Promise<Response> | Response | null {
   if (url.pathname === '/api/buckeye/vault-status') {
     if (request.method === 'GET') {
       return handleAsync(async () => {
@@ -99,8 +122,7 @@ export function registerBuckeyeRoutes(
         );
 
         if (body.token) {
-          (api as any).token = body.token;
-          (api as any).loggedIn = true;
+          resumeBuckeyeSession(api, String(body.token));
         } else {
           const ok = await api.login();
           if (!ok) {
@@ -137,8 +159,7 @@ export function registerBuckeyeRoutes(
         );
 
         if (body.token) {
-          (api as any).token = body.token;
-          (api as any).loggedIn = true;
+          resumeBuckeyeSession(api, String(body.token));
         } else {
           const ok = await api.login();
           if (!ok) {
@@ -177,8 +198,7 @@ export function registerBuckeyeRoutes(
         );
 
         if (body.token) {
-          (api as any).token = body.token;
-          (api as any).loggedIn = true;
+          resumeBuckeyeSession(api, String(body.token));
         } else {
           const ok = await api.login();
           if (!ok) {
@@ -268,8 +288,7 @@ export function registerBuckeyeRoutes(
         );
 
         if (body.token) {
-          (api as any).token = body.token;
-          (api as any).loggedIn = true;
+          resumeBuckeyeSession(api, String(body.token));
         } else {
           const ok = await api.login();
           if (!ok) {
@@ -320,8 +339,7 @@ export function registerBuckeyeRoutes(
         );
 
         if (body.token) {
-          (api as any).token = body.token;
-          (api as any).loggedIn = true;
+          resumeBuckeyeSession(api, String(body.token));
         } else {
           const ok = await api.login();
           if (!ok) {
@@ -402,10 +420,10 @@ export function registerBuckeyeRoutes(
 
   // Buckeye web-log live proxy (getWebLog with actions parameter)
   if (url.pathname === '/api/buckeye/web-log' && request.method === 'GET') {
-    let params;
+    let params: WebLogQuery;
     try {
       params = validateQuery(webLogQuerySchema, url);
-    } catch (err: any) {
+    } catch (err) {
       if (err instanceof z.ZodError) {
         return new Response(JSON.stringify(formatZodError(err)), { status: 400, headers: corsHeaders });
       }
@@ -435,10 +453,10 @@ export function registerBuckeyeRoutes(
   if (url.pathname === '/api/connect' && request.method === 'POST') {
     return handleAsync(async () => {
       const body = await readJsonBody(request);
-      let validated;
+      let validated: ConnectBody;
       try {
         validated = connectBodySchema.parse(body);
-      } catch (err: any) {
+      } catch (err) {
         if (err instanceof z.ZodError) {
           return new Response(JSON.stringify(formatZodError(err)), { status: 400, headers: corsHeaders });
         }
@@ -479,9 +497,229 @@ export function registerBuckeyeRoutes(
     }, corsHeaders);
   }
 
+  // ========== PROXY-COMPATIBLE ROUTES (/api/proxy/*) ==========
+  // These provide unified access via the backend server
+  if (url.pathname.startsWith('/api/proxy/')) {
+    return handleProxyCompatibleRoute(url, request, scraperManager, secretVault, corsHeaders);
+  }
+
   return null;
 }
 
+function handleProxyCompatibleRoute(
+  url: URL,
+  request: Request,
+  scraperManager: BuckeyeScraperManager,
+  secretVault: BunSecretVault | undefined,
+  corsHeaders: Record<string, string>
+): Response | Promise<Response> {
+  const path = url.pathname.replace('/api/proxy/', '');
+
+  // Get token from header or query
+  const authHeader = request.headers.get('Authorization') || '';
+  const token = authHeader.replace('Bearer ', '') || url.searchParams.get('token') || '';
+  const cfClearance = request.headers.get('X-CF-Clearance') || url.searchParams.get('cf_clearance') || '';
+  const customerID = url.searchParams.get('customerID') || '';
+
+  // Helper to get authenticated API instance
+  async function getAuthenticatedApi(agentId?: string): Promise<BuckeyeProxyApi> {
+    const targetAgent = agentId || customerID;
+    if (!targetAgent) {
+      throw new Error('customerID required');
+    }
+
+    let apiToken = token;
+    let apiCf = cfClearance;
+
+    // Try to get from vault if not provided
+    if ((!apiToken || !apiCf) && secretVault) {
+      const secrets = await secretVault.getBuckeyeSecrets(targetAgent);
+      if (secrets) {
+        apiToken = secrets.token || apiToken;
+        apiCf = secrets.cfCookie || apiCf;
+      }
+    }
+
+    const api = new BuckeyeAPI({
+      agentId: targetAgent,
+      password: '',
+      cfCookie: apiCf,
+      baseUrl: getEnv().BUCKEYE_BASE_URL,
+    }, false);
+
+    if (apiToken) {
+      resumeBuckeyeSession(api, apiToken);
+    }
+
+    return api as BuckeyeProxyApi;
+  }
+
+  // Route based on path
+  if (path === 'status' && request.method === 'GET') {
+    return new Response(JSON.stringify({
+      service: 'Buckeye Proxy (via Backend)',
+      version: '1.0',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+    }), { headers: corsHeaders });
+  }
+
+  if (path === 'endpoints' && request.method === 'GET') {
+    return new Response(JSON.stringify({
+      service: 'Buckeye Proxy via Backend',
+      version: '1.0',
+      endpoints: {
+        proxy: {
+          '/api/proxy/status': 'GET — Service status',
+          '/api/proxy/endpoints': 'GET — This docs',
+          '/api/proxy/tokens': 'GET — Token status for customerID',
+        },
+        manager: {
+          '/api/proxy/Manager/getBetTicker': 'POST — Live wager feed (141+ wagers)',
+          '/api/proxy/Manager/getAccountInfoOwner': 'POST — Account info & balance',
+          '/api/proxy/Manager/getAgentPerformance': 'POST — Performance report with date range',
+          '/api/proxy/Manager/getListAgenstByAgent': 'POST — Player list under agent',
+          '/api/proxy/Manager/getListVip': 'POST — VIP player list',
+          '/api/proxy/Manager/getAgentManagement': 'POST — Full agent hierarchy (2288+)',
+          '/api/proxy/Manager/getWebLog': 'POST — Web access logs',
+          '/api/proxy/Manager/getSportsType': 'POST — Available sports (19)',
+          '/api/proxy/Manager/getAuthorizations': 'POST — Agent permissions',
+          '/api/proxy/Manager/getConfigWebReports': 'POST — Report config',
+          '/api/proxy/Manager/getMessage': 'POST — Agent messages',
+          '/api/proxy/Manager/getNewEmailsCount': 'POST — Unread email count',
+          '/api/proxy/Manager/getCryptoInfo': 'POST — Crypto cashier config',
+          '/api/proxy/Manager/getCryptoAvailable': 'POST — Available crypto currencies',
+          '/api/proxy/Manager/getBetTickerConfig': 'POST — Ticker display settings',
+          '/api/proxy/Manager/getInfoPlayer': 'POST — Player info lookup',
+          '/api/proxy/Manager/getReportPlayerAnalysis': 'POST — Player betting analysis',
+          '/api/proxy/Manager/getEnterTransactions': 'POST — Player transaction history',
+          '/api/proxy/Manager/getTeaserProfile': 'POST — Teaser profile settings',
+          '/api/proxy/Manager/getConfigWebReportsCustomerAdmin': 'POST — Admin reports config',
+        },
+        system: {
+          '/api/proxy/System/renewToken': 'POST — Renew JWT token',
+        },
+      },
+    }), { headers: corsHeaders });
+  }
+
+  if (path === 'logs' && request.method === 'GET') {
+    return new Response(JSON.stringify({ logs: [] }), { headers: corsHeaders });
+  }
+
+  // Manager/* endpoints (proxy style)
+  if (path.startsWith('Manager/') && request.method === 'POST') {
+    return handleAsync(async () => {
+      const body = await readJsonBody(request);
+      const operation = body.operation || path.replace('Manager/', '');
+      const api = await getAuthenticatedApi(body.agentID || body.customerID);
+
+      const result = await callManagerOperation(api, operation, body);
+      return { source: 'live', data: result };
+    }, corsHeaders);
+  }
+
+  // System/* endpoints
+  if (path.startsWith('System/') && request.method === 'POST') {
+    return handleAsync(async () => {
+      const body = await readJsonBody(request);
+      const operation = body.operation || path.replace('System/', '');
+      const api = await getAuthenticatedApi(body.agentID || body.customerID);
+
+      if (operation === 'renewToken') {
+        const result = await api.renewToken();
+        return { success: true, data: result };
+      }
+      throw new Error(`Unknown System operation: ${operation}`);
+    }, corsHeaders);
+  }
+
+  return new Response(JSON.stringify({ error: 'Unknown proxy route' }), { status: 404, headers: corsHeaders });
+}
+
+async function callManagerOperation(
+  api: BuckeyeProxyApi,
+  operation: string,
+  params: ProxyOperationParams
+): Promise<unknown> {
+  const agentId = api.getAgentId();
+  const baseParams = { agentID: agentId, agentOwner: agentId, agentSite: '1' };
+
+  const opMap: Record<string, Record<string, string>> = {
+    getBetTicker: { operation: 'getBetTicker', ...baseParams },
+    getBetTickerConfig: { operation: 'getBetTickerConfig', ...baseParams },
+    getAccountInfoOwner: { operation: 'getAccountInfoOwner', ...baseParams },
+    getAuthorizations: { operation: 'getAuthorizations', ...baseParams },
+    getListAgenstByAgent: { operation: 'getListAgenstByAgent', ...baseParams },
+    getListVip: { operation: 'getListVip', ...baseParams },
+    getInfoPlayer: { operation: 'getInfoPlayer', playerLogin: String(params.playerLogin || ''), ...baseParams },
+    getAgentManagement: { operation: 'getAgentManagement', ...baseParams },
+    getConfigWebReports: { operation: 'getConfigWebReports', ...baseParams },
+    getConfigWebReportsCustomerAdmin: { operation: 'getConfigWebReportsCustomerAdmin', ...baseParams },
+    getWeeklyFigureByAgentLite: { operation: 'getWeeklyFigureByAgentLite', ...baseParams },
+    getAgentPerformance: { operation: 'getAgentPerformance', ...baseParams, ...getPerformanceParams(params) },
+    getReportPlayerAnalysis: { operation: 'getReportPlayerAnalysis', playerLogin: String(params.playerLogin || ''), ...baseParams },
+    getEnterTransactions: { operation: 'getEnterTransactions', playerLogin: String(params.playerLogin || ''), ...baseParams },
+    getSportsType: { operation: 'getSportsType', ...baseParams },
+    getWebLog: { operation: 'getWebLog', ...baseParams, ...getWebLogParams(params) },
+    getMessage: { operation: 'getMessage', ...baseParams },
+    getMail: { operation: 'getMail', ...baseParams },
+    getNewEmailsCount: { operation: 'getNewEmailsCount', ...baseParams },
+    getCryptoInfo: { operation: 'getCryptoInfo', ...baseParams },
+    getCryptoAvailable: { operation: 'getCryptoAvailable', ...baseParams },
+    getTeaserProfile: { operation: 'getTeaserProfile', customerID: String(params.customerID || params.playerLogin || ''), ...baseParams },
+  };
+
+  const extra = opMap[operation];
+  if (!extra) {
+    throw new Error(`Unknown operation: ${operation}`);
+  }
+
+  return api.callManagerOperation(operation, extra);
+}
+
+function getPerformanceParams(params: ProxyOperationParams): Record<string, string> {
+  const result: Record<string, string> = {};
+  const start = stringParam(params, 'start', 'startDate') || '05/01/2026';
+  const end = stringParam(params, 'end', 'endDate') || '05/10/2026';
+  const type = stringParam(params, 'type') || 'CP';
+  const freePlay = stringParam(params, 'freePlay') || 'Y';
+  const store = stringParam(params, 'store', 'agentOwner');
+  if (store) result.store = store;
+  const sport = stringParam(params, 'sport');
+  if (sport) result.sport = sport;
+  const subsport = stringParam(params, 'subsport');
+  if (subsport) result.subsport = subsport;
+  result.period = stringParam(params, 'period') || '-1';
+  const wagerType = stringParam(params, 'wagerType');
+  if (wagerType) result.wagerType = wagerType;
+  const betType = stringParam(params, 'betType');
+  if (betType) result.betType = betType;
+  result.tipo = stringParam(params, 'tipo', 'activity') || '-1';
+  result.debug = stringParam(params, 'debug') || '0';
+  const group = stringParam(params, 'group');
+  if (group) result.group = group;
+  result.start = start;
+  result.end = end;
+  result.type = type;
+  result.freePlay = freePlay;
+  return result;
+}
+
+function getWebLogParams(params: ProxyOperationParams): Record<string, string> {
+  const result: Record<string, string> = {};
+  const customerID = stringParam(params, 'customerID');
+  if (customerID) result.customerID = customerID;
+  const start = stringParam(params, 'start', 'startDate');
+  if (start) result.start = start;
+  const end = stringParam(params, 'end', 'endDate');
+  if (end) result.end = end;
+  result.type = webLogTypeParam(params.type);
+  result.actions = stringParam(params, 'actions') || 'ALL';
+  const ip = stringParam(params, 'ip');
+  if (ip) result.ip = ip;
+  return result;
+}
 function decorateVaultStatus(status: BuckeyeSecretStatus, scraperManager: BuckeyeScraperManager): BuckeyeSecretStatus & {
   active: boolean;
   lastError?: string;
@@ -490,6 +728,21 @@ function decorateVaultStatus(status: BuckeyeSecretStatus, scraperManager: Buckey
   const active = agentId ? scraperManager.isAgentActive(agentId) : false;
   const lastError = agentId ? scraperManager.getAgentLastError(agentId) : undefined;
   return lastError ? { ...status, active, lastError } : { ...status, active };
+}
+
+function resumeBuckeyeSession(api: BuckeyeAPI, token: string): void {
+  const resumable = api as ResumableBuckeyeAPI;
+  resumable.token = token;
+  resumable.loggedIn = true;
+}
+
+function stringParam(params: ProxyOperationParams, key: string, fallbackKey?: string): string {
+  const value = params[key] ?? (fallbackKey ? params[fallbackKey] : undefined);
+  return value === undefined || value === null ? '' : String(value);
+}
+
+function webLogTypeParam(value: ProxyOperationParams[string]): BuckeyeWebLogType {
+  return value === 'B' || value === 'C' || value === 'I' ? value : 'A';
 }
 
 const BUCKEYE_AGENT_PERFORMANCE_OPTIONS = {

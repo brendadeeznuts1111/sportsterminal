@@ -23,6 +23,8 @@ This guide keeps the Sports Terminal repo from drifting as Buckeye ingestion, pa
 |------|----------|------|
 | HTTP server, static frontend, WS upgrade | `backend/src/index.ts` | Keep boot orchestration here, not feature logic |
 | Environment validation | `backend/src/config/env.ts` | Add every new env var here and in `README.md` |
+| Standalone enhanced proxy config | `config.ts` | Add proxy-only feature flags here and in `docs/DATA_DICTIONARY.md` |
+| Standalone enhanced proxy entrypoint | `enhanced-proxy.ts`, `proxy-enhanced.ts` | Keep isolated proxy diagnostics here, separate from main backend ingestion |
 | Database wrapper and schema | `backend/src/database.ts` | Keep table creation and wrapper compatibility here |
 | Feature routes | `backend/src/api/routes/` | Route code should validate request/response shape and delegate logic |
 | Buckeye HTTP client | `backend/src/scrapers/BuckeyeAPI.ts` | Upstream request building, parsing, normalization |

@@ -4,6 +4,43 @@
 import { corsHeaders, handleAsync } from '../helpers';
 import { logRequest, logWarn } from '../../utils/logger';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
+import type { Database } from '../../database';
+
+interface HealthIssue {
+  severity: 'warning' | 'critical';
+  category: string;
+  title: string;
+  detail: string;
+  source: string;
+  count: number;
+  lastSeen: string | null;
+  action: string;
+}
+
+type AuthBucket = HealthIssue & { sourceKeys: Set<string> };
+
+interface HealthSqlRow {
+  [key: string]: unknown;
+}
+
+interface FlowSummary {
+  name: string;
+  status: 'live' | 'empty';
+  rowCount: number;
+  lastSeen: unknown;
+  [key: string]: unknown;
+}
+
+interface DataFlowSummary {
+  liveWagers: FlowSummary;
+  wagerArchive: FlowSummary;
+  playerTransactions: FlowSummary;
+  agentHierarchy: FlowSummary;
+  playerAgentMap: FlowSummary;
+  patterns: FlowSummary;
+  exposureInputs: FlowSummary;
+  crossReferences: FlowSummary;
+}
 
 export function registerHealthRoutes(
   url: URL,
@@ -38,10 +75,10 @@ export function registerHealthRoutes(
   return null;
 }
 
-async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise<any> {
+async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise<Record<string, unknown>> {
   const db = scraperManager.getDatabase();
   const metrics = scraperManager.getMetrics();
-  const issues: any[] = [];
+  const issues: HealthIssue[] = [];
 
   for (const agent of metrics.agents || []) {
     if (Number(agent.errorCount || 0) > 0) {
@@ -101,7 +138,7 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
       detail: `${row.count} ${upstreamCategory} call${Number(row.count) === 1 ? '' : 's'} in the last 24 hours${row.agent_id ? ` for ${row.agent_id}` : ''}.`,
       source: 'raw_api_logs',
       count: Number(row.count || 0),
-      lastSeen: row.last_seen || null,
+      lastSeen: stringOrNull(row.last_seen),
       action: statusCode === 401 || statusCode === 403
         ? 'Refresh Buckeye credentials/Cloudflare cookie, then verify the agent returns to authenticated state.'
         : statusCode === 504
@@ -117,10 +154,10 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
        GROUP BY source_key, agent_id
        ORDER BY count DESC, last_seen DESC
        LIMIT 8`, []);
-  const authBuckets = new Map<string, any>();
+  const authBuckets = new Map<string, AuthBucket>();
   for (const row of playerSourceErrors) {
     if (isBuckeyeAuthFailure(row.last_error)) {
-      const key = row.agent_id || 'unknown-agent';
+      const key = String(row.agent_id || 'unknown-agent');
       const bucket = authBuckets.get(key) || {
         severity: 'warning',
         category: 'player360',
@@ -133,8 +170,8 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
         sourceKeys: new Set<string>(),
       };
       bucket.count += Number(row.count || 0);
-      bucket.lastSeen = latestTimestamp(bucket.lastSeen, row.last_seen);
-      bucket.sourceKeys.add(row.source_key || 'unknown_source');
+      bucket.lastSeen = latestTimestamp(bucket.lastSeen, stringOrNull(row.last_seen));
+      bucket.sourceKeys.add(String(row.source_key || 'unknown_source'));
       authBuckets.set(key, bucket);
       continue;
     }
@@ -145,16 +182,16 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
       detail: `${row.count} player source error${Number(row.count) === 1 ? '' : 's'}${row.agent_id ? ` under ${row.agent_id}` : ''}: ${row.last_error || 'unknown error'}`,
       source: 'player_source_status',
       count: Number(row.count || 0),
-      lastSeen: row.last_seen || null,
+      lastSeen: stringOrNull(row.last_seen),
       action: 'Open the Player 360 Status tab for an affected player and check source freshness.',
     });
   }
   for (const bucket of authBuckets.values()) {
-    const sourceKeys = [...bucket.sourceKeys].sort();
-    delete bucket.sourceKeys;
-    bucket.detail = `${bucket.count} source refresh error${bucket.count === 1 ? '' : 's'} were caused by an expired or missing Buckeye session across ${sourceKeys.join(', ')}.`;
-    if (bucket.count >= 20) bucket.severity = 'critical';
-    issues.push(bucket);
+    const { sourceKeys, ...issue } = bucket;
+    const sortedSourceKeys = [...sourceKeys].sort();
+    issue.detail = `${issue.count} source refresh error${issue.count === 1 ? '' : 's'} were caused by an expired or missing Buckeye session across ${sortedSourceKeys.join(', ')}.`;
+    if (issue.count >= 20) issue.severity = 'critical';
+    issues.push(issue);
   }
 
   const offlineBooks = await safeAll(db,
@@ -168,10 +205,10 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
       severity: row.status === 'offline' ? 'critical' : 'warning',
       category: 'odds',
       title: `${row.book} book is ${row.status}`,
-      detail: row.last_error || `${row.book} last reported ${row.status}.`,
+      detail: String(row.last_error || `${row.book} last reported ${row.status}.`),
       source: 'book_health',
       count: Number(row.error_count || 0),
-      lastSeen: row.last_seen || null,
+      lastSeen: stringOrNull(row.last_seen),
       action: 'Check odds provider credentials/connectivity and the Trading Floor book health chips.',
     });
   }
@@ -191,7 +228,7 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
       detail: `${row.count} detection${Number(row.count) === 1 ? '' : 's'} in the last 24 hours.`,
       source: 'detected_patterns',
       count: Number(row.count || 0),
-      lastSeen: row.last_seen || null,
+      lastSeen: stringOrNull(row.last_seen),
       action: 'Open the Patterns tab and review evidence for the latest detections.',
     });
   }
@@ -254,27 +291,35 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
   };
 }
 
-async function safeAll(db: any, sql: string, params: unknown[] = []): Promise<any[]> {
+async function safeAll<T extends HealthSqlRow = HealthSqlRow>(
+  db: Database,
+  sql: string,
+  params: unknown[] = []
+): Promise<T[]> {
   if (!sql) return [];
   try {
     return await db.all(sql, params);
-  } catch (err: any) {
-    logWarn('safeAll query failed', { sql: sql?.slice(0, 120), error: err?.message });
+  } catch (err) {
+    logWarn('safeAll query failed', { sql: sql?.slice(0, 120), error: err instanceof Error ? err.message : String(err) });
     return [];
   }
 }
 
-async function safeGet(db: any, sql: string, params: unknown[] = []): Promise<any | null> {
+async function safeGet<T extends HealthSqlRow = HealthSqlRow>(
+  db: Database,
+  sql: string,
+  params: unknown[] = []
+): Promise<T | null> {
   if (!sql) return null;
   try {
     return await db.get(sql, params);
-  } catch (err: any) {
-    logWarn('safeGet query failed', { sql: sql?.slice(0, 120), error: err?.message });
+  } catch (err) {
+    logWarn('safeGet query failed', { sql: sql?.slice(0, 120), error: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }
 
-function severityRank(severity: string): number {
+function severityRank(severity: unknown): number {
   if (severity === 'critical') return 3;
   if (severity === 'warning') return 2;
   return 1;
@@ -302,7 +347,7 @@ function latestTimestamp(current: string | null, candidate: string | null): stri
   return String(candidate) > String(current) ? candidate : current;
 }
 
-async function buildDataFlowSummary(db: any): Promise<any> {
+async function buildDataFlowSummary(db: Database): Promise<DataFlowSummary> {
   const [
     liveWagers,
     wagerArchive,
@@ -397,8 +442,8 @@ async function buildDataFlowSummary(db: any): Promise<any> {
         + Number(crossReferences?.player_link_rows || 0)
         + Number(crossReferences?.pattern_agent_rows || 0),
       latestTimestamp(
-        latestTimestamp(crossReferences?.player_agent_last_seen || null, crossReferences?.access_last_seen || null),
-        latestTimestamp(crossReferences?.player_link_last_seen || null, crossReferences?.pattern_agent_last_seen || null)
+        latestTimestamp(stringOrNull(crossReferences?.player_agent_last_seen), stringOrNull(crossReferences?.access_last_seen)),
+        latestTimestamp(stringOrNull(crossReferences?.player_link_last_seen), stringOrNull(crossReferences?.pattern_agent_last_seen))
       ),
       {
         playerAgentRows: Number(crossReferences?.player_agent_rows || 0),
@@ -415,7 +460,7 @@ async function buildDataFlowSummary(db: any): Promise<any> {
   };
 }
 
-function flow(name: string, count: unknown, lastSeen: unknown, extra: Record<string, unknown> = {}): any {
+function flow(name: string, count: unknown, lastSeen: unknown, extra: Record<string, unknown> = {}): FlowSummary {
   const rowCount = Number(count || 0);
   return {
     name,
@@ -426,7 +471,7 @@ function flow(name: string, count: unknown, lastSeen: unknown, extra: Record<str
   };
 }
 
-function addDataFlowIssues(issues: any[], dataFlows: any, activeAgents: number): void {
+function addDataFlowIssues(issues: HealthIssue[], dataFlows: DataFlowSummary, activeAgents: number): void {
   if (activeAgents > 0 && dataFlows.liveWagers.rowCount === 0) {
     issues.push(dataFlowIssue('critical', 'Live wager table is empty', 'Active agents are present, but the live wagers table has no rows.', dataFlows.liveWagers));
   }
@@ -436,7 +481,7 @@ function addDataFlowIssues(issues: any[], dataFlows: any, activeAgents: number):
   if (dataFlows.agentHierarchy.rowCount > 0 && (dataFlows.agentHierarchy.roots !== 3 || dataFlows.agentHierarchy.maxLevel !== 17)) {
     issues.push(dataFlowIssue('warning', 'Agent hierarchy shape changed', `Expected 3 roots and max level 17; saw ${dataFlows.agentHierarchy.roots} roots and max level ${dataFlows.agentHierarchy.maxLevel}.`, dataFlows.agentHierarchy));
   }
-  if (dataFlows.playerAgentMap.orphanCount > 0) {
+  if (Number(dataFlows.playerAgentMap.orphanCount || 0) > 0) {
     issues.push(dataFlowIssue('critical', 'Player-agent map has orphan rows', `${dataFlows.playerAgentMap.orphanCount} mapping row(s) reference a missing agent.`, dataFlows.playerAgentMap));
   }
   if (activeAgents > 0 && dataFlows.exposureInputs.rowCount === 0) {
@@ -451,7 +496,12 @@ function addDataFlowIssues(issues: any[], dataFlows: any, activeAgents: number):
   }
 }
 
-function dataFlowIssue(severity: string, title: string, detail: string, flowSummary: any): any {
+function dataFlowIssue(
+  severity: 'warning' | 'critical',
+  title: string,
+  detail: string,
+  flowSummary: FlowSummary
+): HealthIssue {
   return {
     severity,
     category: 'data-flow',
@@ -459,7 +509,11 @@ function dataFlowIssue(severity: string, title: string, detail: string, flowSumm
     detail,
     source: flowSummary.name,
     count: Number(flowSummary.rowCount || flowSummary.orphanCount || 0),
-    lastSeen: flowSummary.lastSeen || null,
+    lastSeen: stringOrNull(flowSummary.lastSeen),
     action: 'Run bun run integrity:check, then compare the affected API endpoint with the data flow summary.',
   };
+}
+
+function stringOrNull(value: unknown): string | null {
+  return value ? String(value) : null;
 }

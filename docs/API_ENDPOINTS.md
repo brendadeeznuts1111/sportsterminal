@@ -105,6 +105,29 @@ Global aggregate statistics across all wagers.
 }
 ```
 
+### Stats Matrix Endpoint Map
+
+These endpoints are the active stats/performance/exposure matrix used by the dashboard and operator views. All rows are read-only and backed by local SQLite tables unless noted.
+
+| Endpoint | Source tables | Primary UI / use |
+|----------|---------------|------------------|
+| `/api/stats` | `wagers` | Global wager totals, live count, alert count, agent count |
+| `/api/exposure/sports` | `wagers`, parsed game fields | Positions sport exposure table |
+| `/api/exposure/agents` | `wagers`, parsed game fields | Positions agent exposure table |
+| `/api/agents/:agentId/performance` | `wagers` | Agent detail performance summary |
+| `/api/agents/:agentId/exposure` | `wagers` | Agent detail exposure drill-down |
+| `/api/betting/velocity` | `wager_archive` | Betting velocity timeline |
+| `/api/betting/live-vs-pre` | `wager_archive` | Live vs pregame split |
+| `/api/analytics/wager-velocity` | `wagers` | Recent live wager velocity by hour |
+| `/api/analytics/performance-trends` | `agent_performance_snapshots` | Agent performance trend matrix |
+| `/api/performance/summary` | `weekly_figures` | Weekly figure rollup by agent |
+| `/api/performance/details` | `weekly_figures`, `agent_performance` | Agent performance deep dive |
+| `/api/master/history` | `master_snapshots` | Master account balance history |
+| `/api/analytics/raw-logs` | `raw_api_logs` | Raw API audit/error matrix |
+| `/api/analytics/weekly-figures` | `weekly_figures` | Weekly figure archive browser |
+| `/api/analytics/master-snapshots` | `master_snapshots` | Master snapshot archive browser |
+| `/api/health/data-pipeline` | `raw_api_logs`, `weekly_figures`, `master_snapshots`, `wagers`, `agent_performance_snapshots`, `access_logs` | Pipeline row-count health |
+
 ---
 
 ## 2. Wagers
@@ -494,6 +517,37 @@ Live player/customer list from Buckeye (`getPlayers`). Returns `LIST` array with
 ### `POST /api/connect`
 
 Authenticate and start polling for a Buckeye agent.
+
+### Standalone enhanced proxy
+
+The standalone proxy runs through `bun run enhanced-proxy.ts` and is separate from the main backend API. It is useful for isolated Buckeye proxy diagnostics, cache tests, and WebSocket ticker experiments.
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/` | GET | Service metadata and enabled runtime features |
+| `/features` | GET | Feature flags and tunables as loaded from environment variables |
+| `/metrics` | GET | Runtime memory, CPU, JSC stats, request counts, latency samples, token count, and subscriber count when `ENABLE_METRICS=true` |
+| `/ready` | GET | Readiness probe; returns 200 only when a usable stored token exists |
+| `/config` | POST | Reload environment-backed config for the running proxy |
+| `/ws` | WebSocket | Subscribe to live ticker events with `{ "type": "subscribe", "customerID", "token", "cf_clearance" }` |
+| `/api/proxy/auth` | POST | Authenticate against Buckeye and persist an auth-code/token row |
+| `/api/proxy/:endpoint` | POST | Proxy a Buckeye endpoint with optional cache, stream mode, retry, idempotency, and rate limiting |
+| `/api/proxy/tokens?customerID=...` | GET | Stored token status for one customer |
+| `/api/proxy/logs?limit=50` | GET | Recent enhanced-proxy request log rows |
+| `/api/proxy/health?cf_clearance=...` | GET | Buckeye and SQLite dependency check |
+
+Feature flags are documented in `docs/DATA_DICTIONARY.md`. The most common smoke-test set is:
+
+```powershell
+$env:ENABLE_METRICS='true'
+$env:ENABLE_RESPONSE_COMPRESSION='true'
+$env:ENABLE_RETRY='true'
+$env:ENABLE_WS_COMPRESSION='true'
+$env:ENABLE_PER_CUSTOMER_RATE_LIMIT='true'
+bun run enhanced-proxy.ts
+Invoke-RestMethod http://localhost:3001/features
+Invoke-RestMethod http://localhost:3001/metrics
+```
 
 ---
 

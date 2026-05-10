@@ -5,7 +5,31 @@
 
 import { ApiError, corsHeaders, handleAsync } from '../helpers';
 import { logDebug } from '../../utils/logger';
+import type { Database } from '../../database';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
+
+type SqlRow = Record<string, unknown>;
+
+interface RawApiLogRow extends SqlRow {
+  request_params?: string | null;
+}
+
+interface VelocityRow {
+  bucket: string;
+  wagerCount: number;
+  totalHandle: number;
+}
+
+interface LivePreRow {
+  bucket: string;
+  count: number;
+  volume: number;
+}
+
+interface AccessLogRow extends SqlRow {
+  ip_address: string;
+  access_datetime: string;
+}
 
 export function registerAnalyticsRoutes(
   url: URL,
@@ -18,22 +42,28 @@ export function registerAnalyticsRoutes(
   if (url.pathname === '/api/health/data-pipeline' && request.method === 'GET') {
     return handleAsync(async () => {
       const rawLogs = await db.get<{ count: number; lastAt: string | null }>(
-        `SELECT COUNT(*) as count, MAX(fetched_at) as lastAt FROM raw_api_logs WHERE endpoint = 'getBetTicker'`
+        `SELECT COUNT(*) as count, MAX(fetched_at) as lastAt FROM raw_api_logs WHERE endpoint = 'getBetTicker'`,
+        []
       );
       const weeklyCount = await db.get<{ count: number }>(
-        `SELECT COUNT(*) as count FROM weekly_figures`
+        `SELECT COUNT(*) as count FROM weekly_figures`,
+        []
       );
       const masterCount = await db.get<{ count: number }>(
-        `SELECT COUNT(*) as count FROM master_snapshots`
+        `SELECT COUNT(*) as count FROM master_snapshots`,
+        []
       );
       const wagersWithRaw = await db.get<{ count: number; total: number }>(
-        `SELECT COUNT(*) as total, COUNT(raw_json) as count FROM wagers`
+        `SELECT COUNT(*) as total, COUNT(raw_json) as count FROM wagers`,
+        []
       );
       const perfCount = await db.get<{ count: number }>(
-        `SELECT COUNT(*) as count FROM agent_performance_snapshots`
+        `SELECT COUNT(*) as count FROM agent_performance_snapshots`,
+        []
       );
       const accessCount = await db.get<{ count: number }>(
-        `SELECT COUNT(*) as count FROM access_logs`
+        `SELECT COUNT(*) as count FROM access_logs`,
+        []
       );
       const activeAgents = scraperManager.getAgentIds();
       return {
@@ -51,7 +81,7 @@ export function registerAnalyticsRoutes(
         },
         timestamp: new Date().toISOString(),
       };
-    });
+    }, corsHeaders);
   }
 
   // Analytics endpoints for the Performance tab
@@ -88,7 +118,7 @@ export function registerAnalyticsRoutes(
       }
       params.push(limit);
 
-      const logs = await db.all(
+      const logs = await db.all<RawApiLogRow>(
         `SELECT id, endpoint, fetched_at, agent_id, duration_ms, status_code, request_params${includeBody ? ', response_json' : ''}
          FROM raw_api_logs
          WHERE ${where.join(' AND ')}
@@ -97,7 +127,7 @@ export function registerAnalyticsRoutes(
         params
       );
       return {
-        logs: logs.map((row: any) => ({
+        logs: logs.map((row) => ({
           ...row,
           request_params_summary: summarizeParams(row.request_params),
         })),
@@ -169,7 +199,7 @@ export function registerAnalyticsRoutes(
   if (url.pathname === '/api/analytics/performance-trends' && request.method === 'GET') {
     return handleAsync(async () => {
       const days = clamp(url.searchParams.get('days'), 14, 1, 90);
-      const rows = await db.all(
+      const rows = await db.all<VelocityRow>(
         `SELECT
           date(pulled_at) AS day,
           report_agent_id AS agent_id,
@@ -189,7 +219,7 @@ export function registerAnalyticsRoutes(
   if (url.pathname === '/api/analytics/wager-velocity' && request.method === 'GET') {
     return handleAsync(async () => {
       const hours = clamp(url.searchParams.get('hours'), 24, 1, 168);
-      const rows = await db.all(
+      const rows = await db.all<SqlRow>(
         `SELECT
           strftime('%Y-%m-%d %H:00', insert_datetime) AS hour,
           COUNT(*) AS wager_count,
@@ -207,7 +237,7 @@ export function registerAnalyticsRoutes(
   if (url.pathname === '/api/betting/velocity' && request.method === 'GET') {
     return handleAsync(async () => {
       const minutes = clamp(url.searchParams.get('minutes'), 30, 1, 240);
-      const rows = await db.all(
+      const rows = await db.all<VelocityRow>(
         `SELECT
           substr(replace(insert_date_time, 'T', ' '), 1, 16) AS bucket,
           COUNT(*) AS wagerCount,
@@ -221,7 +251,7 @@ export function registerAnalyticsRoutes(
 
       return {
         minutes,
-        velocity: rows.map((row: any) => ({
+        velocity: rows.map((row) => ({
           timestamp: row.bucket,
           wagerCount: Number(row.wagerCount || 0),
           totalHandle: Number(row.totalHandle || 0),
@@ -233,7 +263,7 @@ export function registerAnalyticsRoutes(
   if (url.pathname === '/api/betting/live-vs-pre' && request.method === 'GET') {
     return handleAsync(async () => {
       const date = url.searchParams.get('date') || new Date().toISOString().split('T')[0];
-      const rows = await db.all(
+      const rows = await db.all<LivePreRow>(
         `SELECT
           CASE WHEN ticket_writer = 'GSLIVE' THEN 'live' ELSE 'pregame' END AS bucket,
           COUNT(*) AS count,
@@ -248,7 +278,7 @@ export function registerAnalyticsRoutes(
         live: { count: 0, volume: 0 },
         pregame: { count: 0, volume: 0 },
       };
-      for (const row of rows as any[]) {
+      for (const row of rows) {
         const bucket = row.bucket === 'live' ? 'live' : 'pregame';
         summary[bucket] = {
           count: Number(row.count || 0),
@@ -295,7 +325,7 @@ export function registerAnalyticsRoutes(
       const firstSeen = Object.fromEntries(firstSeenRows.map((row) => [row.ip_address, row.first_seen]));
 
       return {
-        logs: logs.map((row: any) => ({
+        logs: (logs as AccessLogRow[]).map((row) => ({
           ...row,
           first_seen: firstSeen[row.ip_address] || row.access_datetime,
           is_new_ip: firstSeen[row.ip_address] === row.access_datetime,
@@ -441,8 +471,10 @@ function summarizeParams(value: unknown): string {
         .map(([key, child]) => `${key}=${child === null || child === undefined ? '' : String(child)}`)
         .join(' · ');
     }
-  } catch (err: any) {
-    logDebug('Analytics param parse: JSON failed, trying URLSearchParams', { error: err?.message });
+  } catch (err) {
+    logDebug('Analytics param parse: JSON failed, trying URLSearchParams', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
   try {
@@ -451,15 +483,17 @@ function summarizeParams(value: unknown): string {
       .slice(0, 8)
       .map(([key, child]) => `${key}=${child}`)
       .join(' · ');
-  } catch (err: any) {
-    logDebug('Analytics param parse: URLSearchParams failed, falling back to slice', { error: err?.message });
+  } catch (err) {
+    logDebug('Analytics param parse: URLSearchParams failed, falling back to slice', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return text.slice(0, 160);
   }
 }
 
-async function csvExport(db: any, sql: string, params: unknown[], filename: string): Promise<Response> {
+async function csvExport(db: Database, sql: string, params: unknown[], filename: string): Promise<Response> {
   try {
-    const rows = await db.all(sql, params);
+    const rows = await db.all<SqlRow>(sql, params);
     const csv = toCsv(rows);
     return new Response(csv, {
       headers: {
@@ -476,7 +510,7 @@ async function csvExport(db: any, sql: string, params: unknown[], filename: stri
   }
 }
 
-function toCsv(rows: any[]): string {
+function toCsv(rows: SqlRow[]): string {
   if (!rows.length) return '';
   const headers = Object.keys(rows[0]);
   return [

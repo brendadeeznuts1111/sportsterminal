@@ -1,11 +1,11 @@
 # Sports Terminal v5.32 Implementation Tracker
 
-> Last updated: **2026-05-09**
+> Last updated: **2026-05-10**
 > Started: **2026-05-08**
 > Runtime: **Bun 1.3.13+**
 > Database: **Bun.SQL SQLite wrapper**
 > Auth: **JWT (HS256) + Buckeye OS vault through Bun.secrets**
-> Latest full verification: **108 passing, 4 intentionally skipped + build clean**
+> Latest full verification: **136 passing, 4 intentionally skipped + build clean**
 
 ---
 
@@ -22,6 +22,7 @@ Key current pillars:
 - Alert center, webhook delivery, status page, and operational health endpoints.
 - System Status issue rollup for scraper errors, action queues, raw API failures, Player 360 source errors, offline books, and critical patterns.
 - Player 360 profile modal with real API-only hydration, source coverage, field-contract mapping, explicit gaps, endpoint health, cross-reference overview, mismatch tracking, and focused frontend modules for transaction and Docs/data-map rendering.
+- Standalone enhanced proxy entrypoint (`enhanced-proxy.ts`) with `/features`, `/metrics`, `/ready`, WebSocket compression, response compression, retry/backoff, idempotency, rate limiting, token pre-renewal, and config reload flags.
 - Project docs reorganized into README, Buckeye scope, implementation tracker, changelog, and project organization guide.
 
 ---
@@ -154,6 +155,7 @@ Delivered:
 - Status sidebar tab shows backend, vault, book, and pattern health.
 - System Status now includes a consolidated issue feed from `/api/health/system-status` so operators can track likely bugs/regressions from one panel.
 - System Status includes a data-flow strip and `crossReferences` readiness row for player-agent maps, access-log evidence, player links, and pattern-agent links.
+- Standalone enhanced proxy has a documented feature-flag matrix, runtime `/features` endpoint, metrics endpoint, isolated smoke coverage, and config alias tests.
 
 Notes:
 
@@ -171,9 +173,9 @@ Follow-ups:
 
 | File | Purpose | Status |
 |------|---------|--------|
-| `README.md` | Quickstart, current architecture, UI/API map | Current |
+| `README.md` | Quickstart, current architecture, UI/API map, enhanced proxy runbook | Current |
 | `docs/BUCKEYE_BACKEND_SCOPE.md` | Buckeye endpoint and ingestion contract | Current |
-| `docs/DATA_DICTIONARY.md` | Env vars, vault keys, source fields, local columns, API names, WebSocket events | Current |
+| `docs/DATA_DICTIONARY.md` | Env vars, vault keys, source fields, local columns, API names, WebSocket events, enhanced proxy feature flags | Current |
 | `docs/ENTERPRISE_TAB_GOALS.md` | Sidebar product goals and enterprise readiness standards | Current |
 | `docs/AUDIT_ANALYTICS_ENGINE.md` | Raw logging, analytics persistence, retention, and poller safety | Current |
 | `docs/IMPLEMENTATION_TRACKER.md` | Delivery status and follow-ups | Current |
@@ -200,6 +202,18 @@ bun test
 bun run build
 Invoke-RestMethod http://localhost:3000/health
 Invoke-RestMethod http://localhost:3000/api/buckeye/vault-status
+```
+
+Enhanced proxy smoke:
+
+```powershell
+$env:PROXY_PORT=3001
+$env:ENABLE_METRICS='true'
+$env:ENABLE_RESPONSE_COMPRESSION='true'
+$env:ENABLE_RETRY='true'
+bun run enhanced-proxy.ts
+Invoke-RestMethod http://localhost:3001/features
+Invoke-RestMethod http://localhost:3001/metrics
 ```
 
 Before handoff after docs-only changes:

@@ -17,6 +17,9 @@ backend/data/terminal.db
 backend/data/*.db-journal
 backend/data/*.db-shm
 backend/data/*.db-wal
+buckeye_cache.sqlite
+buckeye_cache.sqlite-shm
+buckeye_cache.sqlite-wal
 
 # Sensitive agent data
 docs/agentobject.md
@@ -34,8 +37,11 @@ docs/playerprofileartifact.html
 docs/*.exe
 docs/archive/artifacts/*.exe
 data/
+api_output/
 htmlartifact/
 backend/check-*.ts
+proxy.ts
+NUL
 
 # OS files
 .DS_Store

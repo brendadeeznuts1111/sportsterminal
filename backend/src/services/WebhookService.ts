@@ -31,6 +31,28 @@ export interface WebhookDelivery {
   attemptedAt?: string;
 }
 
+interface WebhookConfigRow {
+  id: number;
+  name: string;
+  platform: WebhookPlatform;
+  url: string;
+  triggers: string;
+  enabled: number | boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+interface WebhookDeliveryRow {
+  id: number;
+  webhook_id: number;
+  alert_id?: number;
+  payload: string;
+  response_status?: number;
+  response_body?: string;
+  success: number | boolean;
+  attempted_at?: string;
+}
+
 export class WebhookService {
   private db: Database;
   private retryDelayMs: number;
@@ -59,18 +81,18 @@ export class WebhookService {
   }
 
   async getWebhooks(): Promise<WebhookConfig[]> {
-    const rows = await this.db.all('SELECT * FROM alert_webhooks ORDER BY created_at DESC');
+    const rows = await this.db.all<WebhookConfigRow>('SELECT * FROM alert_webhooks ORDER BY created_at DESC');
     return rows.map((r) => this.rowToConfig(r));
   }
 
   async getWebhookById(id: number): Promise<WebhookConfig | null> {
-    const row = await this.db.get('SELECT * FROM alert_webhooks WHERE id = ?', [id]);
+    const row = await this.db.get<WebhookConfigRow>('SELECT * FROM alert_webhooks WHERE id = ?', [id]);
     return row ? this.rowToConfig(row) : null;
   }
 
   async updateWebhook(id: number, updates: Partial<Omit<WebhookConfig, 'id' | 'createdAt' | 'updatedAt'>>): Promise<WebhookConfig | null> {
     const sets: string[] = [];
-    const values: any[] = [];
+    const values: Array<string | number> = [];
 
     if (updates.name !== undefined) { sets.push('name = ?'); values.push(updates.name); }
     if (updates.platform !== undefined) { sets.push('platform = ?'); values.push(updates.platform); }
@@ -111,7 +133,7 @@ export class WebhookService {
     const payload = this.formatPayload(hook.platform, alert);
     const payloadJson = JSON.stringify(payload);
 
-    let success = false;
+    let success: boolean;
     let responseStatus: number | undefined;
     let responseBody: string | undefined;
 
@@ -149,7 +171,7 @@ export class WebhookService {
   }
 
   private async getActiveWebhooksForTrigger(severity: string): Promise<WebhookConfig[]> {
-    const rows = await this.db.all(
+    const rows = await this.db.all<WebhookConfigRow>(
       `SELECT * FROM alert_webhooks WHERE enabled = 1`
     );
     return rows
@@ -224,14 +246,14 @@ export class WebhookService {
   // ==================== DELIVERY LOG ====================
 
   async getDeliveries(webhookId?: number, limit: number = 100): Promise<WebhookDelivery[]> {
-    let rows;
+    let rows: WebhookDeliveryRow[];
     if (webhookId) {
-      rows = await this.db.all(
+      rows = await this.db.all<WebhookDeliveryRow>(
         'SELECT * FROM webhook_deliveries WHERE webhook_id = ? ORDER BY attempted_at DESC LIMIT ?',
         [webhookId, limit]
       );
     } else {
-      rows = await this.db.all(
+      rows = await this.db.all<WebhookDeliveryRow>(
         'SELECT * FROM webhook_deliveries ORDER BY attempted_at DESC LIMIT ?',
         [limit]
       );
@@ -256,7 +278,7 @@ export class WebhookService {
 
   // ==================== HELPERS ====================
 
-  private rowToConfig(row: any): WebhookConfig {
+  private rowToConfig(row: WebhookConfigRow): WebhookConfig {
     return {
       id: row.id,
       name: row.name,
@@ -269,7 +291,7 @@ export class WebhookService {
     };
   }
 
-  private rowToDelivery(row: any): WebhookDelivery {
+  private rowToDelivery(row: WebhookDeliveryRow): WebhookDelivery {
     return {
       id: row.id,
       webhookId: row.webhook_id,

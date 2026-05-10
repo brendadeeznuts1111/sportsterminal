@@ -1,5 +1,6 @@
 import { syncAgentProjectionTables } from '../../services/HierarchyBackfillService';
-import { formatAgentNode } from './agentFormatters';
+import type { Database } from '../../database';
+import { formatAgentNode, type AgentHierarchyRow, type AgentNode } from './agentFormatters';
 
 const HIERARCHY_TREE_CACHE_TTL_MS = 60_000;
 
@@ -21,17 +22,33 @@ export function clearAgentHierarchyTreeCache(): void {
   hierarchyTreeCache = null;
 }
 
-export async function getAgentHierarchyTree(db: any): Promise<any> {
+type AgentTreeNode = AgentNode & { children: AgentTreeNode[] };
+
+export interface AgentHierarchyTree {
+  tree: AgentTreeNode[];
+  agents: AgentNode[];
+  meta: {
+    source: 'agent_hierarchy';
+    agentCount: number;
+    rootCount: number;
+    maxLevel: number;
+    refreshedAt: string;
+  };
+}
+
+export async function getAgentHierarchyTree(db: Database): Promise<AgentHierarchyTree> {
   await syncAgentProjectionTables(db, 'read_through');
-  const rows = await db.all(
+  const rows = await db.all<AgentHierarchyRow>(
     `SELECT *
      FROM agent_hierarchy
      WHERE provider = 'buckeye'
      ORDER BY COALESCE(seq_number, 999999999), COALESCE(level, 99), login`
   );
   const nodes = rows.map(formatAgentNode);
-  const byId = new Map(nodes.map((node: any) => [node.agentId, { ...node, children: [] }]));
-  const roots: any[] = [];
+  const byId = new Map<string, AgentTreeNode>(
+    nodes.map((node) => [node.agentId, { ...node, children: [] }])
+  );
+  const roots: AgentTreeNode[] = [];
   for (const node of byId.values()) {
     const parent = node.parentAgentId ? byId.get(node.parentAgentId) : null;
     if (parent) parent.children.push(node);
@@ -44,13 +61,13 @@ export async function getAgentHierarchyTree(db: any): Promise<any> {
       source: 'agent_hierarchy',
       agentCount: nodes.length,
       rootCount: roots.length,
-      maxLevel: nodes.reduce((max: number, node: any) => Math.max(max, Number(node.level || 0)), 0),
+      maxLevel: nodes.reduce((max, node) => Math.max(max, Number(node.level || 0)), 0),
       refreshedAt: new Date().toISOString(),
     },
   };
 }
 
-export async function getCachedAgentHierarchyTree(db: any): Promise<{
+export async function getCachedAgentHierarchyTree(db: Database): Promise<{
   json: string;
   gzip: Uint8Array;
   etag: string;

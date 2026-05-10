@@ -1,13 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
-import { createRouter, routeRequest } from '../src/api/router';
+import { createRouter, routeRequest, type RouterDeps } from '../src/api/router';
 import { RateLimiter } from '../src/api/rateLimiter';
 
 function createTestRouter() {
-  return createRouter({
-    scraperManager: {} as any,
-    oddsPoller: {} as any,
-  });
+  return createRouter(minimalDeps());
 }
 
 const originalAdminToken = process.env.ADMIN_API_TOKEN;
@@ -30,22 +27,49 @@ afterEach(() => {
   }
 });
 
-function createWebhookRouteDeps() {
-  const webhooks: any[] = [];
+interface TestWebhook {
+  id: number;
+  name?: string;
+  platform?: string;
+  url?: string;
+  triggers?: unknown[];
+}
+
+type TestRouterDeps = {
+  scraperManager?: Record<string, unknown>;
+  oddsPoller?: Record<string, unknown>;
+  secretVault?: unknown;
+  performanceCache?: unknown;
+};
+
+function minimalDeps(overrides: TestRouterDeps = {}): RouterDeps {
   return {
+    scraperManager: {},
+    oddsPoller: {},
+    ...overrides,
+  } as unknown as RouterDeps;
+}
+
+function createWebhookRouteDeps(): RouterDeps {
+  const webhooks: TestWebhook[] = [];
+  return minimalDeps({
     scraperManager: {
       getDatabase: () => ({ run: async () => ({ lastID: 1, changes: 1 }) }),
-      getMetrics: () => ({ activeAgents: 0, agents: [], actionQueue: { totalQueued: 0, queues: {} }, counters: {} }),
+      getMetrics: () => ({
+        activeAgents: 0,
+        agents: [],
+        actionQueue: { totalQueued: 0, queues: {} },
+        counters: { wagers_total: 0, alerts_triggered_total: 0, errors_total: 0 },
+      }),
       getWebhookService: () => ({
-        createWebhook: async (body: any) => {
-          const webhook = { id: webhooks.length + 1, ...body };
+        createWebhook: async (body: Omit<TestWebhook, 'id'>) => {
+          const webhook = { id: webhooks.length + 1, enabled: true, ...body };
           webhooks.push(webhook);
           return webhook;
         },
       }),
-    } as any,
-    oddsPoller: {} as any,
-  };
+    },
+  });
 }
 
 describe('API route registration', () => {
@@ -126,6 +150,12 @@ describe('API route registration', () => {
       ['GET', '/api/export/wagers'],
       ['GET', '/api/export/access-logs'],
       ['GET', '/api/export/performance'],
+      ['GET', '/api/analytics/raw-logs'],
+      ['GET', '/api/analytics/weekly-figures'],
+      ['GET', '/api/analytics/master-snapshots'],
+      ['GET', '/api/analytics/performance-trends'],
+      ['GET', '/api/analytics/wager-velocity'],
+      ['GET', '/api/health/data-pipeline'],
       ['GET', '/api/performance/BILLY666'],
       ['DELETE', '/api/performance/BILLY666'],
     ];
@@ -160,13 +190,17 @@ describe('API route registration', () => {
 
   it('applies local rate limiting before dispatching routes', async () => {
     process.env.NODE_ENV = 'production';
-    const deps = {
+    const deps = minimalDeps({
       scraperManager: {
         getDatabase: () => ({ run: async () => ({ lastID: 1, changes: 1 }) }),
-        getMetrics: () => ({ activeAgents: 0, agents: [], actionQueue: { totalQueued: 0, queues: {} }, counters: {} }),
-      } as any,
-      oddsPoller: {} as any,
-    };
+        getMetrics: () => ({
+          activeAgents: 0,
+          agents: [],
+          actionQueue: { totalQueued: 0, queues: {} },
+          counters: { wagers_total: 0, alerts_triggered_total: 0, errors_total: 0 },
+        }),
+      },
+    });
     const limiter = new RateLimiter(1, 60_000);
     const request = new Request('http://localhost/health', { headers: { 'x-real-ip': '198.51.100.10' } });
 
@@ -188,7 +222,7 @@ describe('API route registration', () => {
     });
 
     const response = await routeRequest(new URL('http://localhost/api/webhooks'), request, deps);
-    const body = await response?.json();
+    const body = await response?.json() as { error: string };
 
     expect(response?.status).toBe(401);
     expect(body.error).toBe('Admin token required');
@@ -204,7 +238,7 @@ describe('API route registration', () => {
     });
 
     const response = await routeRequest(new URL('http://localhost/api/webhooks'), request, deps);
-    const body = await response?.json();
+    const body = await response?.json() as TestWebhook;
 
     expect(response?.status).toBe(200);
     expect(body.id).toBe(1);
@@ -221,7 +255,7 @@ describe('API route registration', () => {
     });
 
     const response = await routeRequest(new URL('http://localhost/api/webhooks'), request, deps);
-    const body = await response?.json();
+    const body = await response?.json() as TestWebhook;
 
     expect(response?.status).toBe(200);
     expect(body.name).toBe('Local Audit');
@@ -241,19 +275,18 @@ describe('API route registration', () => {
   });
 
   it('does not reuse cached routers across different dependency instances', async () => {
-    const depsFor = (marker: string) => ({
+    const depsFor = (marker: string): RouterDeps => minimalDeps({
       scraperManager: {
         getDatabase: () => ({ run: async () => ({ lastID: 1, changes: 1 }) }),
-        getLiveWagers: () => [{ marker }],
-      } as any,
-      oddsPoller: {} as any,
+        getLiveWagers: async () => [{ marker }],
+      },
     });
     const request = new Request('http://localhost/api/wagers/live');
 
     const first = await routeRequest(new URL('http://localhost/api/wagers/live'), request, depsFor('first'));
     const second = await routeRequest(new URL('http://localhost/api/wagers/live'), request, depsFor('second'));
-    const firstBody = await first?.json();
-    const secondBody = await second?.json();
+    const firstBody = await first?.json() as Array<{ marker: string }>;
+    const secondBody = await second?.json() as Array<{ marker: string }>;
 
     expect(firstBody[0].marker).toBe('first');
     expect(secondBody[0].marker).toBe('second');

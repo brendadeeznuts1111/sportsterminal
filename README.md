@@ -147,6 +147,37 @@ Expected health shape:
 }
 ```
 
+## Enhanced Proxy
+
+The main app backend owns normal Sports Terminal ingestion. For isolated Buckeye proxy work, use the standalone enhanced proxy entrypoint:
+
+```powershell
+bun run enhanced-proxy.ts
+```
+
+It starts on `PROXY_PORT` (default `3001`) and uses `DB_PATH` (default `buckeye_cache.sqlite`). Runtime configuration is visible at:
+
+- `GET /features` — active feature flags and tunables
+- `GET /metrics` — Bun/process/JSC metrics when `ENABLE_METRICS=true`
+- `GET /ready` — readiness probe based on stored token state
+- `POST /config` — reloads environment-backed config
+- `WS /ws` — live Buckeye ticker subscription endpoint
+
+Useful feature flags:
+
+```env
+ENABLE_METRICS=true
+ENABLE_RESPONSE_COMPRESSION=true
+ENABLE_RETRY=true
+ENABLE_WS_COMPRESSION=true
+ENABLE_PER_CUSTOMER_RATE_LIMIT=true
+ENABLE_AUTO_RENEWAL=true
+ENABLE_IDEMPOTENCY=true
+ENABLE_WS_BATCHING=false
+```
+
+Compatibility aliases are supported: `ENABLE_RETRY` maps to the enhanced proxy retry flag, `ENABLE_PER_CUSTOMER_RATE_LIMIT` maps to rate limiting, and `ENABLE_AUTO_RENEWAL` maps to token pre-renewal. The legacy root `proxy.ts` remains ignored local tooling; `enhanced-proxy.ts` is the documented entrypoint.
+
 ## Security
 
 - `Bun.secrets` stores Buckeye password, token, and Cloudflare cookie presence per vaulted agent.

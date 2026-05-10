@@ -31,6 +31,29 @@ This is the single reference for Sports Terminal names: environment variables, O
 | `BUCKEYE_AGENT_ID` | unset | Script-only | `backend/scripts/*` probes | One-off local probe/login scripts only; do not store production credentials |
 | `BUCKEYE_PASSWORD` | unset | Script-only | `backend/scripts/*` probes | One-off local probe/login scripts only; prefer interactive/vaulted auth |
 
+### Standalone Enhanced Proxy
+
+These apply to `enhanced-proxy.ts` / `proxy-enhanced.ts`, not the main backend server.
+
+| Name | Default | Required | Used By | Meaning |
+|------|---------|----------|---------|---------|
+| `PROXY_PORT` | `3001` | No | `config.ts` | Standalone enhanced proxy listen port |
+| `DB_PATH` | `buckeye_cache.sqlite` | No | `config.ts`, `proxy-enhanced.ts` | SQLite cache/token database path |
+| `ENABLE_METRICS` | `true` | No | `/metrics` | Enables runtime memory, CPU, JSC, request, token, and latency metrics |
+| `ENABLE_RESPONSE_COMPRESSION` | `false` | No | `json()` helper | Enables gzip for larger JSON responses when accepted by the client |
+| `ENABLE_WS_COMPRESSION` | `false` | No | Bun WebSocket handler | Enables per-message WebSocket compression |
+| `ENABLE_RETRY` / `ENABLE_AUTO_RETRY` | `true` | No | `buckeyeFetch()` | Enables retry with exponential backoff and jitter for Buckeye calls |
+| `MAX_RETRIES` | `3` | No | `buckeyeFetch()` | Max upstream retry attempts |
+| `RETRY_BASE_MS` | `1000` | No | `buckeyeFetch()` | Base retry delay before exponential backoff |
+| `ENABLE_PER_CUSTOMER_RATE_LIMIT` / `ENABLE_RATE_LIMITING` | `true` | No | `checkRateLimit()` | Enables customer/endpoint rate limiting through SQLite |
+| `RATE_LIMIT_PER_MIN` | `60` | No | `config.ts` | Default enhanced-proxy rate-limit count per minute |
+| `ENABLE_AUTO_RENEWAL` / `ENABLE_TOKEN_PRE_RENEWAL` | `true` | No | token renewal job | Enables proactive token renewal for stored Buckeye tokens |
+| `ENABLE_IDEMPOTENCY` | `true` | No | proxy POST handler | Enables `Idempotency-Key` replay protection for proxied POSTs |
+| `ENABLE_WS_BATCHING` | `false` | No | WebSocket ticker | Sends ticker batches instead of one frame per tick |
+| `WS_BATCH_INTERVAL_MS` | `200` | No | WebSocket ticker | Batch flush interval when batching is enabled |
+| `ENABLE_STREAM_MODE` | `true` | No | proxy POST handler | Enables streaming upstream bodies when `stream=true` |
+| `ENABLE_REQUEST_LOGGING` | `true` | No | request logger | Persists/logs enhanced-proxy request metadata |
+
 Do not store Buckeye passwords, Buckeye JWTs, or Cloudflare cookies in `.env`. Use Settings and the OS vault.
 
 ## Database URL Forms
@@ -712,6 +735,21 @@ See `getAgentPerformance` mapping above.
 | `weekly_figures` | `agent_id`, `week_start_date`, `sport`, `handle`, `win_loss`, `raw_json` | Weekly figure report archive |
 | `agent_performance` | `agent_id`, `recorded_at`, `performance_json` | Raw agent performance report archive |
 
+### Stats Matrix Tables
+
+The stats matrix is a read-only projection layer over persisted Buckeye and odds data. It has no separate `stats_matrix` table; endpoints aggregate from these source tables on demand.
+
+| Source table | Feeds | Notes |
+|--------------|-------|-------|
+| `wagers` | `/api/stats`, `/api/wagers/live`, `/api/analytics/wager-velocity`, `/api/exposure/sports`, `/api/exposure/agents`, `/api/agents/:agentId/performance`, `/api/agents/:agentId/exposure` | Current live wager store used by the primary terminal views |
+| `wager_archive` | `/api/betting/velocity`, `/api/betting/live-vs-pre`, `/api/export/wagers` | Historical normalized wager archive; money values are dollars |
+| `weekly_figures` | `/api/analytics/weekly-figures`, `/api/performance/summary`, `/api/performance/details`, `/api/export/performance` | Buckeye weekly figure report archive |
+| `agent_performance_snapshots` | `/api/analytics/performance-trends`, Player 360 profile enrichment, `/api/health/data-pipeline` | Normalized customer/player/agent performance rows from Buckeye reports |
+| `agent_performance` | `/api/performance/details` | Latest raw performance payload for drill-down/debugging |
+| `master_snapshots` | `/api/master/history`, `/api/analytics/master-snapshots`, `/api/health/data-pipeline` | Master account balance/book snapshots |
+| `raw_api_logs` | `/api/analytics/raw-logs`, `/api/health/data-pipeline` | Redacted upstream request/response audit log |
+| `access_logs` | `/api/logs/access`, `/api/health/data-pipeline`, Player 360 cross-reference | Buckeye web access logs |
+
 ### `audit_logs`
 
 | Column | Meaning |
@@ -861,6 +899,22 @@ Performance cache:
 | `/api/performance/status` | GET | Redis/cache health flags |
 | `/api/performance/:agentId` | GET | Cached/fetched agent performance data |
 | `/api/performance/:agentId` | DELETE | Invalidate one cached agent performance payload |
+
+Stats and analytics matrix:
+
+| Route | Method | Meaning |
+|-------|--------|---------|
+| `/api/health/data-pipeline` | GET | Local row-count and last-seen health for the stats pipeline |
+| `/api/analytics/raw-logs` | GET | Raw API audit/error matrix |
+| `/api/analytics/weekly-figures` | GET | Weekly figure archive browser |
+| `/api/analytics/master-snapshots` | GET | Master snapshot archive browser |
+| `/api/analytics/performance-trends` | GET | Agent performance trend matrix |
+| `/api/analytics/wager-velocity` | GET | Recent live wager velocity by hour |
+| `/api/betting/velocity` | GET | Historical betting velocity timeline |
+| `/api/betting/live-vs-pre` | GET | Live vs pregame split |
+| `/api/master/history` | GET | Master account balance history |
+| `/api/performance/summary` | GET | Weekly figure rollup by agent |
+| `/api/performance/details` | GET | Agent performance detail matrix |
 
 ## WebSocket Event Names
 

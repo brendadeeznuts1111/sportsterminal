@@ -13,6 +13,35 @@ export const FREEPLAY_CATEGORIES = [
 ];
 
 type FreePlayGroupBy = 'player' | 'agent' | 'day';
+type FreePlayConfidence = 'confirmed' | 'candidate';
+
+interface FreePlayTransaction {
+  id?: number;
+  customerId?: string;
+  login?: string;
+  agentId?: string;
+  agentLogin?: string;
+  documentNumber?: string;
+  tranCode?: string;
+  tranType?: string;
+  amount: number;
+  balance?: number;
+  description?: string;
+  category?: string;
+  transactionTime?: string;
+  rawJson?: string;
+  sourceConfidence: FreePlayConfidence;
+}
+
+interface FreePlayTotals {
+  issued: number;
+  redeemed: number;
+  expired: number;
+  adjustments: number;
+  outstandingEstimate: number;
+  transactionCount: number;
+  sourceConfidence: FreePlayConfidence;
+}
 
 export const registerFreePlayAnalysisRoutes = createRouteHandler(
   '/api/freeplay/analysis',
@@ -29,7 +58,7 @@ export const registerFreePlayAnalysisRoutes = createRouteHandler(
     const groupBy = normalizeGroupBy(url.searchParams.get('groupBy'));
     const { where, params } = buildFreePlayWhere({ playerId, agentId, from, to });
 
-    const rows = await db.all(
+    const rows = await db.all<Omit<FreePlayTransaction, 'sourceConfidence'>>(
       `SELECT
         id,
         customer_id AS customerId,
@@ -52,7 +81,7 @@ export const registerFreePlayAnalysisRoutes = createRouteHandler(
       params
     );
 
-    const transactions = rows.map((row: any) => ({
+    const transactions = rows.map((row): FreePlayTransaction => ({
       ...row,
       amount: Number(row.amount || 0),
       balance: Number(row.balance || 0),
@@ -69,7 +98,18 @@ export const registerFreePlayAnalysisRoutes = createRouteHandler(
   }
 );
 
-function emptyFreePlayResponse(url: URL): any {
+function emptyFreePlayResponse(url: URL): {
+  filters: Record<string, string>;
+  totals: FreePlayTotals;
+  groups: Array<{
+    key: string;
+    groupBy: FreePlayGroupBy;
+    label: string;
+    totals: FreePlayTotals;
+  }>;
+  transactions: FreePlayTransaction[];
+  count: number;
+} {
   const groupBy = normalizeGroupBy(url.searchParams.get('groupBy'));
   return {
     filters: {
@@ -113,8 +153,8 @@ export function buildFreePlayWhere(filters: {
   return { where, params };
 }
 
-export function summarizeFreePlay(rows: any[]): any {
-  const totals = {
+export function summarizeFreePlay(rows: FreePlayTransaction[]): FreePlayTotals {
+  const totals: FreePlayTotals = {
     issued: 0,
     redeemed: 0,
     expired: 0,
@@ -135,14 +175,19 @@ export function summarizeFreePlay(rows: any[]): any {
   return totals;
 }
 
-export function freePlaySourceConfidence(row: any): 'confirmed' | 'candidate' {
+export function freePlaySourceConfidence(row: Partial<FreePlayTransaction> & Record<string, unknown>): FreePlayConfidence {
   const text = `${row.tranType || row.tran_type || ''} ${row.description || ''} ${row.rawJson || row.raw_json || ''}`.toLowerCase();
   if (/\bfree[\s_-]*play\b|freeplay|bonus\s+play/.test(text)) return 'confirmed';
   return 'candidate';
 }
 
-function groupFreePlayRows(rows: any[], groupBy: FreePlayGroupBy): any[] {
-  const groups = new Map<string, any[]>();
+function groupFreePlayRows(rows: FreePlayTransaction[], groupBy: FreePlayGroupBy): Array<{
+  key: string;
+  groupBy: FreePlayGroupBy;
+  label: string;
+  totals: FreePlayTotals;
+}> {
+  const groups = new Map<string, FreePlayTransaction[]>();
   for (const row of rows) {
     const key = groupKey(row, groupBy);
     groups.set(key, [...(groups.get(key) || []), row]);
@@ -157,7 +202,7 @@ function groupFreePlayRows(rows: any[], groupBy: FreePlayGroupBy): any[] {
     .sort((a, b) => Math.abs(b.totals.outstandingEstimate) - Math.abs(a.totals.outstandingEstimate));
 }
 
-function groupKey(row: any, groupBy: FreePlayGroupBy): string {
+function groupKey(row: FreePlayTransaction, groupBy: FreePlayGroupBy): string {
   if (groupBy === 'agent') return row.agentLogin || row.agentId || 'Unknown agent';
   if (groupBy === 'day') return String(row.transactionTime || '').slice(0, 10) || 'Unknown day';
   return row.login || row.customerId || 'Unknown player';

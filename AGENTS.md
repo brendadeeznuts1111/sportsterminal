@@ -1,234 +1,149 @@
-# AGENTS.md — Sports Terminal v5.31
+# AGENTS.md — Sports Terminal v5.32
 
-## Build/Lint/Test Commands
-- **Build**: `bun run build`
-- **Start**: `bun run dev` (hot reload) or `bun run start` (prod)
-- **Test**: `bun test` — Runs all tests in `backend/tests/`
-- **Single test**: `bun test <path/to/test.ts>`
-- **Serve frontend**: `bun run serve` — Serves static files from `frontend/public/`
-- **Status**: `bun run status` — Show port usage and running Bun processes
-- **Stop**: `bun run stop` — Kill only the process using port 3000
-- **Clean start**: `bun run clean-start` — Stop + dev in one command
-- **Dev on custom port**: `bun run dev:port 3001`
-- **Verify analytics**: `bun run dev` then check `http://localhost:3000/api/betting/velocity?minutes=10`
-- **Check error tracking**: Open the **Up** tab in the frontend sidebar
+Always run commands from repo root `C:\Users\bobby\sportsterminal\` (not a subdirectory).
 
-## Code Style Guidelines
-- **Language**: TypeScript (.ts), Bun runtime (v1.3.13+), prefer Bun APIs
-- **Imports**: ES6 only, group stdlib / third-party / local
-- **Formatting**: 2-space indent, single quotes, semicolons, Prettier
-- **Types**: Explicit, avoid `any`, interfaces for complex objects
-- **Naming**: camelCase vars/functions, PascalCase classes, UPPER_SNAKE constants, kebab-case files
-- **Error Handling**: try-catch async, descriptive messages, Bun patterns
-- **Comments**: JSDoc public APIs, inline complex logic, TODO
-- **Testing**: Bun.test, describe blocks, descriptive names, cover success/error
+## Commands
 
-## Project Structure
+| Command | Description |
+|---------|-------------|
+| `bun run dev` | Hot-reload dev server (backend + WebSocket) |
+| `bun run start` | Production server |
+| `bun run build` | Build backend to `backend/dist/` |
+| `bun run serve` | Static frontend-only server on port 3001 |
+| `bun run db:reset` | Delete SQLite DB (recreated on next dev start) |
+| `bun run db:migrate` | Run SQLite migrations |
+| `bun run stop` | Kill stale process on port 3000 |
+| `bun run status` | Show port usage and Bun processes |
+| `bun run clean-start` | Stop + dev in one command |
+| `bun run dev:port 3001` | Dev on custom port |
+| `bun test` | All backend tests |
+| `bun test backend/tests/<file>.test.ts` | Single test file |
+| `bun run --cwd backend lint` | ESLint (allows 500 warnings) |
+| `bun run --cwd backend lint:strict` | ESLint (allows 50 warnings) |
+| `bun run --cwd backend typecheck` | `tsc --noEmit` check |
+
+**After editing backend code, always run:** `bun run --cwd backend typecheck && bun run --cwd backend lint`
+
+## Architecture
+
+Monorepo with one Bun workspace (`backend`). Frontend is a static SPA in `frontend/public/` — no build step, served directly by the backend.
+
+**Default port is 3000** (not 3002). Configured in `backend/.env` or defaults in `backend/src/config/env.ts`.
+
+### Backend `backend/src/`
 
 ```
-sportsterminal/
-├── backend/
-│   ├── src/
-│   │   ├── index.ts              # Bun HTTP server + WebSocket upgrade
-│   │   ├── database.ts           # SQLite init + schema
-│   │   ├── scrapers/
-│   │   │   ├── BuckeyeAPI.ts     # HTTP client for fantasy402.com
-│   │   │   └── ScraperManager.ts # Polling lifecycle + backoff + exposure
-│   │   ├── odds/
-│   │   │   ├── OddsPoller.ts     # Odds pipeline: poll, persist, movements
-│   │   │   ├── types.ts          # Shared odds types
-│   │   │   └── providers/
-│   │   │       ├── DemoOddsProvider.ts   # Synthetic odds generator
-│   │   │       └── TheOddsApiProvider.ts # Real odds API skeleton
-│   │   ├── risk/
-│   │   │   └── AlertEngine.ts    # Alert detection rules
-│   │   └── webhooks/
-│   │       └── WebhookService.ts # Discord/Slack/Telegram dispatcher
-│   ├── tests/
-│   │   ├── api.test.ts           # AlertEngine + change detection tests
-│   │   ├── odds.test.ts          # Odds provider + movement tests
-│   │   └── webhook.test.ts       # Webhook CRUD + dispatch tests
-│   ├── data/
-│   │   └── terminal.db           # SQLite database (auto-created)
-│   └── package.json
-├── frontend/
-│   └── public/
-│       ├── index.html            # Static SPA shell; Buckeye data loads from backend only
-│       ├── css/
-│       │   └── terminal.css      # Shared terminal styling
-│       └── js/
-│           ├── app.js            # Boot sequence and compatibility host
-│           ├── ws-client.js      # Browser WebSocket client
-│           └── *.js              # Focused frontend module homes
-├── docs/
-│   ├── BUCKEYE_BACKEND_SCOPE.md  # API spec + architecture
-│   └── IMPLEMENTATION_TRACKER.md # Zone-based progress tracker
-└── README.md
+index.ts              Bun HTTP server + WebSocket (/ws) + static serving
+database.ts           Bun.SQL SQLite wrapper, schema init, migrations
+config/env.ts         loadEnv() — validates PORT, JWT_SECRET, BUCKEYE_BASE_URL
+api/
+  router.ts           UrlPatternRouter — all /api/* routes registered here
+  UrlPatternRouter.ts Custom URLPattern-based router
+  routes/             Handler modules per domain (16 files)
+  middleware/          auth.ts, apiLogger.ts
+  rateLimiter.ts      Per-IP rate limiting
+  helpers.ts           corsHeaders, requireAdminTokenIfConfigured
+scrapers/
+  BuckeyeAPI.ts       HTTP client for fantasy402.com (~2400 lines)
+  ScraperManager.ts   Always-on polling lifecycle, backoff, vault restore
+actions/ActionQueue.ts Per-agent action sequencing
+auth/jwt.ts            HS256 JWT create/verify, dev bypass
+services/
+  BunSecretVault.ts      OS vault per-agent secret storage
+  BuckeyeVaultRestore.ts Startup restore for vaulted agents
+  PerformanceCache.ts    Redis-backed cache (optional)
+  Scheduler.ts           Managed recurring jobs via Bun.sleep
+  RawApiLogger.ts        Raw API call logging
+  WebhookService.ts      Discord/Slack/Telegram/Generic
+  CrossReferenceService.ts  Player cross-reference
+  GeoIpService.ts           Geo-IP enrichment
+  HierarchyBackfillService.ts Hierarchy backfill
+odds/                  OddsPoller + providers (DemoOddsProvider, TheOddsApiProvider)
+patterns/             Pattern detection and persistence
+player360/            Player 360 deep-dive logic
+risk/AlertEngine.ts   Alert detection rules
+types/                 Shared TypeScript interfaces
+utils/                 Shared utilities
 ```
 
-## Key Architectural Decisions
+### Backend tsconfig — strict mode
 
-### Amount Units
-- **API returns cents** — `AmountWagered: 2500` = $25.00
-- **Backend normalizes to dollars** in `BuckeyeAPI.normalizeWager()` (divide by 100)
+`backend/tsconfig.json` enables `strict`, `noImplicitAny`, `strictNullChecks`. The root tsconfig has `strict: false` but only covers root-level `.ts` files (proxy scripts), **not** backend code.
+
+Path alias: `@/*` maps to `./src/*` in backend — use `import { X } from '@/services/BunSecretVault'`.
+
+### Key dependencies
+
+- **Bun runtime** v1.3.13+ (no Node required)
+- **zod** — request/response validation in routes
+- **jose** — JWT signing/verification
+- **fast-geoip** — IP geolocation enrichment
+- **Bun.SQL** — built-in SQLite (no external package)
+
+## Critical Conventions
+
+### Amount units (don't get this wrong)
+- **Buckeye API returns cents** — `AmountWagered: 2500` = $25.00
+- **Backend normalizes** in `BuckeyeAPI.normalizeWager()` (divide by 100)
 - **Database stores dollars** — all SQL queries operate on dollar amounts
-- **Frontend displays dollars** directly — no further conversion needed
+- **Frontend displays dollars** directly — no further conversion
 
-### Authentication Flow
+### Authentication flow
 1. Frontend sends `auth` WS message with `agentId`, `password`, `cfCookie`
 2. Backend `BuckeyeAPI.login()` POSTs to `/cloud/api/System/authenticateCustomer`
-3. Backend receives JWT token, starts polling `getBetTicker` every 5s
-4. Token returned to frontend → stored in `localStorage` for session resume
-5. Frontend auto-reconnects on page refresh using stored token (valid ~10 min)
+3. Receives JWT → starts polling `getBetTicker` every 5s
+4. Token returned to frontend → `localStorage` for resume
+5. Auto-reconnects on refresh (token ~10 min valid)
 
-### Cloudflare Handling
-- `cf_clearance` cookie is **mandatory** for API access
-- User copies cookie from browser DevTools → pastes into Settings form
-- Cookie expires in 30min–2hrs; "Get Fresh Cookie" button opens Buckeye in new tab
-- Backend sends cookie on every request via `Cookie` header
+### Cloudflare
+- `cf_clearance` cookie is **mandatory** for fantasy402.com access
+- User copies from browser DevTools → Settings → stored in `BunSecretVault`
+- Cookie expires 30 min – 2 hrs; backend sends on every request
 
-### Polling & Resilience
-- Normal interval: 5 seconds
-- Exponential backoff on errors: 5s → 10s → 20s → 40s → max 60s
-- Token renewal: every 15 minutes
-- Max 3 re-login attempts, then broadcasts `auth_failed` and stops polling
+### Polling & resilience
+- Normal: 5s. Exponential backoff: 5→10→20→40→max 60s
+- Token renewal: every 15 min
+- Max 3 re-login attempts, then `auth_failed` broadcast and stop
 
-## Environment Variables
+### Environment constraints
+- `NODE_ENV=production` enables JWT auth + rate limiting; `development` bypasses both
+- `JWT_SECRET` must be 32+ chars in production (checked at startup in `config/env.ts`)
+- `DATABASE_URL` supports SQLite (`sqlite:./data/terminal.db`) or Postgres (`postgres://...`)
+- `ADMIN_API_TOKEN` — optional, guards sensitive mutations when set
+- `REDIS_URL` — optional, enables performance caching + pub/sub
 
-Copy `backend/.env.example` to `backend/.env` and set:
+## Where to find things
 
-```bash
-PORT=3002               # Backend port (3000 used by Gitea)
-HOST=0.0.0.0
-DEBUG=false             # Set true for verbose BuckeyeAPI logging
-BUCKEYE_BASE_URL=https://fantasy402.com
-POLL_INTERVAL_MS=5000
-TOKEN_RENEWAL_MINUTES=15
-JWT_SECRET=change-me-in-production-min-32-chars
-```
+- **All API routes**: `backend/src/api/router.ts` — 80+ routes via `UrlPatternRouter`
+- **Route handlers**: `backend/src/api/routes/` — one file per domain
+- **Frontend entry**: `frontend/public/index.html` → `js/app.js`
+- **Frontend WS**: `frontend/public/js/ws-client.js`
+- **Database schema**: `backend/src/database.ts` — all table definitions and migrations
+- **Buckeye API client**: `backend/src/scrapers/BuckeyeAPI.ts` — auth, wager, access-log, performance calls
+- **Env validation**: `backend/src/config/env.ts` — all env vars and their constraints
 
-## Common Tasks
+## Testing
 
-### Run backend locally
-```bash
-bun run dev
-```
+Tests in `backend/tests/*.test.ts`. Run from repo root with `bun test`.
 
-### Run tests
-```bash
-bun test
-```
+Test files: `actionQueue`, `api`, `auth`, `health`, `odds`, `patterns`, `performance`, `players`, `proxy-enhanced-config`, `rateLimiter`, `raw-api-logger`, `router`, `scheduler`, `webhook`.
 
-### Build for production
-```bash
-bun run build
-bun run start
-```
-
-### Reset database
-```bash
-bun run db:reset
-bun run dev
-```
-
-### Check what's running
-```bash
-bun run status
-```
-
-### Kill stale backend process
-```bash
-bun run stop
-```
-
-### Quick restart (stop + dev)
-```bash
-bun run clean-start
-```
+Database tests use `:memory:` SQLite. No external services required.
 
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
-| `Port 3000 already in use` | Run `bun run stop` first, then `bun run dev` |
-| Multiple Bun processes / confusion | Run `bun run status` to see what's running, then `bun run stop` or `taskkill /F /IM bun.exe` |
-| Running from wrong folder | Always run from `C:\Users\bobby\sportsterminal\` (not root) |
-| Stale node_modules | Remove `node_modules` / `backend/node_modules`, then run `bun install` from `C:\Users\bobby\sportsterminal\` |
+| Port 3000 in use | `bun run stop` then `bun run dev` |
+| Multiple Bun processes | `bun run status` then `bun run stop` or `taskkill /F /IM bun.exe` |
+| Stale deps | Delete `node_modules` + `backend/node_modules`, then `bun install` |
+| Verify backend running | `Invoke-RestMethod http://localhost:3000/health` |
+| Buckeye login fails | Fresh `cf_clearance` cookie, confirm `BUCKEYE_BASE_URL`, check vault status |
+| Odds grid empty | Demo odds auto-activate; live data requires Buckeye auth or `ODDS_API_KEY` |
 
-## Development Tips
+## Security reminders
 
-- **Debug**: `bun --inspect backend/src/index.ts` then open `chrome://inspect`
-- **Watch mode**: `bun --watch backend/src/index.ts`
-- **Change port**: `bun run dev:port 3001` or set `PORT` in `.env`
-- **Frontend + backend together**: Run `bun run dev` in one terminal, `bun run serve` in another
-
-## Sidebar Reference
-
-Every sidebar tab, its zone, and current implementation status.
-
-### Trading
-
-| Tab | Zone | Status | Description |
-|-----|------|--------|-------------|
-| **Trading Floor** | Zone 1 | ✅ Full | 16-book odds grid with consensus, best-line highlighting, movement arrows (▲/▼), spread/total prices, pattern icons, detail drawers |
-| **Patterns** | Zone 2 | ✅ Full | Real detected-pattern history from odds, wagers, agents, IP, live timing, and feed risk with filters, scoring, evidence drawer, and backend persistence. |
-
-### Positions
-
-| Tab | Zone | Status | Description |
-|-----|------|--------|-------------|
-| **Positions** | Zone 4 | ✅ Full | Buckeye exposure breakdown: sortable sport exposure table (top game, side, price, game $) and agent exposure table (top customer, top game). Data from `buckeyeWagers`. |
-
-### PPH Books
-
-| Tab | Zone | Status | Description |
-|-----|------|--------|-------------|
-| **Buckeye** | Zone 4 | ✅ Full | Live wager feed from `getBetTicker`, filters (type/VIP/min bet), stats cards, agent/sport/game breakdown panels, alert badge |
-| **Ace Per Head** | — | ⬜️ Soon | Placeholder — no section or backend |
-| **Metallic** | — | ⬜️ Soon | Placeholder — no section or backend |
-
-### Agent Network
-
-| Tab | Zone | Status | Description |
-|-----|------|--------|-------------|
-| **Agent Hierarchy** | Zone 4 | ✅ Full | Full recursive agent tree (Ctrl+7) from `agent_hierarchy` table: 2,288 agents, 3 roots, max depth 17, with seq_numbers, commission rates, player counts, collapsible tree canvas |
-| **Player Search** | Zone 4 | ✅ Full | Search players by login, list with P&L/exposure, click-through to Player Detail |
-| **Player Detail** | Zone 4 | ✅ Full | Stats cards, 7-day P&L bars, wager breakdown, recent wagers table. Navigated from Player Search or wager table. |
-
-### Exchanges
-
-| Tab | Zone | Status | Description |
-|-----|------|--------|-------------|
-| **Polymarket** | Zone 3 | ⬜️ Soon | Placeholder — prediction market integration not started |
-| **Kalshi** | Zone 3 | ⬜️ Soon | Placeholder — event contract exchange not started |
-
-### System
-
-| Tab | Zone | Status | Description |
-|-----|------|--------|-------------|
-| **Alerts** | Zone 4+8 | ✅ Full | Alert history with severity badges, toast toggle (persisted), auto-scroll, acknowledged filter |
-| **Webhooks** | Zone 8 | ✅ Full | CRUD webhooks (Discord/Slack/Telegram/Generic), trigger filtering, delivery log with retry |
-| **Settings** | Zone 4 | ✅ Full | Backend URL, endpoint, agent credentials, Cloudflare cookie, auto-connect toggle, test connection |
-
-### Removed / Consolidated
-
-| Tab | Reason |
-|-----|--------|
-| **Odds Grid** | Removed — redundant with Trading Floor (which is the actual odds grid) |
-| **Heatmap** | Moved to Coming Soon — line movement heatmap not implemented |
-| **Candlestick** | Moved to Coming Soon — OHLC charts not implemented |
-| **Bet Builder** | Moved to Coming Soon — multi-leg parlay builder not implemented |
-
-## Zone Status
-
-| Zone | Tabs | Feature | Status |
-|------|------|---------|--------|
-| 4 | Buckeye, Downline, Player Search, Player Detail, Positions, Alerts, Settings | Backend Ops (live connection, alerts, agent downline, player drill-down, sport exposure v2) | ✅ Complete |
-| 1 | Trading Floor | Odds Grid (live provider gated by `ODDS_API_KEY`; no automatic synthetic fallback), prices, best-line, movement detection | ✅ Complete |
-| 8 | Webhooks | Webhook Alerts (Discord/Slack/Telegram/Generic with retry + logging) | ✅ Complete |
-| 2 | Patterns | Pattern Detection and anomaly history from persisted live data | ✅ Complete |
-| 3 | — | Kalshi Polling & Positions | ⬜️ Not started |
-| — | — | Amount Normalization (cents→dollars, AmountWagered fallback) | ✅ Complete |
-| — | — | Prop Bet Detection (player props from ShortDesc) | ✅ Complete |
-| — | — | Real Data Parsing (ALERT tickets, HTML entities, GSLIVE, parlays, futures) | ✅ Complete |
-| — | — | Connection Fixes (file:// WS fallback, TDZ error, error logging) | ✅ Complete |
+- Never commit `backend/.env`, `backend/data/`, or raw Buckeye export files
+- `Bun.secrets` stores passwords/tokens; vault-status endpoint returns only presence flags
+- `DELETE /api/buckeye/vault-status?agentId=...` clears one agent; `all=1` clears all
+- `bunfig.toml` enables OSV install-time security scanner

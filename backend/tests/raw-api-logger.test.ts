@@ -2,6 +2,31 @@ import { describe, expect, it } from 'bun:test';
 
 import { registerAnalyticsRoutes } from '../src/api/routes/analytics';
 import { RawApiLogger, redactSensitiveFields } from '../src/services/RawApiLogger';
+import type { Database } from '../src/database';
+import type { BuckeyeScraperManager } from '../src/scrapers/ScraperManager';
+
+interface RedactedFixture {
+  Login?: string;
+  password?: string;
+  nested: {
+    cf_clearance?: string;
+    tokenValue?: string;
+    amount?: number;
+  } | string;
+  wagers?: Array<{ PIN: string; WagerNumber: number }>;
+  text?: string;
+}
+
+function testDatabase(db: object): Database {
+  return db as unknown as Database;
+}
+
+function analyticsScraperManager(db: object): BuckeyeScraperManager {
+  return {
+    getDatabase: () => testDatabase(db),
+    getAgentIds: () => [],
+  } as unknown as BuckeyeScraperManager;
+}
 
 describe('RawApiLogger', () => {
   it('redacts sensitive nested fields without removing ordinary values', () => {
@@ -14,25 +39,25 @@ describe('RawApiLogger', () => {
         tokenValue: 'jwt',
       },
       wagers: [{ PIN: '1234', WagerNumber: 750038740 }],
-    }) as any;
+    }) as RedactedFixture;
 
     expect(redacted.Login).toBe('CF346');
     expect(redacted.password).toBe('REDACTED');
-    expect(redacted.nested.cf_clearance).toBe('REDACTED');
-    expect(redacted.nested.tokenValue).toBe('REDACTED');
-    expect(redacted.nested.amount).toBe(25);
-    expect(redacted.wagers[0].PIN).toBe('REDACTED');
-    expect(redacted.wagers[0].WagerNumber).toBe(750038740);
+    expect(typeof redacted.nested === 'object' ? redacted.nested.cf_clearance : undefined).toBe('REDACTED');
+    expect(typeof redacted.nested === 'object' ? redacted.nested.tokenValue : undefined).toBe('REDACTED');
+    expect(typeof redacted.nested === 'object' ? redacted.nested.amount : undefined).toBe(25);
+    expect(redacted.wagers?.[0]?.PIN).toBe('REDACTED');
+    expect(redacted.wagers?.[0]?.WagerNumber).toBe(750038740);
   });
 
   it('logs status code and leaves the response body readable', async () => {
     const writes: Array<{ sql: string; params: unknown[] }> = [];
-    const logger = new RawApiLogger({
+    const logger = new RawApiLogger(testDatabase({
       run: async (sql: string, params: unknown[] = []) => {
         writes.push({ sql, params });
         return { lastID: 1, changes: 1 };
       },
-    } as any);
+    }));
 
     const response = new Response(JSON.stringify({ ok: true, token: 'secret' }), { status: 202 });
 
@@ -43,19 +68,19 @@ describe('RawApiLogger', () => {
     const insert = writes.find((write) => write.sql.includes('INSERT INTO raw_api_logs'));
     expect(insert).toBeDefined();
     expect(insert!.sql).toContain('status_code');
-    expect(insert!.params[1]).toContain('"token":"REDACTED"');
-    expect(insert!.params[4]).toContain('"q":"x"');
+    expect(String(insert!.params[1])).toContain('"token":"REDACTED"');
+    expect(String(insert!.params[4])).toContain('"q":"x"');
     expect(insert!.params[5]).toBe(202);
   });
 
   it('redacts sensitive request params before insert', async () => {
     const writes: Array<{ sql: string; params: unknown[] }> = [];
-    const logger = new RawApiLogger({
+    const logger = new RawApiLogger(testDatabase({
       run: async (sql: string, params: unknown[] = []) => {
         writes.push({ sql, params });
         return { lastID: 1, changes: 1 };
       },
-    } as any);
+    }));
 
     await logger.log({
       endpoint: '/api/buckeye/agent-performance',
@@ -67,17 +92,17 @@ describe('RawApiLogger', () => {
 
     const insert = writes.find((write) => write.sql.includes('INSERT INTO raw_api_logs'));
     expect(insert).toBeDefined();
-    expect(insert!.params[4]).toContain('"PasswordFix":"REDACTED"');
-    expect(insert!.params[4]).toContain('"cf_clearance":"REDACTED"');
-    expect(insert!.params[4]).not.toContain('secret');
-    expect(insert!.params[4]).not.toContain('cookie');
+    expect(String(insert!.params[4])).toContain('"PasswordFix":"REDACTED"');
+    expect(String(insert!.params[4])).toContain('"cf_clearance":"REDACTED"');
+    expect(String(insert!.params[4])).not.toContain('secret');
+    expect(String(insert!.params[4])).not.toContain('cookie');
   });
 
   it('redacts bearer tokens, jwt values, and Cloudflare cookies from plain text', () => {
     const redacted = redactSensitiveFields({
       text: 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJCSUxMWSJ9.signature; Cookie: cf_clearance=abc123; __cf_bm=def456',
       nested: 'token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJCSUxMWSJ9.signature&cf_clearance=abc123',
-    }) as any;
+    }) as RedactedFixture;
 
     expect(redacted.text).not.toContain('eyJhbGciOiJIUzI1NiJ9');
     expect(redacted.text).not.toContain('abc123');
@@ -107,10 +132,9 @@ describe('RawApiLogger', () => {
         ];
       },
     };
-    const scraperManager = { getDatabase: () => db };
 
     const url = new URL('http://127.0.0.1/api/analytics/raw-logs?agentId=BILLY666&status=error&days=3&limit=5&includeBody=1');
-    const response = await registerAnalyticsRoutes(url, new Request(url), scraperManager as any) as Response;
+    const response = await registerAnalyticsRoutes(url, new Request(url), analyticsScraperManager(db)) as Response;
     const payload = await response.json();
 
     expect(response.status).toBe(200);

@@ -1,4 +1,4 @@
-import { serve } from 'bun';
+import { serve, type ServerWebSocket } from 'bun';
 import { initDatabase, type Database } from './database';
 import { BuckeyeScraperManager } from './scrapers/ScraperManager';
 import { OddsPoller } from './odds/OddsPoller';
@@ -23,24 +23,53 @@ let oddsPoller: OddsPoller;
 let secretVault: BunSecretVault;
 let performanceCache: PerformanceCache | undefined;
 
+interface WebSocketData {
+  agentId: string | null;
+  isAuthenticated: boolean;
+  lastPing: number;
+  pingInterval?: Timer;
+  playerSubscriptions?: Set<string>;
+}
+
+interface BroadcastMessage {
+  type?: string;
+  payload?: Record<string, unknown>;
+}
+
+type WebSocketMessage = Record<string, unknown> & {
+  type?: string;
+  agentId?: string;
+  password?: string;
+  cfCookie?: string;
+  token?: string;
+  playerId?: string;
+  customerId?: string;
+  login?: string;
+  action?: string;
+  wagerNumber?: number | string;
+  amount?: number;
+  reason?: string;
+};
+
 // Connected WebSocket clients
-const wsClients = new Set<any>();
+const wsClients = new Set<ServerWebSocket<WebSocketData>>();
 
 function broadcast(msg: object) {
+  const broadcastMsg = msg as BroadcastMessage;
   const payload = JSON.stringify(msg);
   for (const client of wsClients) {
     try {
       if (client.readyState === 1) {
-        const subscribedPlayers = client.data?.playerSubscriptions as Set<string> | undefined;
-        if (subscribedPlayers?.size && (msg as any).type === 'wager.new') {
-          const wager = (msg as any).payload || {};
+        const subscribedPlayers = client.data?.playerSubscriptions;
+        if (subscribedPlayers?.size && broadcastMsg.type === 'wager.new') {
+          const wager = broadcastMsg.payload || {};
           const playerId = String(wager.CustomerID || wager.customer_id || wager.Login || wager.login || '');
           if (!playerId || !subscribedPlayers.has(playerId)) continue;
         }
         client.send(payload);
       }
-    } catch (err: any) {
-      console.warn('[WS] Broadcast to client failed:', err?.message || err);
+    } catch (err) {
+      console.warn('[WS] Broadcast to client failed:', err instanceof Error ? err.message : err);
     }
   }
 }
@@ -114,7 +143,7 @@ async function startServer() {
   await restoreBuckeyeFromVault();
 
   // Create HTTP server with WebSocket support
-  const server = serve({
+  serve<WebSocketData>({
     port: PORT,
     hostname: HOST,
     idleTimeout: 30,
@@ -122,7 +151,9 @@ async function startServer() {
       perMessageDeflate: true, // Built-in compression for WS messages
       open(ws) {
         console.log('[WS] Client connected');
-        ws.data = { agentId: null, isAuthenticated: false, lastPing: Date.now() };
+        ws.data.agentId = ws.data.agentId ?? null;
+        ws.data.isAuthenticated = ws.data.isAuthenticated ?? false;
+        ws.data.lastPing = Date.now();
         wsClients.add(ws);
 
         // Heartbeat: ping every 30s, close if no response within 45s
@@ -132,7 +163,9 @@ async function startServer() {
             clearInterval(ws.data.pingInterval);
             ws.close();
           } else {
-            try { ws.ping(); } catch {}
+            try { ws.ping(); } catch {
+              // Ignore heartbeat ping failures; stale sockets are closed on the next tick.
+            }
           }
         }, 30_000);
       },
@@ -165,7 +198,7 @@ async function startServer() {
             const payload = await verifyToken(token, JWT_SECRET);
             // Token valid — upgrade with pre-authenticated data
             if (server.upgrade(request, {
-              data: { agentId: payload.agentId, isAuthenticated: true },
+              data: { agentId: payload.agentId, isAuthenticated: true, lastPing: Date.now() },
             })) {
               return undefined;
             }
@@ -178,7 +211,7 @@ async function startServer() {
         } else {
           // Dev mode — upgrade without auth
           if (server.upgrade(request, {
-            data: { agentId: null, isAuthenticated: false },
+            data: { agentId: null, isAuthenticated: false, lastPing: Date.now() },
           })) {
             return undefined;
           }
@@ -209,22 +242,23 @@ async function startServer() {
 }
 
 async function handleWebSocketMessage(
-  ws: any,
+  ws: ServerWebSocket<WebSocketData>,
   message: string | Buffer,
   scraperManager: BuckeyeScraperManager
 ) {
   try {
-    const msg = JSON.parse(message.toString());
+    const msg = JSON.parse(message.toString()) as WebSocketMessage;
 
     switch (msg.type) {
       case 'auth': {
-        ws.data.agentId = msg.agentId;
+        const agentId = String(msg.agentId || '').trim();
+        ws.data.agentId = agentId || null;
 
         // If token is provided, try to resume session first
-        if (msg.token) {
+        if (agentId && msg.token) {
           try {
-            const resumed = await scraperManager.resumeAgent(msg.agentId, {
-              agentId: msg.agentId,
+            const resumed = await scraperManager.resumeAgent(agentId, {
+              agentId,
               password: msg.password || '',
               baseUrl: env.BUCKEYE_BASE_URL,
               cfCookie: msg.cfCookie,
@@ -232,7 +266,7 @@ async function handleWebSocketMessage(
 
             if (resumed) {
               await secretVault.saveBuckeyeSecrets({
-                agentId: msg.agentId,
+                agentId,
                 password: msg.password || undefined,
                 cfCookie: msg.cfCookie,
                 token: msg.token,
@@ -241,7 +275,7 @@ async function handleWebSocketMessage(
               // Issue a fresh JWT
               let jwtToken = '';
               try {
-                jwtToken = await createToken(msg.agentId, JWT_SECRET);
+                jwtToken = await createToken(agentId, JWT_SECRET);
               } catch (err) {
                 console.error('[WS] JWT creation error:', err);
               }
@@ -255,14 +289,14 @@ async function handleWebSocketMessage(
               );
               break;
             }
-          } catch (err) {
+          } catch {
             console.log('[WS] Token resume failed, falling back to password login');
           }
         }
 
         // Fallback to password login
-        const valid = msg.password && msg.password.length > 0;
-        if (!valid) {
+        const password = msg.password || '';
+        if (!password) {
           ws.send(
             JSON.stringify({
               type: 'auth_response',
@@ -276,9 +310,9 @@ async function handleWebSocketMessage(
         ws.data.isAuthenticated = true;
 
         try {
-          await scraperManager.startAgent(msg.agentId, {
-            agentId: msg.agentId,
-            password: msg.password,
+          await scraperManager.startAgent(agentId, {
+            agentId,
+            password,
             baseUrl: env.BUCKEYE_BASE_URL,
             cfCookie: msg.cfCookie,
           });
@@ -295,11 +329,11 @@ async function handleWebSocketMessage(
         }
 
         // Get token from the agent
-        const agentInstance = scraperManager.getAgentInstance(msg.agentId);
+        const agentInstance = scraperManager.getAgentInstance(agentId);
         const buckeyeToken = agentInstance?.api.getToken() || '';
         await secretVault.saveBuckeyeSecrets({
-          agentId: msg.agentId,
-          password: msg.password,
+          agentId,
+          password,
           cfCookie: msg.cfCookie,
           token: buckeyeToken,
         });
@@ -307,7 +341,7 @@ async function handleWebSocketMessage(
         // Issue our own JWT for future reconnections
         let jwtToken = '';
         try {
-          jwtToken = await createToken(msg.agentId, JWT_SECRET);
+          jwtToken = await createToken(agentId, JWT_SECRET);
         } catch (err) {
           console.error('[WS] JWT creation error:', err);
         }
@@ -325,11 +359,12 @@ async function handleWebSocketMessage(
 
       case 'request_data': {
         try {
-          const data = await scraperManager.getAgentData(msg.agentId);
+          const agentId = String(msg.agentId || '').trim();
+          const data = await scraperManager.getAgentData(agentId);
           ws.send(
             JSON.stringify({
               type: 'data_response',
-              agentId: msg.agentId,
+              agentId,
               data,
             })
           );
@@ -338,7 +373,7 @@ async function handleWebSocketMessage(
           ws.send(
             JSON.stringify({
               type: 'data_error',
-              agentId: msg.agentId,
+              agentId: String(msg.agentId || '').trim(),
               message: err instanceof Error ? err.message : 'Failed to load agent data',
             })
           );
@@ -367,14 +402,14 @@ async function handleWebSocketMessage(
 
       case 'refresh': {
         try {
-          await scraperManager.forceRefresh(msg.agentId);
+          await scraperManager.forceRefresh(String(msg.agentId || '').trim());
         } catch (err) {
           console.error('[WS] Force refresh error:', err);
         }
         ws.send(
           JSON.stringify({
             type: 'refresh_initiated',
-            agentId: msg.agentId,
+            agentId: String(msg.agentId || '').trim(),
           })
         );
         break;
@@ -430,7 +465,7 @@ async function handleWebSocketMessage(
         try {
           const newToken = await createToken(ws.data.agentId, JWT_SECRET);
           ws.send(JSON.stringify({ type: 'token_refreshed', token: newToken }));
-        } catch (err) {
+        } catch {
           ws.send(JSON.stringify({ type: 'token_refresh_error', message: 'Token refresh failed' }));
         }
         break;

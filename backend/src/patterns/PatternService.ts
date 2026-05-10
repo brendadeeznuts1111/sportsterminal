@@ -19,6 +19,58 @@ interface EventRow {
   start_time?: string | null;
 }
 
+interface WagerRow {
+  wager_number: number;
+  login: string;
+  agent_login: string;
+  ticket_writer: string;
+  parsed_game: string | null;
+  parsed_market: string | null;
+  parsed_side: string | null;
+  matched_event_id: string | null;
+  insert_datetime: string;
+  sport?: string | null;
+  home_team?: string | null;
+  away_team?: string | null;
+}
+
+interface AccessLogRow {
+  ip_address: string | null;
+  login_id: string | null;
+}
+
+interface CountRow {
+  count: number;
+}
+
+interface AverageAmountRow extends CountRow {
+  avg_amount: number | null;
+}
+
+interface PatternIdRow {
+  id: string | number;
+}
+
+interface PinReferenceRow {
+  home_team: string;
+  away_team: string;
+  spread_home: number | null;
+  spread_away: number | null;
+  spread_home_price: number | null;
+  spread_away_price: number | null;
+  total_over: number | null;
+  total_under: number | null;
+  total_over_price: number | null;
+  total_under_price: number | null;
+  moneyline_home: number | null;
+  moneyline_away: number | null;
+  scraped_at: string;
+}
+
+interface PinMarket {
+  [key: string]: unknown;
+}
+
 const GLOBAL_EVENT_ID = 'pattern-global';
 
 export class PatternService {
@@ -43,14 +95,14 @@ export class PatternService {
     const eventId = correlation.match.eventId || GLOBAL_EVENT_ID;
 
     const recent = await this.getRecentWagers(wagerTime, 10);
-    const sameSpot = recent.filter((row: any) =>
+    const sameSpot = recent.filter((row) =>
       gameKeyFor(row.parsed_game || '') === gameKey &&
       row.parsed_market === correlation.parsed.market &&
       row.parsed_side === correlation.parsed.side
     );
 
-    const sameAgent = sameSpot.filter((row: any) => row.agent_login === wager.AgentLogin);
-    const sameAgentPlayers = new Set(sameAgent.map((row: any) => row.login).filter(Boolean));
+    const sameAgent = sameSpot.filter((row) => row.agent_login === wager.AgentLogin);
+    const sameAgentPlayers = new Set(sameAgent.map((row) => row.login).filter(Boolean));
     if (sameAgent.length >= 4 || sameAgentPlayers.size >= 3) {
       patterns.push(this.pattern({
         type: 'Agent Swarm',
@@ -74,7 +126,7 @@ export class PatternService {
       }));
     }
 
-    const crossAgents = new Set(sameSpot.map((row: any) => row.agent_login).filter(Boolean));
+    const crossAgents = new Set(sameSpot.map((row) => row.agent_login).filter(Boolean));
     if (crossAgents.size >= 2 && sameSpot.length >= 3) {
       patterns.push(this.pattern({
         type: 'cross_agent_steam',
@@ -166,7 +218,7 @@ export class PatternService {
     const agentWhere = agentId ? 'AND agent_id = ?' : '';
     if (agentId) params.push(agentId);
 
-    const logs = await this.db.all(
+    const logs = await this.db.all<AccessLogRow>(
       `SELECT * FROM access_logs
        WHERE access_datetime >= ? ${agentWhere}
        ORDER BY access_datetime DESC
@@ -175,12 +227,12 @@ export class PatternService {
     );
 
     const patterns: PatternInsert[] = [];
-    const byIp = groupBy(logs, (row: any) => row.ip_address || '');
+    const byIp = groupBy(logs, (row) => row.ip_address || '');
     const detectedAt = new Date().toISOString();
 
     for (const [ip, rows] of byIp) {
       if (!ip) continue;
-      const players = new Set(rows.map((row: any) => row.login_id).filter(Boolean));
+      const players = new Set(rows.map((row) => row.login_id).filter(Boolean));
       if (players.size >= 2) {
         patterns.push(this.pattern({
           type: 'Shared IP Cluster',
@@ -201,7 +253,7 @@ export class PatternService {
         }));
       }
 
-      const followPattern = await this.findIpFollowPattern(ip, Array.from(players), rows);
+      const followPattern = await this.findIpFollowPattern(ip, Array.from(players).filter(isNonEmptyString), rows);
       if (followPattern) {
         patterns.push({
           ...followPattern,
@@ -288,7 +340,8 @@ export class PatternService {
   ): Promise<void> {
     if (!correlation.match.eventId) return;
     const event = await this.db.get<EventRow>('SELECT * FROM events WHERE id = ?', [correlation.match.eventId]);
-    const start = event?.start_time ? parseDate(event.start_time) : null;
+    const eventStart = event?.start_time || null;
+    const start = eventStart ? parseDate(eventStart) : null;
     const isLiveWriter = wager.TicketWriter === 'GSLIVE';
 
     if (start && wagerTime.getTime() > start.getTime() + 60_000) {
@@ -306,7 +359,7 @@ export class PatternService {
         details: {
           wagerNumber: wager.WagerNumber,
           wagerTime: wager.InsertDateTime,
-          eventStart: event.start_time,
+          eventStart,
           ticketWriter: wager.TicketWriter,
           minutesAfterStart,
           reasonCodes: ['after_event_start', isLiveWriter ? 'live_writer' : 'not_gslive'],
@@ -316,7 +369,7 @@ export class PatternService {
     }
 
     if (isLiveWriter) {
-      const recentLive = (await this.getRecentWagers(wagerTime, 10)).filter((row: any) =>
+      const recentLive = (await this.getRecentWagers(wagerTime, 10)).filter((row) =>
         row.ticket_writer === 'GSLIVE' &&
         (row.matched_event_id === correlation.match.eventId || gameKeyFor(row.parsed_game || '') === gameKeyFor(correlation.parsed.game))
       );
@@ -350,7 +403,7 @@ export class PatternService {
     detectedAt: string,
     wagerTime: Date
   ): Promise<void> {
-    const recent = await this.db.all(
+    const recent = await this.db.all<WagerRow>(
       `SELECT w.parsed_side, w.parsed_market, w.sport, w.wager_number, e.home_team, e.away_team
        FROM wagers w
        LEFT JOIN events e ON e.id = w.matched_event_id
@@ -363,8 +416,8 @@ export class PatternService {
     if (recent.length < 5) return;
 
     const sides = recent
-      .map((row: any) => classifyComparableSide(row.parsed_side, row.parsed_market, row.home_team, row.away_team))
-      .filter(side => side && side !== 'unknown');
+      .map((row) => classifyComparableSide(row.parsed_side, row.parsed_market, row.home_team, row.away_team))
+      .filter((side: string | null): side is string => Boolean(side && side !== 'unknown'));
     const counts = new Map<string, number>();
     for (const side of sides) counts.set(side, (counts.get(side) || 0) + 1);
     const majority = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0];
@@ -374,8 +427,8 @@ export class PatternService {
     const currentSide = classifyComparableSide(
       correlation.parsed.side,
       correlation.parsed.market,
-      currentEvent?.home_team,
-      currentEvent?.away_team
+      currentEvent?.home_team || '',
+      currentEvent?.away_team || ''
     );
     if (!majority || majority[1] < 3 || !currentSide || majority[0] === currentSide) return;
 
@@ -411,12 +464,13 @@ export class PatternService {
   ): Promise<void> {
     if (!correlation.match.eventId) return;
     const event = await this.db.get<EventRow>('SELECT * FROM events WHERE id = ?', [correlation.match.eventId]);
-    const start = event?.start_time ? parseDate(event.start_time) : null;
+    const eventStart = event?.start_time || null;
+    const start = eventStart ? parseDate(eventStart) : null;
     if (!start) return;
     const minutesToStart = Math.round((start.getTime() - wagerTime.getTime()) / 60000);
     if (minutesToStart < 0 || minutesToStart > 15) return;
 
-    const avgRow = await this.db.get<any>(
+    const avgRow = await this.db.get<AverageAmountRow>(
       `SELECT AVG(amount_wagered) AS avg_amount, COUNT(*) AS count
        FROM wagers
        WHERE agent_login = ? AND sport = ? AND wager_number != ? AND insert_datetime < ?`,
@@ -443,7 +497,7 @@ export class PatternService {
         agentAverageAmount: avgAmount,
         ratio,
         minutesToStart,
-        eventStart: event.start_time,
+        eventStart,
         reasonCodes: ['near_game_start', 'above_agent_average'],
         correlation,
       },
@@ -460,11 +514,11 @@ export class PatternService {
     const hourStart = new Date(wagerTime);
     hourStart.setMinutes(0, 0, 0);
     const previousWindowStart = new Date(hourStart.getTime() - 24 * 60 * 60 * 1000);
-    const current = await this.db.get<any>(
+    const current = await this.db.get<CountRow>(
       `SELECT COUNT(*) AS count FROM wagers WHERE agent_login = ? AND insert_datetime >= ? AND insert_datetime <= ?`,
       [wager.AgentLogin, hourStart.toISOString(), wagerTime.toISOString()]
     );
-    const previous = await this.db.get<any>(
+    const previous = await this.db.get<CountRow>(
       `SELECT COUNT(*) AS count FROM wagers WHERE agent_login = ? AND insert_datetime >= ? AND insert_datetime < ?`,
       [wager.AgentLogin, previousWindowStart.toISOString(), hourStart.toISOString()]
     );
@@ -606,25 +660,25 @@ export class PatternService {
     wagerTime: Date
   ): Promise<void> {
     if (!correlation.match.eventId) return;
-    const recentPlayerWagers = (await this.db.all(
+    const recentPlayerWagers = (await this.db.all<WagerRow>(
       `SELECT * FROM wagers
        WHERE login = ? AND matched_event_id IS NOT NULL AND insert_datetime >= ?
        ORDER BY insert_datetime DESC
        LIMIT 30`,
       [wager.Login, new Date(wagerTime.getTime() - 60 * 60 * 1000).toISOString()]
-    )).filter((row: any) => row.parsed_market === correlation.parsed.market);
+    )).filter((row) => row.parsed_market === correlation.parsed.market);
 
     let timingHits = 0;
     for (const row of recentPlayerWagers) {
       const rowTime = parseDate(row.insert_datetime);
       if (!rowTime) continue;
-      const move = await this.db.get(
+      const move = await this.db.get<PatternIdRow>(
         `SELECT id FROM line_movements
          WHERE event_id = ? AND book = 'PIN' AND market = ? AND recorded_at >= ? AND recorded_at <= ?
          LIMIT 1`,
         [
           row.matched_event_id,
-          normalizeMarketForOdds(row.parsed_market),
+          normalizeMarketForOdds(row.parsed_market || 'other'),
           new Date(rowTime.getTime() - 120_000).toISOString(),
           rowTime.toISOString(),
         ]
@@ -664,7 +718,7 @@ export class PatternService {
     wagerTime: Date
   ): Promise<void> {
     if (!correlation.match.eventId) return;
-    const steam = await this.db.get(
+    const steam = await this.db.get<PatternIdRow>(
       `SELECT * FROM detected_patterns
        WHERE event_id = ? AND type = 'Steam Move' AND market = ? AND detected_at >= ? AND detected_at <= ?
        ORDER BY detected_at DESC
@@ -690,17 +744,17 @@ export class PatternService {
       parts: ['steam-chase', wager.WagerNumber],
       details: {
         wagerNumber: wager.WagerNumber,
-        steamPatternId: (steam as any).id,
+        steamPatternId: steam.id,
         reasonCodes: ['existing_steam', 'customer_followed'],
         correlation,
       },
     }));
   }
 
-  private async findIpFollowPattern(ip: string, players: string[], rows: any[]): Promise<PatternInsert | null> {
+  private async findIpFollowPattern(ip: string, players: string[], rows: AccessLogRow[]): Promise<PatternInsert | null> {
     if (players.length < 2) return null;
     const placeholders = players.map(() => '?').join(',');
-    const wagers = await this.db.all(
+    const wagers = await this.db.all<WagerRow>(
       `SELECT * FROM wagers
        WHERE login IN (${placeholders}) AND parsed_game IS NOT NULL AND insert_datetime >= ?
        ORDER BY insert_datetime DESC
@@ -708,20 +762,20 @@ export class PatternService {
       [...players, new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()]
     );
 
-    const grouped = groupBy(wagers, (row: any) =>
+    const grouped = groupBy(wagers, (row) =>
       [gameKeyFor(row.parsed_game || ''), row.parsed_market || 'other', row.parsed_side || 'unknown'].join('|')
     );
 
     for (const [key, group] of grouped) {
-      const groupPlayers = new Set(group.map((row: any) => row.login).filter(Boolean));
+      const groupPlayers = new Set(group.map((row) => row.login).filter(Boolean));
       if (groupPlayers.size < 2) continue;
-      const times = group.map((row: any) => parseDate(row.insert_datetime)?.getTime() || 0).filter(Boolean).sort();
+      const times = group.map((row) => parseDate(row.insert_datetime)?.getTime() || 0).filter(Boolean).sort();
       if (!times.length || times[times.length - 1] - times[0] > 10 * 60 * 1000) continue;
       const [game, market, side] = key.split('|');
       return this.pattern({
         type: 'IP Follow Pattern',
         category: 'ip',
-        eventId: (group[0] as any).matched_event_id || GLOBAL_EVENT_ID,
+        eventId: group[0].matched_event_id || GLOBAL_EVENT_ID,
         parsed: { game, market: market as ParsedWager['market'], side, price: null, period: 'game', teams: [] },
         severity: groupPlayers.size >= 3 ? 'critical' : 'warning',
         score: Math.min(94, 70 + groupPlayers.size * 7),
@@ -731,7 +785,7 @@ export class PatternService {
         details: {
           ip,
           players: Array.from(groupPlayers),
-          wagerNumbers: group.map((row: any) => row.wager_number).slice(0, 20),
+          wagerNumbers: group.map((row) => row.wager_number).slice(0, 20),
           accessRows: rows.slice(0, 10),
           reasonCodes: ['shared_ip', 'same_game_side', 'tight_wager_window'],
         },
@@ -770,7 +824,7 @@ export class PatternService {
   }
 
   private async getPinReference(eventId: string): Promise<Record<string, unknown> | null> {
-    const row = await this.db.get<any>(
+    const row = await this.db.get<PinReferenceRow>(
       `SELECT o.*, e.home_team, e.away_team
        FROM odds_snapshots o
        JOIN events e ON e.id = o.event_id
@@ -804,15 +858,15 @@ export class PatternService {
     };
   }
 
-  private async getRecentWagers(anchor: Date, minutes: number): Promise<any[]> {
-    const rows = await this.db.all(
+  private async getRecentWagers(anchor: Date, minutes: number): Promise<WagerRow[]> {
+    const rows = await this.db.all<WagerRow>(
       `SELECT * FROM wagers
        WHERE insert_datetime >= ?
        ORDER BY insert_datetime DESC
        LIMIT 1000`,
       [new Date(anchor.getTime() - minutes * 60 * 1000).toISOString()]
     );
-    return rows.filter((row: any) => {
+    return rows.filter((row) => {
       const t = parseDate(row.insert_datetime);
       return t && t.getTime() >= anchor.getTime() - minutes * 60 * 1000 && t.getTime() <= anchor.getTime() + 60_000;
     });
@@ -897,6 +951,10 @@ function normalizeMarketForOdds(market: string): string {
   return market === 'prop' || market === 'parlay' ? 'other' : market || 'other';
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
 function parseDate(value: string | null | undefined): Date | null {
   if (!value) return null;
   const direct = new Date(value);
@@ -920,7 +978,7 @@ function inferWagerNumber(details: Record<string, unknown>): number | null {
 function inferAgentLogin(details: Record<string, unknown>): string | null {
   if (typeof details.agent === 'string' && details.agent.trim()) return details.agent.trim();
   if (Array.isArray(details.agents) && details.agents.length > 0) return String(details.agents[0]);
-  const correlation = details.correlation as any;
+  const correlation = details.correlation as { wager?: { AgentLogin?: unknown } } | undefined;
   if (typeof correlation?.wager?.AgentLogin === 'string') return correlation.wager.AgentLogin;
   return null;
 }
@@ -961,14 +1019,14 @@ function getComparablePinPrice(parsed: ParsedWager, pin: Record<string, unknown>
   if (!pin) return null;
   const side = normalizeName(parsed.side);
   if (parsed.market === 'moneyline') {
-    const moneyline = pin.moneyline as any;
+    const moneyline = pin.moneyline as PinMarket | undefined;
     if (!moneyline) return null;
-    const home = normalizeName(String((pin as any).homeTeam || 'home'));
+    const home = normalizeName(String(pin.homeTeam || 'home'));
     if (side.includes(home) && Number.isFinite(Number(moneyline.home))) return Number(moneyline.home);
     if (Number.isFinite(Number(moneyline.away))) return Number(moneyline.away);
   }
   if (parsed.market === 'spread') {
-    const spread = pin.spread as any;
+    const spread = pin.spread as PinMarket | undefined;
     if (!spread) return null;
     const homePrice = Number(spread.homePrice);
     const awayPrice = Number(spread.awayPrice);
@@ -976,7 +1034,7 @@ function getComparablePinPrice(parsed: ParsedWager, pin: Record<string, unknown>
     if (Number.isFinite(awayPrice)) return awayPrice;
   }
   if (parsed.market === 'total' || parsed.market === 'prop') {
-    const total = pin.total as any;
+    const total = pin.total as PinMarket | undefined;
     if (!total) return null;
     const key = parsed.side === 'under' ? 'underPrice' : 'overPrice';
     const price = Number(total[key]);

@@ -60,6 +60,7 @@ import { registerAnalyticsRoutes } from './routes/analytics';
 import { registerFreePlayAnalysisRoutes } from './routes/freeplay';
 import { registerCrossReferenceRoutes } from './routes/cross-reference';
 import { UrlPatternRouter } from './UrlPatternRouter';
+import type { RouteHandler } from './UrlPatternRouter';
 import type { BuckeyeScraperManager } from '../scrapers/ScraperManager';
 import type { OddsPoller } from '../odds/OddsPoller';
 import type { BunSecretVault } from '../services/BunSecretVault';
@@ -68,7 +69,7 @@ import { wrapRouterWithLogging } from './middleware/apiLogger';
 
 export interface RouterDeps {
   scraperManager: BuckeyeScraperManager;
-  oddsPoller: OddsPoller;
+  oddsPoller?: OddsPoller;
   secretVault?: BunSecretVault;
   performanceCache?: PerformanceCache;
 }
@@ -76,11 +77,11 @@ export interface RouterDeps {
 /**
  * Create and configure the URLPattern router with all registered routes.
  */
-export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPatternRouter {
+export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlPatternRouter {
   const router = new UrlPatternRouter();
 
   // CORS preflight handler
-  router.options('/api/*', async (url, request) => {
+  router.options('/api/*', async (_url, _request) => {
     return new Response(null, { status: 204, headers: corsHeaders });
   });
 
@@ -279,47 +280,47 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
   });
 
   router.get('/api/odds/live', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller);
+    return registerOddsRoutes(url, request, deps.oddsPoller!);
   });
 
   router.get('/api/odds/events', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller);
+    return registerOddsRoutes(url, request, deps.oddsPoller!);
   });
 
   router.get('/api/odds/events/:eventId', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller);
+    return registerOddsRoutes(url, request, deps.oddsPoller!);
   });
 
   router.get('/api/odds/snapshots', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller);
+    return registerOddsRoutes(url, request, deps.oddsPoller!);
   });
 
   router.get('/api/odds/movements', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller);
+    return registerOddsRoutes(url, request, deps.oddsPoller!);
   });
 
   router.get('/api/books', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller);
+    return registerOddsRoutes(url, request, deps.oddsPoller!);
   });
 
   router.get('/api/books/status', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller);
+    return registerOddsRoutes(url, request, deps.oddsPoller!);
   });
 
   router.get('/api/patterns/history', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller);
+    return registerOddsRoutes(url, request, deps.oddsPoller!);
   });
 
   router.get('/api/patterns/catalog', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller);
+    return registerOddsRoutes(url, request, deps.oddsPoller!);
   });
 
   router.get('/api/patterns/summary', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller);
+    return registerOddsRoutes(url, request, deps.oddsPoller!);
   });
 
   router.get('/api/patterns/agents', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller);
+    return registerOddsRoutes(url, request, deps.oddsPoller!);
   });
 
   router.get('/api/buckeye/vault-status', async (url, request) => {
@@ -391,6 +392,35 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
   });
 
   router.post('/api/connect', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+
+  // ========== PROXY-COMPATIBLE ROUTES (/api/proxy/*) ==========
+  router.get('/api/proxy/status', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+  router.get('/api/proxy/endpoints', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+  router.get('/api/proxy/logs', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+  router.get('/api/proxy/tokens', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+  router.post('/api/proxy/renewToken', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+  // Manager operations (POST only)
+  router.post('/api/proxy/Manager/:operation', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+  // System operations
+  router.post('/api/proxy/System/:operation', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+  // Log operations
+  router.post('/api/proxy/Log/:operation', async (url, request) => {
     return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
   });
 
@@ -483,7 +513,7 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
   });
 
   // Static files (last resort)
-  router.all('/*', async (url, request) => {
+  router.all('/*', async (url, _request) => {
     return registerStaticRoutes(url);
   });
 
@@ -499,7 +529,7 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
  */
 const routerCache = new WeakMap<
   RouterDeps,
-  WeakMap<object, { router: UrlPatternRouter; loggedDispatch: (url: URL, request: Request) => Promise<Response | null> }>
+  WeakMap<object, { router: UrlPatternRouter; loggedDispatch: RouteHandler }>
 >();
 const noRateLimiterCacheKey = {};
 
@@ -514,14 +544,14 @@ function getCachedRouter(deps: RouterDeps, rateLimiter?: RateLimiter) {
   let cached = limiterCache.get(limiterKey);
   if (!cached) {
     const router = createRouter(deps, rateLimiter);
-    const loggedDispatch = wrapRouterWithLogging((url, request) => router.dispatch(request), {
+    const loggedDispatch = wrapRouterWithLogging((_url, request) => router.dispatch(request), {
       db: deps.scraperManager?.getDatabase?.(),
       enabled: true,
     });
     cached = { router, loggedDispatch };
     limiterCache.set(limiterKey, cached);
   }
-  return cached;
+  return cached!;
 }
 
 export async function routeRequest(
@@ -559,7 +589,7 @@ export async function routeRequest(
     if (adminResponse) return adminResponse;
   }
 
-  return loggedDispatch(url, request);
+  return loggedDispatch(url, request, {});
 }
 
 function isSensitiveMutation(method: string, pathname: string): boolean {

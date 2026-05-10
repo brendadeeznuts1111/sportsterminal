@@ -33,6 +33,12 @@ const PUBLIC_PREFIXES = [
 ];
 
 function isPublicPath(pathname: string): boolean {
+  if (pathname.startsWith('/api/v1/')) {
+    const normalizedPath = pathname === '/api/v1/agents/hierarchy'
+      ? '/api/agents/hierarchy/tree'
+      : pathname.replace(/^\/api\/v1/, '/api');
+    return isPublicPath(normalizedPath);
+  }
   if (PUBLIC_PATHS.has(pathname)) return true;
   return PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }

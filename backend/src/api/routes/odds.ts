@@ -9,7 +9,7 @@ export function registerOddsRoutes(
   url: URL,
   _request: Request,
   oddsPoller: OddsPoller
-): Response | null {
+): Promise<Response> | Response | null {
   if (url.pathname === '/api/odds/events') {
     return handleAsync(async () => oddsPoller.getEvents(), corsHeaders);
   }

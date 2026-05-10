@@ -21,6 +21,32 @@ const BOOK_MAP: Record<string, string> = {
   wynnbet: 'WYN',
 };
 
+interface TheOddsOutcome {
+  name: string;
+  price?: number;
+  point?: number;
+}
+
+interface TheOddsMarket {
+  key: 'h2h' | 'spreads' | 'totals' | string;
+  outcomes?: TheOddsOutcome[];
+}
+
+interface TheOddsBookmaker {
+  key: string;
+  markets?: TheOddsMarket[];
+}
+
+interface TheOddsEvent {
+  id: string;
+  sport_title?: string;
+  sport_key?: string;
+  home_team: string;
+  away_team: string;
+  commence_time: string;
+  bookmakers?: TheOddsBookmaker[];
+}
+
 export class TheOddsProvider implements OddsProvider {
   name = 'the-odds-api';
   private apiKey: string;
@@ -38,8 +64,8 @@ export class TheOddsProvider implements OddsProvider {
       throw new Error(`TheOddsAPI error: ${response.status} ${response.statusText}`);
     }
 
-    const data = await response.json();
-    return data.map((item: any) => this.mapEvent(item));
+    const data = await response.json() as TheOddsEvent[];
+    return data.map((item) => this.mapEvent(item));
   }
 
   async checkHealth(): Promise<BookHealth[]> {
@@ -53,7 +79,7 @@ export class TheOddsProvider implements OddsProvider {
     }));
   }
 
-  private mapEvent(item: any): EventOdds {
+  private mapEvent(item: TheOddsEvent): EventOdds {
     const event: GameEvent = {
       id: item.id,
       sport: item.sport_title || 'Unknown',
@@ -64,24 +90,34 @@ export class TheOddsProvider implements OddsProvider {
       status: new Date(item.commence_time) > new Date() ? 'upcoming' : 'live',
     };
 
-    const books: BookOdds[] = (item.bookmakers || []).map((bm: any) => {
+    const books: BookOdds[] = (item.bookmakers || []).map((bm) => {
       const bookCode = BOOK_MAP[bm.key] || bm.key.toUpperCase().substring(0, 3);
-      const h2h = bm.markets?.find((m: any) => m.key === 'h2h');
-      const spreads = bm.markets?.find((m: any) => m.key === 'spreads');
-      const totals = bm.markets?.find((m: any) => m.key === 'totals');
+      const h2h = bm.markets?.find((m) => m.key === 'h2h');
+      const spreads = bm.markets?.find((m) => m.key === 'spreads');
+      const totals = bm.markets?.find((m) => m.key === 'totals');
 
       const h2hOutcomes = h2h?.outcomes || [];
       const spreadOutcomes = spreads?.outcomes || [];
       const totalOutcomes = totals?.outcomes || [];
+      const homeSpread = spreadOutcomes.find((o) => o.name === event.homeTeam);
+      const awaySpread = spreadOutcomes.find((o) => o.name === event.awayTeam);
+      const overTotal = totalOutcomes.find((o) => o.name === 'Over');
+      const underTotal = totalOutcomes.find((o) => o.name === 'Under');
+      const homeMoneyline = h2hOutcomes.find((o) => o.name === event.homeTeam);
+      const awayMoneyline = h2hOutcomes.find((o) => o.name === event.awayTeam);
 
       return {
         book: bookCode,
-        spreadHome: spreadOutcomes.find((o: any) => o.name === event.homeTeam)?.point ?? null,
-        spreadAway: spreadOutcomes.find((o: any) => o.name === event.awayTeam)?.point ?? null,
-        totalOver: totalOutcomes.find((o: any) => o.name === 'Over')?.point ?? null,
-        totalUnder: totalOutcomes.find((o: any) => o.name === 'Under')?.point ?? null,
-        moneylineHome: h2hOutcomes.find((o: any) => o.name === event.homeTeam)?.price ?? null,
-        moneylineAway: h2hOutcomes.find((o: any) => o.name === event.awayTeam)?.price ?? null,
+        spreadHome: homeSpread?.point ?? null,
+        spreadAway: awaySpread?.point ?? null,
+        spreadHomePrice: homeSpread?.price ?? null,
+        spreadAwayPrice: awaySpread?.price ?? null,
+        totalOver: overTotal?.point ?? null,
+        totalUnder: underTotal?.point ?? null,
+        totalOverPrice: overTotal?.price ?? null,
+        totalUnderPrice: underTotal?.price ?? null,
+        moneylineHome: homeMoneyline?.price ?? null,
+        moneylineAway: awayMoneyline?.price ?? null,
       };
     });
 

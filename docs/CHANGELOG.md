@@ -15,6 +15,8 @@
 - **Player 360 cold backfill cohort** — each background Player 360 poll now can pick a tiny archived-customer cohort from local `wager_archive` so ledger/account/performance coverage fills gradually across cold customers without a 50k-customer Buckeye sweep.
 - **Real API-only Player 360 profile hydration** — profile endpoint failures show an API error and retry path instead of generating a local mock profile from already-loaded wagers.
 - **Confirmed Buckeye player endpoints** — `getPerformancePlayer`, `getTransactionList`, `getTransactionHistory`, `getReportDeletedTransactions`, `getInfoPlayer`, and mapped-probe `getTeaserProfile` are now tracked as Player 360 source candidates.
+- **Standalone enhanced Buckeye proxy** — `enhanced-proxy.ts` now provides `/features`, `/metrics`, `/ready`, `/config`, `/ws`, retry/backoff, response/WebSocket compression flags, rate limiting, idempotency, token pre-renewal, stream mode, and isolated SQLite cache/token storage.
+- **Enhanced proxy config tests** — Added regression coverage for requested `ENABLE_*` aliases so `/features` reflects metrics, compression, retry, rate limiting, and token-renewal runtime configuration.
 
 ### Changed
 
@@ -25,6 +27,7 @@
 - Transaction ledger refresh now merges `getTransactionList`, `getTransactionHistory`, and `getReportDeletedTransactions` under the same 6-hour on-open/hotset policy, with same-day history and deleted rows classified into the ledger/deposit contract.
 - Player 360 watermarks and status now include hot player count plus cold-backfill count/limit so operators can see whether database seeding is progressing.
 - v5.32 frontend assets use the new cache-busting version label.
+- Documentation now covers the enhanced proxy runbook, feature flags, endpoint surface, and verification commands.
 
 ## v5.31
 

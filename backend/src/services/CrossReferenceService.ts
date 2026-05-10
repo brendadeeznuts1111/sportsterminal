@@ -30,15 +30,17 @@ interface FreePlayContext {
   outstandingEstimate: number;
   transactionCount: number;
   sourceConfidence: 'confirmed' | 'candidate';
-  recent: any[];
+  recent: SqlRow[];
 }
+
+type SqlRow = Record<string, unknown>;
 
 export class CrossReferenceService {
   private readonly tableCache = new Map<string, Promise<boolean>>();
 
   constructor(private readonly db: Database) {}
 
-  async getSummary(filters: CrossReferenceFilters): Promise<any> {
+  async getSummary(filters: CrossReferenceFilters): Promise<Record<string, unknown>> {
     const playerId = (filters.playerId || '').trim();
     const agentId = (filters.agentId || '').trim();
     const resolvedAgent = agentId || await this.resolveAgentForPlayer(playerId);
@@ -62,8 +64,12 @@ export class CrossReferenceService {
 
     const dataQuality = {
       missingAgentMap: Boolean(playerId && !playerContext.agentMap),
-      staleAccessLogs: Boolean(accessContext.lastSeen && daysOld(accessContext.lastSeen) > 2),
-      missingTransactions: Boolean(playerId && freePlayContext.transactionCount === 0 && sourceContext.playerTransactions?.status !== 'live'),
+      staleAccessLogs: Boolean(accessContext.lastSeen && daysOld(String(accessContext.lastSeen)) > 2),
+      missingTransactions: Boolean(
+        playerId
+        && freePlayContext.transactionCount === 0
+        && getStatus(sourceContext.playerTransactions) !== 'live'
+      ),
       orphanPlayerAgentMap: Boolean(playerContext.agentMap && !agentContext.assigned),
       patternEvidencePresent: Number(patternContext.total || 0) > 0,
       freePlayCandidateOnly: freePlayContext.sourceConfidence === 'candidate',
@@ -98,7 +104,7 @@ export class CrossReferenceService {
   private async resolveAgentForPlayer(playerId: string): Promise<string> {
     if (!playerId) return '';
     if (await this.hasTable('player_agent_map')) {
-      const row = await this.db.get<any>(
+      const row = await this.db.get<SqlRow>(
         `SELECT agent_id AS agentId, agent_login AS agentLogin
          FROM player_agent_map
          WHERE player_id = ? OR player_login = ?
@@ -109,7 +115,7 @@ export class CrossReferenceService {
       if (row?.agentId || row?.agentLogin) return String(row.agentId || row.agentLogin).trim();
     }
     if (await this.hasTable('wager_archive')) {
-      const row = await this.db.get<any>(
+      const row = await this.db.get<SqlRow>(
         `SELECT COALESCE(MAX(agent_id), MAX(agent_login), '') AS agentId
          FROM wager_archive
          WHERE login = ? OR customer_id = ?`,
@@ -120,7 +126,7 @@ export class CrossReferenceService {
     return '';
   }
 
-  private async getAgentContext(agentId: string): Promise<any> {
+  private async getAgentContext(agentId: string): Promise<Record<string, unknown>> {
     if (!agentId || !(await this.hasTable('agent_hierarchy'))) {
       return { assigned: null, lineage: [], playerCount: 0 };
     }
@@ -159,7 +165,7 @@ export class CrossReferenceService {
     };
   }
 
-  private async getPlayerContext(playerId: string, agentId: string): Promise<any> {
+  private async getPlayerContext(playerId: string, agentId: string): Promise<Record<string, unknown>> {
     if (!playerId) return { playerId: null, agentMap: null, relatedPlayers: [], linkCount: 0 };
     const agentMap = await this.getPlayerAgentMap(playerId);
     const relatedPlayers = await this.getRelatedPlayers(playerId);
@@ -173,9 +179,9 @@ export class CrossReferenceService {
     };
   }
 
-  private async getPlayerAgentMap(playerId: string): Promise<any | null> {
+  private async getPlayerAgentMap(playerId: string): Promise<SqlRow | null> {
     if (!(await this.hasTable('player_agent_map'))) return null;
-    return this.db.get<any>(
+    return this.db.get<SqlRow>(
       `SELECT player_id AS playerId, player_login AS playerLogin, agent_id AS agentId,
               agent_login AS agentLogin, source, last_refreshed AS lastRefreshed
        FROM player_agent_map
@@ -186,9 +192,9 @@ export class CrossReferenceService {
     );
   }
 
-  private async getRelatedPlayers(playerId: string): Promise<any[]> {
+  private async getRelatedPlayers(playerId: string): Promise<SqlRow[]> {
     if (!(await this.hasTable('player_links'))) return [];
-    return this.db.all<any>(
+    return this.db.all<SqlRow>(
       `SELECT player_a AS playerA, player_b AS playerB, reason, confidence, evidence_json AS evidenceJson,
               detected_at AS detectedAt, status
        FROM player_links
@@ -199,7 +205,7 @@ export class CrossReferenceService {
     );
   }
 
-  private async getWagerContext(playerId: string, agentId: string): Promise<any> {
+  private async getWagerContext(playerId: string, agentId: string): Promise<Record<string, unknown>> {
     if (!(await this.hasTable('wager_archive'))) {
       return { rowCount: 0, totalVolume: 0, openExposure: 0, lastSeen: null, recent: [] };
     }
@@ -213,7 +219,7 @@ export class CrossReferenceService {
       params.push(agentId, agentId);
     }
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
-    const summary = await this.db.get<any>(
+    const summary = await this.db.get<SqlRow>(
       `SELECT COUNT(*) AS rowCount, SUM(COALESCE(amount_wagered, 0)) AS totalVolume,
               SUM(COALESCE(volume_amount, amount_wagered, 0)) AS openExposure,
               MAX(insert_date_time) AS lastSeen,
@@ -221,7 +227,7 @@ export class CrossReferenceService {
        FROM wager_archive ${clause}`,
       params
     );
-    const recent = await this.db.all<any>(
+    const recent = await this.db.all<SqlRow>(
       `SELECT wager_number AS wagerNumber, login, customer_id AS customerId, agent_id AS agentId,
               agent_login AS agentLogin, sport, league, amount_wagered AS amountWagered,
               to_win_amount AS toWinAmount, insert_date_time AS insertDateTime, short_desc_raw AS description
@@ -240,7 +246,7 @@ export class CrossReferenceService {
     };
   }
 
-  private async getAccessContext(playerId: string, agentId: string): Promise<any> {
+  private async getAccessContext(playerId: string, agentId: string): Promise<Record<string, unknown>> {
     if (!(await this.hasTable('access_logs'))) {
       return { rowCount: 0, uniqueIps: 0, sharedIpCount: 0, lastSeen: null, latestGeo: null, recent: [] };
     }
@@ -254,12 +260,12 @@ export class CrossReferenceService {
       params.push(agentId);
     }
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
-    const summary = await this.db.get<any>(
+    const summary = await this.db.get<SqlRow>(
       `SELECT COUNT(*) AS rowCount, COUNT(DISTINCT ip_address) AS uniqueIps, MAX(access_datetime) AS lastSeen
        FROM access_logs ${clause}`,
       params
     );
-    const recent = await this.db.all<any>(
+    const recent = await this.db.all<SqlRow>(
       `SELECT login_id AS loginId, agent_id AS agentId, ip_address AS ipAddress, access_datetime AS accessDateTime,
               operation, data, raw_json AS rawJson
        FROM access_logs ${clause}
@@ -268,7 +274,7 @@ export class CrossReferenceService {
       params
     );
     const shared = playerId
-      ? await this.db.all<any>(
+      ? await this.db.all<SqlRow>(
         `SELECT ip_address AS ipAddress, COUNT(DISTINCT login_id) AS playerCount,
                 GROUP_CONCAT(DISTINCT login_id) AS players, MAX(access_datetime) AS lastSeen
          FROM access_logs
@@ -304,7 +310,7 @@ export class CrossReferenceService {
       where.push('(agent_id = ? OR agent_login = ?)');
       params.push(agentId, agentId);
     }
-    const rows = await this.db.all<any>(
+    const rows = await this.db.all<SqlRow>(
       `SELECT id, customer_id AS customerId, login, agent_id AS agentId, agent_login AS agentLogin,
               document_number AS documentNumber, tran_type AS tranType, amount, balance, description,
               category, transaction_time AS transactionTime, raw_json AS rawJson
@@ -326,7 +332,7 @@ export class CrossReferenceService {
     };
   }
 
-  private async getPatternContext(agentId: string): Promise<any> {
+  private async getPatternContext(agentId: string): Promise<Record<string, unknown>> {
     if (!(await this.hasTable('detected_patterns'))) {
       return { total: 0, critical: 0, warning: 0, recent: [] };
     }
@@ -340,7 +346,7 @@ export class CrossReferenceService {
       : '';
     const params = agentKeys.length ? hasPatternAgents ? [...agentKeys, ...agentKeys] : agentKeys : [];
     const join = hasPatternAgents ? 'LEFT JOIN pattern_agents pa ON pa.pattern_id = dp.id' : '';
-    const summary = await this.db.get<any>(
+    const summary = await this.db.get<SqlRow>(
       `SELECT COUNT(DISTINCT dp.id) AS total,
               SUM(CASE WHEN dp.severity = 'critical' THEN 1 ELSE 0 END) AS critical,
               SUM(CASE WHEN dp.severity = 'warning' THEN 1 ELSE 0 END) AS warning,
@@ -350,7 +356,7 @@ export class CrossReferenceService {
        ${where}`,
       params
     );
-    const recent = await this.db.all<any>(
+    const recent = await this.db.all<SqlRow>(
       `SELECT DISTINCT dp.id, dp.type, dp.category, dp.severity, dp.score,
               dp.agent_login AS agentLogin, dp.description, dp.detected_at AS detectedAt
        FROM detected_patterns dp
@@ -373,7 +379,7 @@ export class CrossReferenceService {
     const keys = new Set<string>();
     if (agentId) keys.add(agentId);
     if (agentId && await this.hasTable('agent_hierarchy')) {
-      const row = await this.db.get<any>(
+      const row = await this.db.get<SqlRow>(
         `SELECT agent_id AS agentId, login FROM agent_hierarchy WHERE agent_id = ? OR login = ? LIMIT 1`,
         [agentId, agentId]
       );
@@ -383,9 +389,9 @@ export class CrossReferenceService {
     return [...keys].filter(Boolean);
   }
 
-  private async getSourceContext(playerId: string): Promise<any> {
+  private async getSourceContext(playerId: string): Promise<Record<string, unknown>> {
     if (!playerId || !(await this.hasTable('player_source_status'))) return {};
-    const rows = await this.db.all<any>(
+    const rows = await this.db.all<SqlRow>(
       `SELECT source_key AS sourceKey, last_success_at AS lastSuccessAt, last_attempt_at AS lastAttemptAt,
               last_error AS lastError
        FROM player_source_status
@@ -406,7 +412,7 @@ export class CrossReferenceService {
   private async hasTable(name: string): Promise<boolean> {
     let cached = this.tableCache.get(name);
     if (!cached) {
-      cached = this.db.get<any>(
+      cached = this.db.get<SqlRow>(
         `SELECT name FROM sqlite_master WHERE type='table' AND name = ?`,
         [name]
       ).then(Boolean);
@@ -416,18 +422,25 @@ export class CrossReferenceService {
   }
 }
 
-function extractGeo(row: any): string | null {
+function extractGeo(row: SqlRow | undefined): string | null {
   if (!row) return null;
   const raw = parseJson(row.rawJson) || parseJson(row.data);
   const geo = raw?.geo || raw?.Geo || raw?.location;
   if (typeof geo === 'string') return geo;
   if (geo && typeof geo === 'object') {
-    return [geo.city, geo.region, geo.country].filter(Boolean).join(', ') || null;
+    const geoObject = geo as Record<string, unknown>;
+    return [geoObject.city, geoObject.region, geoObject.country].filter(Boolean).join(', ') || null;
   }
   return null;
 }
 
-function parseJson(value: unknown): any {
+function getStatus(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const status = (value as Record<string, unknown>).status;
+  return status ? String(status) : null;
+}
+
+function parseJson(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'string') return null;
   try {
     return JSON.parse(value);

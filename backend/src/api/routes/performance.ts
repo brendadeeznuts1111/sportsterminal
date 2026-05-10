@@ -3,8 +3,6 @@
  * Expose Redis-backed agent performance cache via REST API.
  */
 
-import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
-import type { PerformanceCache } from '../../services/PerformanceCache';
 import type { RouterDeps } from '../router';
 
 /**

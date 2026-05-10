@@ -4,7 +4,6 @@
 import { createRouteHandler } from './base';
 import { clampInt } from '../helpers';
 import { logRequest } from '../../utils/logger';
-import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 
 export const registerWagerStatsRoutes = createRouteHandler('/api/stats', async (_url, _req, scraperManager) => {
   logRequest('GET', '/api/stats');
