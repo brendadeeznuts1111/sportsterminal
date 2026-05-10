@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { CircuitBreaker, logger, hashPayload, json, fetchWithRetry, requestContext as rc, JsonObject } from './utils';
+import { config, reloadFromEnv } from './config';
 
 // ==========================================
 // 1. Circuit Breaker Tests
@@ -602,5 +603,134 @@ describe('fetchWithRetry', () => {
       .then(r => r.ok)
       .catch(() => false);
     expect(typeof result).toBe('boolean');
+  });
+});
+
+// ==========================================
+// 11. Config Module Tests
+// ==========================================
+describe('Config Module', () => {
+  test('config has required top-level keys', () => {
+    expect(config.port).toBeDefined();
+    expect(config.baseUrl).toBeDefined();
+    expect(config.authEndpoint).toBeDefined();
+    expect(config.dbPath).toBeDefined();
+    expect(config.features).toBeDefined();
+    expect(config.defaultRateLimit).toBeDefined();
+    expect(config.tokenRenewal).toBeDefined();
+    expect(config.otel).toBeDefined();
+  });
+
+  test('config features have correct types', () => {
+    expect(typeof config.features.wsCompression).toBe('boolean');
+    expect(typeof config.features.metrics).toBe('boolean');
+    expect(typeof config.features.requestLogging).toBe('boolean');
+    expect(typeof config.features.responseCompression).toBe('boolean');
+    expect(typeof config.features.rateLimiting).toBe('boolean');
+    expect(typeof config.features.wsBatching).toBe('boolean');
+    expect(typeof config.features.autoRetry).toBe('boolean');
+    expect(typeof config.features.gracefulShutdown).toBe('boolean');
+    expect(typeof config.features.walCheckpoint).toBe('boolean');
+    expect(typeof config.features.tokenPreRenewal).toBe('boolean');
+    expect(typeof config.features.idempotency).toBe('boolean');
+    expect(typeof config.features.streamMode).toBe('boolean');
+  });
+
+  test('config defaults are reasonable', () => {
+    expect(config.port).toBeGreaterThan(0);
+    expect(config.baseUrl).toContain('fantasy402');
+    expect(config.maxRetries).toBeGreaterThan(0);
+    expect(config.retryBaseMs).toBeGreaterThan(0);
+    expect(config.defaultRateLimit.limit).toBeGreaterThan(0);
+    expect(config.defaultRateLimit.window).toBeGreaterThan(0);
+  });
+
+  test('config token renewal settings are valid', () => {
+    expect(config.tokenRenewal.renewalIntervalMs).toBeGreaterThan(0);
+    expect(config.tokenRenewal.renewalThresholdMs).toBeGreaterThan(0);
+    expect(config.tokenRenewal.maxRenewalAttempts).toBeGreaterThan(0);
+  });
+
+  test('config OTEL settings are valid', () => {
+    expect(typeof config.otel.enabled).toBe('boolean');
+    expect(typeof config.otel.endpoint).toBe('string');
+    expect(typeof config.otel.serviceName).toBe('string');
+    expect(config.otel.exportIntervalMs).toBeGreaterThan(0);
+  });
+
+  test('reloadFromEnv returns config object', () => {
+    const result = reloadFromEnv();
+    expect(result).toBeDefined();
+    expect(result.features).toBeDefined();
+    expect(result.tokenRenewal).toBeDefined();
+    expect(result.otel).toBeDefined();
+  });
+});
+
+// ==========================================
+// 12. Token Pre-Renewal Logic Tests
+// ==========================================
+describe('Token Pre-Renewal Query', () => {
+  let db: Database;
+
+  beforeAll(() => {
+    db = new Database(':memory:');
+    db.run(`
+      CREATE TABLE IF NOT EXISTS tokens (
+        id INTEGER PRIMARY KEY,
+        customerID TEXT,
+        cf_clearance TEXT,
+        auth_code TEXT,
+        bearer_token TEXT,
+        created_at INTEGER DEFAULT (unixepoch()),
+        expires_at INTEGER
+      )
+    `);
+  });
+
+  afterAll(() => {
+    db.close();
+  });
+
+  beforeEach(() => {
+    db.run('DELETE FROM tokens');
+  });
+
+  test('finds tokens expiring within threshold', () => {
+    const now = Math.floor(Date.now() / 1000);
+    const threshold = now + 600; // 10 minutes from now
+
+    // Token expiring in 5 minutes (within threshold)
+    db.run('INSERT INTO tokens (customerID, cf_clearance, bearer_token, expires_at) VALUES (?, ?, ?, ?)',
+      ['USER1', 'cf1', 'token1', now + 300]);
+    // Token expiring in 2 hours (outside threshold)
+    db.run('INSERT INTO tokens (customerID, cf_clearance, bearer_token, expires_at) VALUES (?, ?, ?, ?)',
+      ['USER2', 'cf2', 'token2', now + 7200]);
+    // Token already expired
+    db.run('INSERT INTO tokens (customerID, cf_clearance, bearer_token, expires_at) VALUES (?, ?, ?, ?)',
+      ['USER3', 'cf3', 'token3', now - 100]);
+
+    const expiring = db.query(
+      'SELECT customerID, cf_clearance, bearer_token, expires_at FROM tokens WHERE bearer_token IS NOT NULL AND expires_at IS NOT NULL AND expires_at < ? ORDER BY expires_at ASC'
+    ).all(threshold) as Array<{ customerID: string; expires_at: number }>;
+
+    expect(expiring.length).toBe(2); // USER1 (5min) + USER3 (expired)
+    expect(expiring[0].customerID).toBe('USER3'); // Most urgent first
+    expect(expiring[1].customerID).toBe('USER1');
+  });
+
+  test('returns empty when no tokens need renewal', () => {
+    const now = Math.floor(Date.now() / 1000);
+    const threshold = now + 600;
+
+    // Token with plenty of time remaining
+    db.run('INSERT INTO tokens (customerID, cf_clearance, bearer_token, expires_at) VALUES (?, ?, ?, ?)',
+      ['USER_LONG', 'cf_long', 'token_long', now + 7200]);
+
+    const expiring = db.query(
+      'SELECT customerID FROM tokens WHERE bearer_token IS NOT NULL AND expires_at IS NOT NULL AND expires_at < ?'
+    ).all(threshold) as Array<{ customerID: string }>;
+
+    expect(expiring.length).toBe(0);
   });
 });
