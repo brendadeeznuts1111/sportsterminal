@@ -123,6 +123,7 @@ let sportExposureSort = { col: 'total', dir: 'desc' };
 let agentExposureSort = { col: 'total', dir: 'desc' };
 let patternsData = [];
 let patternSummary = { byType: {}, bySeverity: {}, total: 0 };
+let patternCatalog = [];
 let patternCategory = 'all';
 let patternFilterChoices = { agents: [], sports: [] };
 let lastPatternRequestKey = '';
@@ -1844,13 +1845,16 @@ async function loadPatterns(force = false) {
     const summaryUrl = new URL(`${getApiBaseUrl()}/api/patterns/summary`);
     summaryUrl.searchParams.set('sinceHours', filters.sinceHours);
 
+    const catalogUrl = new URL(`${getApiBaseUrl()}/api/patterns/catalog`);
+
     const choicesUrl = new URL(`${getApiBaseUrl()}/api/patterns/history`);
     choicesUrl.searchParams.set('limit', '500');
     choicesUrl.searchParams.set('sinceHours', filters.sinceHours);
 
-    const [historyRes, summaryRes, choicesRes] = await Promise.all([
+    const [historyRes, summaryRes, catalogRes, choicesRes] = await Promise.all([
       fetch(historyUrl.toString()),
       fetch(summaryUrl.toString()),
+      fetch(catalogUrl.toString()),
       fetch(choicesUrl.toString()),
     ]);
     if (!historyRes.ok) throw new Error(`Pattern history failed: ${historyRes.status}`);
@@ -1858,6 +1862,11 @@ async function loadPatterns(force = false) {
 
     patternsData = await historyRes.json();
     patternSummary = await summaryRes.json();
+    if (catalogRes.ok) {
+      const catalogBody = await catalogRes.json();
+      patternCatalog = Array.isArray(catalogBody.patterns) ? catalogBody.patterns : [];
+      renderPatternTypeOptions();
+    }
     if (choicesRes.ok) {
       updatePatternFilterChoices(await choicesRes.json());
     }
@@ -1867,6 +1876,7 @@ async function loadPatterns(force = false) {
     console.log('[Patterns] Failed to load live patterns:', err.message);
     patternsData = [];
     patternSummary = { byType: {}, bySeverity: {}, total: 0 };
+    renderPatternCatalogPanel();
   } finally {
     patternsLoading = false;
     setPatternRefreshState(false);
@@ -1932,12 +1942,26 @@ function renderPatternFilterOptions() {
   }
 }
 
+function renderPatternTypeOptions() {
+  const select = document.getElementById('patternTypeFilter');
+  if (!select || !patternCatalog.length) return;
+  const selected = select.value || 'all';
+  const options = patternCatalog
+    .slice()
+    .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.label || a.type).localeCompare(b.label || b.type))
+    .map(def => `<option value="${escapeHtml(def.type)}">${escapeHtml(def.label || def.type)}</option>`)
+    .join('');
+  select.innerHTML = `<option value="all">All active detectors</option>${options}`;
+  select.value = patternCatalog.some(def => def.type === selected) ? selected : 'all';
+}
+
 function renderPatterns() {
   const tbody = document.getElementById('patternsTable');
   if (!tbody) return;
 
   syncPatternCategoryTabs();
   updatePatternSummaryCards();
+  renderPatternCatalogPanel();
 
   if (!patternsData.length) {
     const filterNote = describePatternFilters();
@@ -1977,6 +2001,44 @@ function renderPatterns() {
   }).join('');
 }
 
+function renderPatternCatalogPanel() {
+  const panel = document.getElementById('patternCatalogPanel');
+  if (!panel) return;
+  if (!patternCatalog.length) {
+    panel.innerHTML = '<div class="text-xs" style="color:var(--text-dim);">Detector catalog unavailable. Pattern rows still show persisted evidence and reason codes.</div>';
+    return;
+  }
+
+  const filters = getPatternFilters();
+  const visibleDefs = patternCatalog
+    .filter(def => filters.category === 'all' || def.category === filters.category)
+    .filter(def => filters.type === 'all' || def.type === filters.type);
+  const categoryCounts = patternCatalog.reduce((acc, def) => {
+    acc[def.category] = (acc[def.category] || 0) + 1;
+    return acc;
+  }, {});
+  const chips = Object.entries(categoryCounts)
+    .map(([category, count]) => `<span class="px-2 py-0.5 rounded text-[10px]" style="background:var(--bg);color:var(--text-dim);">${escapeHtml(category)} ${count}</span>`)
+    .join('');
+  const defs = visibleDefs.slice(0, 6).map(def => `
+    <button type="button" class="text-left rounded border p-2" style="background:var(--bg);border-color:var(--border);" onclick="showPatternDefinition('${escapeJs(def.type)}')">
+      <div class="text-xs font-semibold">${escapeHtml(def.label || def.type)}</div>
+      <div class="text-[10px] mt-1" style="color:var(--text-dim);">${escapeHtml(def.trigger)}</div>
+    </button>
+  `).join('');
+
+  panel.innerHTML = `
+    <div class="flex items-center justify-between gap-3 mb-2">
+      <div>
+        <div class="text-xs font-semibold">Active Detector Catalog</div>
+        <div class="text-[10px]" style="color:var(--text-dim);">${patternCatalog.length} active detectors. Rules are derived from local live wager, odds movement, event, and access-log tables.</div>
+      </div>
+      <div class="flex flex-wrap gap-1 justify-end">${chips}</div>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-2">${defs || '<div class="text-xs" style="color:var(--text-dim);">No detector definitions match this filter.</div>'}</div>
+  `;
+}
+
 function syncPatternCategoryTabs() {
   document.querySelectorAll('.pattern-category-tab').forEach(btn => {
     const active = btn.dataset.category === patternCategory;
@@ -2006,6 +2068,7 @@ function showPatternDetail(patternId) {
   const pin = correlation.pinReference || details.pinReference || null;
   const reasonCodes = details.reasonCodes || [];
   const score = Number(pattern.score || severityToScore(pattern.severity));
+  const definition = getPatternDefinition(pattern.type);
 
   drawer.innerHTML = `
     <div class="flex items-start justify-between gap-2 mb-3">
@@ -2025,10 +2088,27 @@ function showPatternDetail(patternId) {
     ${patternDetailRow('Event Match', match.eventId ? `${match.eventId} (${match.confidence || 0}%)` : '-')}
     ${patternDetailRow('PIN Reference', pin ? compactJson(pin) : '-')}
     ${patternDetailRow('Reason Codes', reasonCodes.length ? reasonCodes.join(', ') : '-')}
+    ${definition ? patternDefinitionBlock(definition) : ''}
     <div class="mt-3 pt-3 border-t" style="border-color:var(--border);">
       <div class="text-[10px] uppercase mb-1" style="color:var(--text-dim);">Raw Evidence</div>
       <pre class="text-[10px] overflow-auto max-h-64 p-2 rounded" style="background:var(--bg);color:var(--text-dim);">${escapeHtml(JSON.stringify(details, null, 2))}</pre>
     </div>`;
+}
+
+function showPatternDefinition(type) {
+  const drawer = document.getElementById('patternDetailDrawer');
+  const definition = getPatternDefinition(type);
+  if (!drawer || !definition) return;
+  drawer.innerHTML = `
+    <div class="flex items-start justify-between gap-2 mb-3">
+      <div>
+        <h3 class="text-sm font-semibold">${escapeHtml(definition.label || definition.type)}</h3>
+        <div class="text-[10px] uppercase mt-1" style="color:var(--text-dim);">${escapeHtml(definition.category)} | ${escapeHtml(definition.confidence)} | ${escapeHtml(definition.detector)}</div>
+      </div>
+      <button class="px-2 py-1 rounded text-xs" style="background:var(--bg);border:1px solid var(--border);" onclick="resetPatternDetail()">Clear</button>
+    </div>
+    ${patternDefinitionBlock(definition)}
+  `;
 }
 
 function resetPatternDetail() {
@@ -2048,11 +2128,31 @@ function patternDetailRow(label, value) {
   </div>`;
 }
 
+function patternDefinitionBlock(definition) {
+  const severityRows = Object.entries(definition.severity || {})
+    .map(([level, text]) => `<div><strong>${escapeHtml(level)}:</strong> ${escapeHtml(text)}</div>`)
+    .join('');
+  return `<div class="mt-3 pt-3 border-t text-xs" style="border-color:var(--border);">
+    <div class="text-[10px] uppercase mb-1" style="color:var(--text-dim);">Detector Definition</div>
+    ${patternDetailRow('Trigger', definition.trigger || '-')}
+    ${patternDetailRow('Source Tables', (definition.sourceTables || []).join(', ') || '-')}
+    ${patternDetailRow('Evidence Fields', (definition.evidenceFields || []).join(', ') || '-')}
+    ${patternDetailRow('Confidence', definition.confidence || '-')}
+    <div class="mt-2 p-2 rounded" style="background:var(--bg);color:var(--text-dim);">${severityRows || 'Severity is fixed for this detector.'}</div>
+  </div>`;
+}
+
 function compactJson(value) {
   return JSON.stringify(value, null, 0).slice(0, 220);
 }
 
+function getPatternDefinition(type) {
+  return patternCatalog.find(def => def.type === type);
+}
+
 function displayPatternType(type) {
+  const definition = getPatternDefinition(type);
+  if (definition) return definition.label || definition.type;
   const labels = {
     cross_agent_steam: 'Cross-Agent Steam',
     agent_reversal: 'Agent Reversal',
@@ -2077,9 +2177,9 @@ function describePatternFilters() {
 function updatePatternSummaryCards() {
   const byType = patternSummary.byType || {};
   setText('patternSteamCount', byType['Steam Move'] || 0);
-  setText('patternReverseCount', byType['Reverse Line'] || 0);
-  setText('patternSyndicateCount', byType['Syndicate Play'] || 0);
-  setText('patternArbCount', byType.Arbitrage || 0);
+  setText('patternReverseCount', (byType['Agent Swarm'] || 0) + (byType.cross_agent_steam || 0) + (byType['Cross-Agent Swarm'] || 0));
+  setText('patternSyndicateCount', (byType['Live Past-Post Risk'] || 0) + (byType['Late Live Spike'] || 0));
+  setText('patternArbCount', (byType['Pinnacle Drift Bet'] || 0) + (byType['Post-PIN Move Bet'] || 0) + (byType['Repeat Timing Signature'] || 0) + (byType['Steam Chase'] || 0));
   const health = document.getElementById('patternHealthText');
   if (health) {
     const critical = patternSummary.bySeverity?.critical || 0;
@@ -2132,10 +2232,12 @@ FactoryWager.apiFetch = async function apiFetch(endpoint, options = {}) {
       if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value);
     });
     try {
+      const token = localStorage.getItem('apiToken');
       const init = {
         method: options.method || 'GET',
         headers: {
           ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
           ...(options.headers || {}),
         },
       };
@@ -3362,6 +3464,7 @@ async function testConnection() {
     });
     const data = await res.json();
     if (data.success) {
+      if (data.token) localStorage.setItem('apiToken', data.token);
       showToast(`Login OK — ${data.wagerCount} wagers on site`, 'success');
       updateConnectionStatus('ready');
     } else {
@@ -8341,6 +8444,7 @@ Object.assign(window, {
   renderOddsMatrix,
   renderOddsMatrixMobile,
   renderPatternFilterOptions,
+  renderPatternCatalogPanel,
   renderPatterns,
   renderPerformanceDashboard,
   renderPerformanceError,
@@ -8394,6 +8498,7 @@ Object.assign(window, {
   severityToScore,
   showBuckeyeSettings,
   showFallbackBanner,
+  showPatternDefinition,
   showPatternDetail,
   showRawJsonDrawer,
   showToast,

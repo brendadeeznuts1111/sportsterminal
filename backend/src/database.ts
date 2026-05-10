@@ -1200,7 +1200,7 @@ async function removeLegacyWagerTypeConstraint(db: Database): Promise<void> {
   if (!row?.sql || !row.sql.includes('wager_type IN')) return;
 
   // Wrap the full table rebuild in a transaction for safety
-  await db.exec('BEGIN EXCLUSIVE');
+  await db.exec('BEGIN IMMEDIATE');
   try {
     await db.exec('DROP TABLE IF EXISTS wagers_rebuilt');
     await db.exec(`

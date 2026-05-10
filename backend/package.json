@@ -11,7 +11,8 @@
     "backfill:hierarchy": "bun run scripts/backfill-hierarchy.ts"
   },
   "dependencies": {
-    "jose": "^6.2.3"
+    "jose": "^6.2.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "bun-types": "latest",

@@ -5,6 +5,7 @@
  */
 import { corsHeaders, requireAdminTokenIfConfigured } from './helpers';
 import { RateLimiter } from './rateLimiter';
+import { requireAuth } from './middleware/auth';
 import { registerHealthRoutes } from './routes/health';
 import {
   registerWagerStatsRoutes,
@@ -304,6 +305,10 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
     return registerOddsRoutes(url, request, deps.oddsPoller);
   });
 
+  router.get('/api/patterns/catalog', async (url, request) => {
+    return registerOddsRoutes(url, request, deps.oddsPoller);
+  });
+
   router.get('/api/patterns/summary', async (url, request) => {
     return registerOddsRoutes(url, request, deps.oddsPoller);
   });
@@ -539,6 +544,10 @@ export async function routeRequest(
       );
     }
   }
+
+  // JWT authentication (lenient: some read routes are public)
+  const authResult = await requireAuth(request, url.pathname);
+  if (authResult instanceof Response) return authResult;
 
   if (isSensitiveMutation(request.method, url.pathname)) {
     const adminResponse = requireAdminTokenIfConfigured(request);

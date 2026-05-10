@@ -5,6 +5,10 @@ import { clampInt, readJsonBody, handleAsync, corsHeaders } from '../helpers';
 import { BuckeyeAPI, type BuckeyeWebLogOptions } from '../../scrapers/BuckeyeAPI';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 import type { BuckeyeSecretStatus, BunSecretVault } from '../../services/BunSecretVault';
+import { createToken } from '../../auth/jwt';
+import { getEnv } from '../../config/env';
+import { z } from 'zod';
+import { validateQuery, formatZodError, webLogQuerySchema, connectBodySchema } from '../middleware/validate';
 
 export function registerBuckeyeRoutes(
   url: URL,
@@ -398,27 +402,25 @@ export function registerBuckeyeRoutes(
 
   // Buckeye web-log live proxy (getWebLog with actions parameter)
   if (url.pathname === '/api/buckeye/web-log' && request.method === 'GET') {
-    const agentId = url.searchParams.get('agentId') || undefined;
-    const customerId = url.searchParams.get('customerId') || '';
-    const start = url.searchParams.get('start') || '';
-    const end = url.searchParams.get('end') || '';
-    const type = (url.searchParams.get('type') || 'A') as BuckeyeWebLogOptions['type'];
-    const actions = url.searchParams.get('actions') || 'A';
-    const ip = url.searchParams.get('ip') || '';
-
-    if (!start || !end) {
-      throw new Error('start and end parameters are required');
+    let params;
+    try {
+      params = validateQuery(webLogQuerySchema, url);
+    } catch (err: any) {
+      if (err instanceof z.ZodError) {
+        return new Response(JSON.stringify(formatZodError(err)), { status: 400, headers: corsHeaders });
+      }
+      throw err;
     }
 
     return handleAsync(async () =>
       scraperManager.getWebLogLive({
-        customerID: customerId,
-        start,
-        end,
-        type,
-        actions,
-        ip,
-      }, agentId),
+        customerID: params.customerId || '',
+        start: params.start,
+        end: params.end,
+        type: params.type,
+        actions: params.actions,
+        ip: params.ip || '',
+      }, params.agentId),
       corsHeaders
     );
   }
@@ -433,12 +435,21 @@ export function registerBuckeyeRoutes(
   if (url.pathname === '/api/connect' && request.method === 'POST') {
     return handleAsync(async () => {
       const body = await readJsonBody(request);
+      let validated;
+      try {
+        validated = connectBodySchema.parse(body);
+      } catch (err: any) {
+        if (err instanceof z.ZodError) {
+          return new Response(JSON.stringify(formatZodError(err)), { status: 400, headers: corsHeaders });
+        }
+        throw err;
+      }
       const api = new BuckeyeAPI(
         {
-          agentId: body.agentId,
-          password: body.password,
-          baseUrl: body.baseUrl,
-          cfCookie: body.cfCookie,
+          agentId: validated.agentId,
+          password: validated.password,
+          baseUrl: validated.baseUrl,
+          cfCookie: validated.cfCookie,
         },
         false
       );
@@ -450,17 +461,20 @@ export function registerBuckeyeRoutes(
       const wagers = await api.getBetTicker();
       if (secretVault) {
         await secretVault.saveBuckeyeSecrets({
-          agentId: body.agentId,
-          password: body.password || undefined,
-          cfCookie: api.getCookie() || body.cfCookie || undefined,
+          agentId: validated.agentId,
+          password: validated.password || undefined,
+          cfCookie: api.getCookie() || validated.cfCookie || undefined,
           token: api.getToken(),
         });
       }
+      const env = getEnv();
+      const jwt = await createToken(validated.agentId, env.JWT_SECRET);
       return {
         success: true,
         message: 'Login successful',
         wagerCount: wagers.length,
         sample: wagers[0] || null,
+        token: jwt,
       };
     }, corsHeaders);
   }
