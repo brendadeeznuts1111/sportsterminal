@@ -1,7 +1,7 @@
 /**
  * Webhook CRUD + delivery log routes
  */
-import { parseRequiredId, readJsonBody, handleAsync, corsHeaders } from '../helpers';
+import { ApiError, parseRequiredId, readJsonBody, handleAsync, corsHeaders } from '../helpers';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 import type { WebhookConfig } from '../../services/WebhookService';
 
@@ -29,22 +29,23 @@ export function registerWebhookRoutes(
   if (webhookMatch) {
     if (request.method === 'GET') {
       return handleAsync(async () => {
-        const webhookId = parseRequiredId(webhookMatch[1]);
+        const webhookId = parseRequiredId(webhookMatch[1], 'webhook id');
         return scraperManager.getWebhookService().getWebhookById(webhookId);
       }, corsHeaders);
     }
     if (request.method === 'PUT') {
       return handleAsync(async () => {
-        const webhookId = parseRequiredId(webhookMatch[1]);
+        const webhookId = parseRequiredId(webhookMatch[1], 'webhook id');
         const body = await readJsonBody<WebhookUpdateBody>(request);
         return scraperManager.getWebhookService().updateWebhook(webhookId, body);
       }, corsHeaders);
     }
     if (request.method === 'DELETE') {
       return handleAsync(async () => {
-        const webhookId = parseRequiredId(webhookMatch[1]);
+        const webhookId = parseRequiredId(webhookMatch[1], 'webhook id');
         const ok = await scraperManager.getWebhookService().deleteWebhook(webhookId);
-        return { success: ok };
+        if (!ok) throw new ApiError(404, 'Webhook not found');
+        return { success: true };
       }, corsHeaders);
     }
   }
@@ -52,7 +53,7 @@ export function registerWebhookRoutes(
   const webhookDeliveriesMatch = url.pathname.match(/^\/api\/webhooks\/([^/]+)\/deliveries$/);
   if (webhookDeliveriesMatch) {
     return handleAsync(async () => {
-      const webhookId = parseRequiredId(webhookDeliveriesMatch[1]);
+      const webhookId = parseRequiredId(webhookDeliveriesMatch[1], 'webhook id');
       return scraperManager.getWebhookService().getDeliveries(webhookId);
     }, corsHeaders);
   }

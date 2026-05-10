@@ -280,47 +280,47 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
   });
 
   router.get('/api/odds/live', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller!);
+    return registerOddsRoutes(url, request, deps.oddsPoller);
   });
 
   router.get('/api/odds/events', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller!);
+    return registerOddsRoutes(url, request, deps.oddsPoller);
   });
 
   router.get('/api/odds/events/:eventId', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller!);
+    return registerOddsRoutes(url, request, deps.oddsPoller);
   });
 
   router.get('/api/odds/snapshots', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller!);
+    return registerOddsRoutes(url, request, deps.oddsPoller);
   });
 
   router.get('/api/odds/movements', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller!);
+    return registerOddsRoutes(url, request, deps.oddsPoller);
   });
 
   router.get('/api/books', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller!);
+    return registerOddsRoutes(url, request, deps.oddsPoller);
   });
 
   router.get('/api/books/status', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller!);
+    return registerOddsRoutes(url, request, deps.oddsPoller);
   });
 
   router.get('/api/patterns/history', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller!);
+    return registerOddsRoutes(url, request, deps.oddsPoller);
   });
 
   router.get('/api/patterns/catalog', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller!);
+    return registerOddsRoutes(url, request, deps.oddsPoller);
   });
 
   router.get('/api/patterns/summary', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller!);
+    return registerOddsRoutes(url, request, deps.oddsPoller);
   });
 
   router.get('/api/patterns/agents', async (url, request) => {
-    return registerOddsRoutes(url, request, deps.oddsPoller!);
+    return registerOddsRoutes(url, request, deps.oddsPoller);
   });
 
   router.get('/api/buckeye/vault-status', async (url, request) => {

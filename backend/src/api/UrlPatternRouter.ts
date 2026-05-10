@@ -88,12 +88,22 @@ export class UrlPatternRouter {
 
   /**
    * Dispatch a full Request object. Returns a Response or null.
+   * Catches unhandled errors from route handlers and returns 500.
    */
   async dispatch(request: Request): Promise<Response | null> {
     const url = new URL(request.url);
     const match = this.match(request.method, url.pathname);
     if (!match) return null;
-    return match.handler(url, request, match.params);
+    try {
+      return await match.handler(url, request, match.params);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Internal server error';
+      const status = getErrorStatus(error);
+      return new Response(JSON.stringify({ error: message }), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
   }
 
   private add(method: string, pathname: string, handler: RouteHandler): this {
@@ -104,4 +114,10 @@ export class UrlPatternRouter {
     });
     return this;
   }
+}
+
+function getErrorStatus(error: unknown): number {
+  if (!error || typeof error !== 'object') return 500;
+  const status = (error as { status?: unknown }).status;
+  return typeof status === 'number' ? status : 500;
 }

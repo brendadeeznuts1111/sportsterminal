@@ -10,6 +10,7 @@
  */
 import { verifyToken, isDevMode } from '../../auth/jwt';
 import { getEnv } from '../../config/env';
+import { corsHeaders } from '../helpers';
 
 const PUBLIC_PATHS = new Set([
   '/health',
@@ -65,7 +66,7 @@ export async function requireAuth(
   if (!match) {
     return new Response(
       JSON.stringify({ error: 'Unauthorized — Bearer token required' }),
-      { status: 401, headers: { 'Content-Type': 'application/json' } }
+      { status: 401, headers: corsHeaders }
     );
   }
 
@@ -78,7 +79,7 @@ export async function requireAuth(
   } catch {
     return new Response(
       JSON.stringify({ error: 'Unauthorized — invalid or expired token' }),
-      { status: 401, headers: { 'Content-Type': 'application/json' } }
+      { status: 401, headers: corsHeaders }
     );
   }
 }

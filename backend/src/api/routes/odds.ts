@@ -8,8 +8,14 @@ import { getPatternCatalog } from '../../patterns/catalog';
 export function registerOddsRoutes(
   url: URL,
   _request: Request,
-  oddsPoller: OddsPoller
+  oddsPoller: OddsPoller | undefined
 ): Promise<Response> | Response | null {
+  if (!oddsPoller) {
+    if (url.pathname.startsWith('/api/odds/') || url.pathname.startsWith('/api/books') || url.pathname.startsWith('/api/patterns/')) {
+      return new Response(JSON.stringify({ error: 'Odds polling not configured' }), { status: 503, headers: corsHeaders });
+    }
+    return null;
+  }
   if (url.pathname === '/api/odds/events') {
     return handleAsync(async () => oddsPoller.getEvents(), corsHeaders);
   }

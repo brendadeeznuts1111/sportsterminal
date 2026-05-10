@@ -2,7 +2,7 @@
  * Player routes
  */
 import { createParamRouteHandler, createRouteHandler } from './base';
-import { ApiError, clampInt, corsHeaders } from '../helpers';
+import { ApiError, clampInt, corsHeaders, readJsonBody } from '../helpers';
 import { logRequest, logWarn } from '../../utils/logger';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 import type { Database } from '../../database';
@@ -1595,10 +1595,10 @@ export const registerPlayerPnlRoutes = createParamRouteHandler(
 export const registerPlayerFlagCreateRoutes = createParamRouteHandler(
   '/api/players/:playerId/flags',
   'playerId',
-  async (_url, req, scraperManager, params) => {
+  async (_url, request, scraperManager, params) => {
     const playerId = decodeURIComponent(params.playerId);
     logRequest('POST', `/api/players/${playerId}/flags`);
-    const body = await req.json();
+    const body = await readJsonBody(request);
     if (!body.flag_type) throw new ApiError(400, 'flag_type is required');
     const db = scraperManager.getDatabase();
     const result = await db.run(
@@ -1632,10 +1632,10 @@ export const registerPlayerFlagResolveRoutes = createParamRouteHandler(
 export const registerPlayerNoteCreateRoutes = createParamRouteHandler(
   '/api/players/:playerId/notes',
   'playerId',
-  async (_url, req, scraperManager, params) => {
+  async (_url, request, scraperManager, params) => {
     const playerId = decodeURIComponent(params.playerId);
     logRequest('POST', `/api/players/${playerId}/notes`);
-    const body = await req.json();
+    const body = await readJsonBody(request);
     if (!body.body) throw new ApiError(400, 'body is required');
     const db = scraperManager.getDatabase();
     const result = await db.run(

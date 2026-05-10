@@ -224,7 +224,7 @@ describe('API route registration', () => {
     const response = await routeRequest(new URL('http://localhost/api/webhooks'), request, deps);
     const body = await response?.json() as { error: string };
 
-    expect(response?.status).toBe(401);
+    expect(response?.status).toBe(403);
     expect(body.error).toBe('Admin token required');
   });
 

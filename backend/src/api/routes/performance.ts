@@ -3,6 +3,7 @@
  * Expose Redis-backed agent performance cache via REST API.
  */
 
+import { corsHeaders } from '../helpers';
 import type { RouterDeps } from '../router';
 
 /**
@@ -27,12 +28,12 @@ export async function registerPerformanceRoutes(
           source: result.source,
           data: result.data,
         }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
+        { status: 200, headers: corsHeaders }
       );
     } catch (error) {
       return new Response(
         JSON.stringify({ error: 'Failed to fetch performance data', details: String(error) }),
-        { status: 500, headers: { 'Content-Type': 'application/json' } }
+        { status: 500, headers: corsHeaders }
       );
     }
   }
@@ -43,12 +44,12 @@ export async function registerPerformanceRoutes(
       await performanceCache.invalidate(params.agentId);
       return new Response(
         JSON.stringify({ message: 'Cache invalidated', agentId: params.agentId }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
+        { status: 200, headers: corsHeaders }
       );
     } catch (error) {
       return new Response(
         JSON.stringify({ error: 'Failed to invalidate cache', details: String(error) }),
-        { status: 500, headers: { 'Content-Type': 'application/json' } }
+        { status: 500, headers: corsHeaders }
       );
     }
   }
@@ -61,7 +62,7 @@ export async function registerPerformanceRoutes(
         redisConnected: performanceCache?.isConnected() ?? false,
         defaultTtlMs: performanceCache?.getDefaultTtlMs(),
       }),
-      { status: 200, headers: { 'Content-Type': 'application/json' } }
+      { status: 200, headers: corsHeaders }
     );
   }
 

@@ -6,8 +6,8 @@ export async function registerStaticRoutes(url: URL): Promise<Response | null> {
   const filePath = `../frontend/public${staticPath}`;
   try {
     const file = Bun.file(filePath);
-    const size = await file.size;
-    if (size === 0) return null;
+    const exists = await file.exists();
+    if (!exists) return null;
 
     const mimeTypes: Record<string, string> = {
       '.html': 'text/html',

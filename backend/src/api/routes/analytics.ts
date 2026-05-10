@@ -3,7 +3,7 @@
  * Provides endpoints for audit analytics, performance metrics, and CSV export.
  */
 
-import { ApiError, corsHeaders, handleAsync } from '../helpers';
+import { ApiError, clampInt, corsHeaders, handleAsync } from '../helpers';
 import { logDebug } from '../../utils/logger';
 import type { Database } from '../../database';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
@@ -91,8 +91,8 @@ export function registerAnalyticsRoutes(
       const agentId = url.searchParams.get('agentId') || undefined;
       const status = url.searchParams.get('status') || undefined;
       const includeBody = url.searchParams.get('includeBody') === '1';
-      const limit = clamp(url.searchParams.get('limit'), 50, 1, 500);
-      const days = clamp(url.searchParams.get('days'), 7, 1, 90);
+      const limit = clampInt(url.searchParams.get('limit'), 50, 1, 500);
+      const days = clampInt(url.searchParams.get('days'), 7, 1, 90);
       const where: string[] = [`fetched_at >= datetime('now', '-' || ? || ' days')`];
       const params: unknown[] = [days];
 
@@ -145,7 +145,7 @@ export function registerAnalyticsRoutes(
     return handleAsync(async () => {
       const agentId = url.searchParams.get('agentId') || undefined;
       const week = url.searchParams.get('week') || undefined;
-      const limit = clamp(url.searchParams.get('limit'), 20, 1, 500);
+      const limit = clampInt(url.searchParams.get('limit'), 20, 1, 500);
       const where: string[] = [];
       const params: unknown[] = [];
 
@@ -174,7 +174,7 @@ export function registerAnalyticsRoutes(
   if (url.pathname === '/api/analytics/master-snapshots' && request.method === 'GET') {
     return handleAsync(async () => {
       const agentId = url.searchParams.get('agentId') || undefined;
-      const limit = clamp(url.searchParams.get('limit'), 20, 1, 500);
+      const limit = clampInt(url.searchParams.get('limit'), 20, 1, 500);
       const where: string[] = [];
       const params: unknown[] = [];
 
@@ -198,7 +198,7 @@ export function registerAnalyticsRoutes(
 
   if (url.pathname === '/api/analytics/performance-trends' && request.method === 'GET') {
     return handleAsync(async () => {
-      const days = clamp(url.searchParams.get('days'), 14, 1, 90);
+      const days = clampInt(url.searchParams.get('days'), 14, 1, 90);
       const rows = await db.all<VelocityRow>(
         `SELECT
           date(pulled_at) AS day,
@@ -218,7 +218,7 @@ export function registerAnalyticsRoutes(
 
   if (url.pathname === '/api/analytics/wager-velocity' && request.method === 'GET') {
     return handleAsync(async () => {
-      const hours = clamp(url.searchParams.get('hours'), 24, 1, 168);
+      const hours = clampInt(url.searchParams.get('hours'), 24, 1, 168);
       const rows = await db.all<SqlRow>(
         `SELECT
           strftime('%Y-%m-%d %H:00', insert_datetime) AS hour,
@@ -236,7 +236,7 @@ export function registerAnalyticsRoutes(
 
   if (url.pathname === '/api/betting/velocity' && request.method === 'GET') {
     return handleAsync(async () => {
-      const minutes = clamp(url.searchParams.get('minutes'), 30, 1, 240);
+      const minutes = clampInt(url.searchParams.get('minutes'), 30, 1, 240);
       const rows = await db.all<VelocityRow>(
         `SELECT
           substr(replace(insert_date_time, 'T', ' '), 1, 16) AS bucket,
@@ -293,7 +293,7 @@ export function registerAnalyticsRoutes(
     return handleAsync(async () => {
       const agentId = url.searchParams.get('agent') || undefined;
       const ip = url.searchParams.get('ip') || undefined;
-      const limit = clamp(url.searchParams.get('limit'), 100, 1, 500);
+      const limit = clampInt(url.searchParams.get('limit'), 100, 1, 500);
       const where: string[] = [];
       const params: unknown[] = [];
 
@@ -337,7 +337,7 @@ export function registerAnalyticsRoutes(
 
   if (url.pathname === '/api/master/history' && request.method === 'GET') {
     return handleAsync(async () => {
-      const limit = clamp(url.searchParams.get('limit'), 100, 1, 500);
+      const limit = clampInt(url.searchParams.get('limit'), 100, 1, 500);
       const snapshots = await db.all(
         `SELECT *
          FROM master_snapshots
@@ -381,7 +381,7 @@ export function registerAnalyticsRoutes(
     return handleAsync(async () => {
       const agentId = url.searchParams.get('agent');
       if (!agentId) throw new ApiError(400, 'agent parameter is required');
-      const weeks = clamp(url.searchParams.get('weeks'), 8, 1, 52);
+      const weeks = clampInt(url.searchParams.get('weeks'), 8, 1, 52);
 
       const weeklyTrend = await db.all(
         `SELECT week_start_date, sport, handle, win_loss, wager_type, ingested_at
@@ -452,12 +452,6 @@ export function registerAnalyticsRoutes(
   }
 
   return null;
-}
-
-function clamp(value: string | null, fallback: number, min: number, max: number): number {
-  if (!value) return fallback;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? Math.min(Math.max(parsed, min), max) : fallback;
 }
 
 function summarizeParams(value: unknown): string {

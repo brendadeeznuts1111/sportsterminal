@@ -44,6 +44,7 @@ proxy.ts
 cf-bridge.ts
 endpoint-map.ts
 start-proxy.ps1
+test-proxy.ps1
 test-all-endpoints.ts
 test-proxy.ts
 tsconfig.json

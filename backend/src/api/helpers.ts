@@ -18,10 +18,10 @@ export function clampInt(value: string | null, fallback: number, min: number, ma
   return Math.min(Math.max(parsed, min), max);
 }
 
-export function parseRequiredId(value: string | undefined): number {
+export function parseRequiredId(value: string | undefined, label = 'id'): number {
   const parsed = Number.parseInt(value || '', 10);
   if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new ApiError(400, 'Invalid webhook id');
+    throw new ApiError(400, `Invalid ${label}`);
   }
   return parsed;
 }
@@ -42,7 +42,7 @@ export function requireAdminTokenIfConfigured(request: Request): Response | null
   if (provided === expected) return null;
   return new Response(
     JSON.stringify({ error: 'Admin token required' }),
-    { status: 401, headers: corsHeaders }
+    { status: 403, headers: corsHeaders }
   );
 }
 
