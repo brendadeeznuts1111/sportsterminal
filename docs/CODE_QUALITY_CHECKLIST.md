@@ -3,6 +3,7 @@
 Run these checks before handing off UI or wager/account metric changes:
 
 ```bash
+bun run artifacts:check
 rg --no-ignore --no-ignore-parent -n "onclick=.*\\$\\{|onclick=.*'\\$\\{|innerHTML\\s*\\+=" frontend/public/index.html frontend/public/js
 rg --no-ignore --no-ignore-parent -n "lifetime_pnl|profit_loss|pnl|total_potential_payout|to_win_amount" backend/src frontend/public/index.html frontend/public/js
 ```
@@ -17,7 +18,7 @@ Before handing off architecture or ingestion changes, update the living docs:
 git diff -- README.md docs/IMPLEMENTATION_TRACKER.md docs/BUCKEYE_BACKEND_SCOPE.md docs/DATA_DICTIONARY.md docs/ENTERPRISE_TAB_GOALS.md docs/AUDIT_ANALYTICS_ENGINE.md docs/PROJECT_ORGANIZATION.md docs/CHANGELOG.md docs/API_ENDPOINTS.md docs/CODE_QUALITY_CHECKLIST.md
 ```
 
-Keep local raw Buckeye exports and downloaded tools ignored. They can contain sensitive customer/agent data and should not become source files.
+Keep local raw Buckeye exports, scratch check scripts, local databases, and downloaded tools ignored. They can contain sensitive customer/agent data and should not become source files. `bun run artifacts:check` fails if those paths become tracked or unignored.
 
 ## Audit & Analytics Verification
 

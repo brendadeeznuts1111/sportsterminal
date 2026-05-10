@@ -29,8 +29,13 @@ logs/
 # Local data exports / downloaded tools
 docs/agentslistharz.md
 docs/agentobject.md
+docs/New Text Document.txt
+docs/playerprofileartifact.html
 docs/*.exe
 docs/archive/artifacts/*.exe
+data/
+htmlartifact/
+backend/check-*.ts
 
 # OS files
 .DS_Store

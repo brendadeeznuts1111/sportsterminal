@@ -42,13 +42,16 @@ This guide keeps the Sports Terminal repo from drifting as Buckeye ingestion, pa
 Keep these out of source control:
 
 - `backend/data/`
+- root-level `data/`
 - `backend/dist/`
 - `node_modules/`
 - `backend/node_modules/`
 - sensitive raw Buckeye export captures
+- `htmlartifact/`
+- one-off `backend/check-*.ts` scratch scripts
 - `docs/*.exe`
 
-Reference `.docx` files live in `docs/archive/reference/`. Raw markdown exports are local sensitive inputs and are ignored because the local hierarchy parser can read them during backfill.
+Reference `.docx` files live in `docs/archive/reference/`. Raw markdown exports are local sensitive inputs and are ignored because the local hierarchy parser can read them during backfill. Run `bun run artifacts:check` before handoff when local captures or seeded database files were used.
 
 ## Archive Boundaries
 
@@ -100,7 +103,7 @@ Before ending a substantial task:
 - `docs/ENTERPRISE_TAB_GOALS.md` reflects new sidebar tabs or workflow changes.
 - `docs/AUDIT_ANALYTICS_ENGINE.md` reflects audit logging, retention, or analytics behavior.
 - `docs/CHANGELOG.md` has a short entry.
-- Sensitive raw files remain ignored.
+- Sensitive raw files remain ignored and `bun run artifacts:check` passes.
 - `bun test` and `bun run build` have been run for code changes.
 
 ## Naming and Versioning
