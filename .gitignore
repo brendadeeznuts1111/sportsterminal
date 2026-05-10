@@ -41,7 +41,16 @@ api_output/
 htmlartifact/
 backend/check-*.ts
 proxy.ts
+cf-bridge.ts
+endpoint-map.ts
+start-proxy.ps1
+test-all-endpoints.ts
+test-proxy.ts
+tsconfig.json
 NUL
+
+# Scratch troubleshooting notes
+docs/Your proxy logs show it started successf.md
 
 # OS files
 .DS_Store
