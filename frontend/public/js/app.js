@@ -1029,6 +1029,15 @@ function switchSection(section, btn) {
       updateAlertsToastButton();
       renderAlerts();
       break;
+    case 'ipTracker':
+      {
+        const today = new Date().toISOString().split('T')[0];
+        const startEl = document.getElementById('globalIpStart');
+        const endEl = document.getElementById('globalIpEnd');
+        if (startEl && !startEl.value) startEl.value = today;
+        if (endEl && !endEl.value) endEl.value = today;
+      }
+      break;
     case 'webhooks':
       loadWebhooks();
       break;
@@ -3527,16 +3536,19 @@ function attemptAutoReconnect() {
 function updateConnectionStatus(state) {
   const el = document.getElementById('connectionStatus');
   if (!el) return;
+  const token = localStorage.getItem('apiToken');
+  const authIndicator = token ? '🔒 ' : '🔓 ';
   const styles = {
-    connected:    { text: '● Live Polling', color: 'var(--green)' },
-    connecting:   { text: '● Connecting...', color: 'var(--yellow)' },
-    testing:      { text: '● Testing...', color: 'var(--yellow)' },
-    ready:        { text: '● Login OK (not polling)', color: 'var(--blue)' },
-    disconnected: { text: '● Disconnected', color: 'var(--text-dim)' },
+    connected:    { text: authIndicator + '● Live Polling', color: 'var(--green)' },
+    connecting:   { text: authIndicator + '● Connecting...', color: 'var(--yellow)' },
+    testing:      { text: authIndicator + '● Testing...', color: 'var(--yellow)' },
+    ready:        { text: authIndicator + '● Login OK', color: 'var(--blue)' },
+    disconnected: { text: authIndicator + '● Disconnected', color: 'var(--text-dim)' },
   };
   const s = styles[state] || styles.disconnected;
   el.textContent = s.text;
   el.style.color = s.color;
+  el.title = token ? 'Authenticated to backend API' : 'No API token — some features may be unavailable';
   const liveAgents = Number(window.backendLiveAgents || 0);
   if (state === 'disconnected' && liveAgents > 0) {
     updateBuckeyeStatusBadge('connected', `${liveAgents} Agent${liveAgents === 1 ? '' : 's'} Live`);
@@ -7388,6 +7400,68 @@ async function loadPlayerProfileAccessLogs() {
   }
 }
 
+async function loadGlobalIpTracker() {
+  const actions = document.getElementById('globalIpActionsFilter')?.value || 'B';
+  const ip = document.getElementById('globalIpFilter')?.value?.trim() || '';
+  const startInput = document.getElementById('globalIpStart')?.value || '';
+  const endInput = document.getElementById('globalIpEnd')?.value || '';
+
+  if (!ip) {
+    alert('IP address is required');
+    return;
+  }
+
+  function fmtDate(d) {
+    if (!d) return '';
+    const [y, m, day] = d.split('-');
+    return `${m}/${day}/${y}`;
+  }
+  const start = fmtDate(startInput);
+  const end = fmtDate(endInput);
+  const today = new Date().toISOString().split('T')[0];
+  const effectiveStart = start || today;
+  const effectiveEnd = end || today;
+
+  const btn = document.getElementById('globalIpFetchBtn');
+  if (btn) { btn.textContent = 'Searching...'; btn.disabled = true; }
+
+  try {
+    const url = new URL(`${getApiBaseUrl()}/api/buckeye/web-log`);
+    url.searchParams.set('start', effectiveStart);
+    url.searchParams.set('end', effectiveEnd);
+    url.searchParams.set('type', 'B');
+    url.searchParams.set('actions', actions);
+    url.searchParams.set('ip', ip);
+
+    const res = await fetch(url.toString());
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    const rows = (json.data || []).map(row => ({
+      login_id: row.LoginID,
+      ip_address: row.IPAddress,
+      access_datetime: row.AccessDateTime,
+      operation: row.Operation,
+      data: row.Data,
+    }));
+
+    const tbody = document.getElementById('globalIpTrackerRows');
+    if (tbody) {
+      tbody.innerHTML = rows.map(log => `<tr>
+        <td class="px-3 py-2" style="color:var(--text-dim);">${formatShortDateTime(log.access_datetime)}</td>
+        <td class="px-3 py-2 font-mono">${escapeHtml(log.login_id)}</td>
+        <td class="px-3 py-2 font-mono">${escapeHtml(log.ip_address)}</td>
+        <td class="px-3 py-2">${escapeHtml(log.operation || '-')}</td>
+        <td class="px-3 py-2">${escapeHtml(log.data || '-')}</td>
+      </tr>`).join('') || '<tr><td colspan="5" class="px-3 py-6 text-center" style="color:var(--text-dim);">No accounts found for this IP.</td></tr>';
+    }
+  } catch (err) {
+    console.error('[IP Tracker] Search failed:', err);
+    alert('Failed to search IP: ' + (err instanceof Error ? err.message : String(err)));
+  } finally {
+    if (btn) { btn.textContent = 'Investigate'; btn.disabled = false; }
+  }
+}
+
 function renderPlayerProfilePerformance(profile) {
   const el = document.getElementById('playerProfilePerformance');
   if (!el) return;
@@ -8451,6 +8525,7 @@ Object.assign(window, {
   renderPlayerPnlChart,
   renderPlayerProfile,
   renderPlayerProfileAccess,
+  loadGlobalIpTracker,
   renderPlayerProfileOverview,
   renderPlayerProfilePerformance,
   renderPlayerProfileStatus,
