@@ -1,7 +1,7 @@
 /**
  * Buckeye-specific routes: UI config, account info, weekly figures, connect test
  */
-import { clampInt, readJsonBody, handleAsync, corsHeaders } from '../helpers';
+import { ApiError, clampInt, readJsonBody, handleAsync, corsHeaders } from '../helpers';
 import { BuckeyeAPI, type BuckeyeWebLogType } from '../../scrapers/BuckeyeAPI';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 import type { BuckeyeSecretStatus, BunSecretVault } from '../../services/BunSecretVault';
@@ -358,13 +358,13 @@ export function registerBuckeyeRoutes(
       const acc = url.searchParams.get('acc') || '';
       const period = url.searchParams.get('period') || '0';
       const agentId = url.searchParams.get('agentId') || undefined;
-      if (!acc) throw new Error('acc parameter is required');
+      if (!acc) throw new ApiError(400, 'acc parameter is required');
       return handleAsync(async () => scraperManager.getBuckeyePlayerPerformance(acc, period, agentId), corsHeaders);
     }
     if (request.method === 'POST') {
       return handleAsync(async () => {
         const body = await readJsonBody(request);
-        if (!body.acc) throw new Error('acc is required');
+        if (!body.acc) throw new ApiError(400, 'acc is required');
         return scraperManager.getBuckeyePlayerPerformance(body.acc, body.period ?? '0', body.agentId);
       }, corsHeaders);
     }
@@ -375,13 +375,13 @@ export function registerBuckeyeRoutes(
     if (request.method === 'GET') {
       const customerId = url.searchParams.get('customerId') || '';
       const agentId = url.searchParams.get('agentId') || undefined;
-      if (!customerId) throw new Error('customerId parameter is required');
+      if (!customerId) throw new ApiError(400, 'customerId parameter is required');
       return handleAsync(async () => scraperManager.getBuckeyePlayerInfo(customerId, agentId), corsHeaders);
     }
     if (request.method === 'POST') {
       return handleAsync(async () => {
         const body = await readJsonBody(request);
-        if (!body.customerId) throw new Error('customerId is required');
+        if (!body.customerId) throw new ApiError(400, 'customerId is required');
         return scraperManager.getBuckeyePlayerInfo(body.customerId, body.agentId);
       }, corsHeaders);
     }
@@ -392,13 +392,13 @@ export function registerBuckeyeRoutes(
     if (request.method === 'GET') {
       const customerId = url.searchParams.get('customerId') || '';
       const agentId = url.searchParams.get('agentId') || undefined;
-      if (!customerId) throw new Error('customerId parameter is required');
+      if (!customerId) throw new ApiError(400, 'customerId parameter is required');
       return handleAsync(async () => scraperManager.getBuckeyePlayerTransactions(customerId, agentId), corsHeaders);
     }
     if (request.method === 'POST') {
       return handleAsync(async () => {
         const body = await readJsonBody(request);
-        if (!body.customerId) throw new Error('customerId is required');
+        if (!body.customerId) throw new ApiError(400, 'customerId is required');
         return scraperManager.getBuckeyePlayerTransactions(body.customerId, body.agentId);
       }, corsHeaders);
     }
@@ -412,7 +412,7 @@ export function registerBuckeyeRoutes(
     if (request.method === 'POST') {
       return handleAsync(async () => {
         const body = await readJsonBody(request);
-        if (!body.agentId) throw new Error('agentId is required');
+        if (!body.agentId) throw new ApiError(400, 'agentId is required');
         return scraperManager.forceAccessLogRefresh(body.agentId);
       }, corsHeaders);
     }
@@ -525,7 +525,7 @@ function handleProxyCompatibleRoute(
   async function getAuthenticatedApi(agentId?: string): Promise<BuckeyeProxyApi> {
     const targetAgent = agentId || customerID;
     if (!targetAgent) {
-      throw new Error('customerID required');
+      throw new ApiError(400, 'customerID required');
     }
 
     let apiToken = token;
@@ -630,7 +630,7 @@ function handleProxyCompatibleRoute(
         const result = await api.renewToken();
         return { success: true, data: result };
       }
-      throw new Error(`Unknown System operation: ${operation}`);
+      throw new ApiError(400, `Unknown System operation: ${operation}`);
     }, corsHeaders);
   }
 
