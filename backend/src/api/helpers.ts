@@ -34,6 +34,18 @@ export async function readJsonBody(request: Request): Promise<any> {
   }
 }
 
+export function requireAdminTokenIfConfigured(request: Request): Response | null {
+  const expected = process.env.ADMIN_API_TOKEN;
+  if (!expected) return null;
+  const provided = request.headers.get('x-admin-token')
+    || bearerToken(request.headers.get('authorization'));
+  if (provided === expected) return null;
+  return new Response(
+    JSON.stringify({ error: 'Admin token required' }),
+    { status: 401, headers: corsHeaders }
+  );
+}
+
 export interface ParsedLocalAgentExport {
   agents: any[];
   players: Array<{
@@ -213,9 +225,14 @@ export function handleAsync(
 
 export const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Admin-Token',
   'Content-Type': 'application/json',
 };
 
 export const corsHeaders = CORS_HEADERS;
+
+function bearerToken(value: string | null): string | null {
+  if (!value?.startsWith('Bearer ')) return null;
+  return value.slice('Bearer '.length).trim();
+}

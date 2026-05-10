@@ -880,6 +880,12 @@ All endpoints return CORS headers allowing cross-origin requests from any origin
 
 ## Error Handling & Recovery
 
+### Optional Admin Guard
+
+Local development keeps the existing open HTTP behavior unless `ADMIN_API_TOKEN` is configured. When set, sensitive mutation routes require either `X-Admin-Token: <token>` or `Authorization: Bearer <token>`.
+
+Guarded mutation surfaces include Buckeye connection/session mutation, Buckeye proxy mutation routes, webhook create/update/delete, player flag mutation, agent refresh/backfill/import mutation, and performance cache invalidation. Read-only health, hierarchy, player profile, wager, odds, pattern, and export routes keep their existing read contract.
+
 ### Error Response Format
 
 All errors follow a consistent JSON envelope:

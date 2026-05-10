@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 
 import { createRouter, routeRequest } from '../src/api/router';
 import { RateLimiter } from '../src/api/rateLimiter';
@@ -8,6 +8,34 @@ function createTestRouter() {
     scraperManager: {} as any,
     oddsPoller: {} as any,
   });
+}
+
+const originalAdminToken = process.env.ADMIN_API_TOKEN;
+
+afterEach(() => {
+  if (originalAdminToken === undefined) {
+    delete process.env.ADMIN_API_TOKEN;
+  } else {
+    process.env.ADMIN_API_TOKEN = originalAdminToken;
+  }
+});
+
+function createWebhookRouteDeps() {
+  const webhooks: any[] = [];
+  return {
+    scraperManager: {
+      getDatabase: () => ({ run: async () => ({ lastID: 1, changes: 1 }) }),
+      getMetrics: () => ({ activeAgents: 0, agents: [], actionQueue: { totalQueued: 0, queues: {} }, counters: {} }),
+      getWebhookService: () => ({
+        createWebhook: async (body: any) => {
+          const webhook = { id: webhooks.length + 1, ...body };
+          webhooks.push(webhook);
+          return webhook;
+        },
+      }),
+    } as any,
+    oddsPoller: {} as any,
+  };
 }
 
 describe('API route registration', () => {
@@ -133,5 +161,67 @@ describe('API route registration', () => {
     expect(first?.status).toBe(200);
     expect(second?.status).toBe(429);
     expect(second?.headers.get('Retry-After')).toBeTruthy();
+  });
+
+  it('requires the optional admin token for sensitive mutations when configured', async () => {
+    process.env.ADMIN_API_TOKEN = 'local-secret';
+    const deps = createWebhookRouteDeps();
+    const request = new Request('http://localhost/api/webhooks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Audit', platform: 'generic', url: 'https://example.com', triggers: [] }),
+    });
+
+    const response = await routeRequest(new URL('http://localhost/api/webhooks'), request, deps);
+    const body = await response?.json();
+
+    expect(response?.status).toBe(401);
+    expect(body.error).toBe('Admin token required');
+  });
+
+  it('allows sensitive mutations with x-admin-token when the optional guard is configured', async () => {
+    process.env.ADMIN_API_TOKEN = 'local-secret';
+    const deps = createWebhookRouteDeps();
+    const request = new Request('http://localhost/api/webhooks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-admin-token': 'local-secret' },
+      body: JSON.stringify({ name: 'Audit', platform: 'generic', url: 'https://example.com', triggers: [] }),
+    });
+
+    const response = await routeRequest(new URL('http://localhost/api/webhooks'), request, deps);
+    const body = await response?.json();
+
+    expect(response?.status).toBe(200);
+    expect(body.id).toBe(1);
+    expect(body.name).toBe('Audit');
+  });
+
+  it('keeps local default behavior unchanged when no admin token is configured', async () => {
+    delete process.env.ADMIN_API_TOKEN;
+    const deps = createWebhookRouteDeps();
+    const request = new Request('http://localhost/api/webhooks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Local Audit', platform: 'generic', url: 'https://example.com', triggers: [] }),
+    });
+
+    const response = await routeRequest(new URL('http://localhost/api/webhooks'), request, deps);
+    const body = await response?.json();
+
+    expect(response?.status).toBe(200);
+    expect(body.name).toBe('Local Audit');
+  });
+
+  it('allows CORS preflight for all registered mutation methods and admin token headers', async () => {
+    const router = createTestRouter();
+    const response = await router.match('OPTIONS', '/api/webhooks')?.handler(
+      new URL('http://localhost/api/webhooks'),
+      new Request('http://localhost/api/webhooks'),
+      {}
+    );
+
+    expect(response?.headers.get('Access-Control-Allow-Methods')).toContain('PUT');
+    expect(response?.headers.get('Access-Control-Allow-Methods')).toContain('DELETE');
+    expect(response?.headers.get('Access-Control-Allow-Headers')).toContain('X-Admin-Token');
   });
 });

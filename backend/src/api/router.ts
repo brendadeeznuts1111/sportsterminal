@@ -3,7 +3,7 @@
  * Uses UrlPatternRouter for framework-agnostic URL routing.
  * Falls through to 404 if no route matches.
  */
-import { corsHeaders } from './helpers';
+import { corsHeaders, requireAdminTokenIfConfigured } from './helpers';
 import { RateLimiter } from './rateLimiter';
 import { registerHealthRoutes } from './routes/health';
 import {
@@ -510,10 +510,31 @@ export async function routeRequest(
     }
   }
 
+  if (isSensitiveMutation(request.method, url.pathname)) {
+    const adminResponse = requireAdminTokenIfConfigured(request);
+    if (adminResponse) return adminResponse;
+  }
+
   const loggedDispatch = wrapRouterWithLogging((url, request) => router.dispatch(request), {
     db: deps.scraperManager?.getDatabase?.(),
     enabled: true,
   });
 
   return loggedDispatch(url, request);
+}
+
+function isSensitiveMutation(method: string, pathname: string): boolean {
+  if (!['POST', 'PUT', 'DELETE'].includes(method.toUpperCase())) return false;
+  if (pathname === '/api/connect') return true;
+  if (pathname.startsWith('/api/v1/')) {
+    const normalizedPath = pathname === '/api/v1/agents/hierarchy'
+      ? '/api/agents/hierarchy/tree'
+      : pathname.replace(/^\/api\/v1/, '/api');
+    return isSensitiveMutation(method, normalizedPath);
+  }
+  return pathname.startsWith('/api/buckeye/')
+    || pathname.startsWith('/api/webhooks')
+    || pathname.startsWith('/api/players/')
+    || pathname.startsWith('/api/agents/')
+    || pathname.startsWith('/api/performance/');
 }

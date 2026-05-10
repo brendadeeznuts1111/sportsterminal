@@ -10,6 +10,7 @@ This is the single reference for Sports Terminal names: environment variables, O
 | `HOST` | `0.0.0.0` | No | `backend/src/config/env.ts` | HTTP/WebSocket bind host |
 | `NODE_ENV` | `development` | No | Auth/rate-limit flow | `production` enables production security behavior |
 | `JWT_SECRET` | `change-me-in-production-min-32-chars` | Production yes | WebSocket JWT auth | HS256 signing/verification secret; must be 32+ chars in production |
+| `ADMIN_API_TOKEN` | unset | No | HTTP API router | Optional local admin guard. When set, sensitive mutation routes require `X-Admin-Token` or `Authorization: Bearer <token>` |
 | `DEBUG` | `false` | No | Buckeye client/server logs | Enables verbose debug logging when `true` or `1` |
 | `BUCKEYE_BASE_URL` | `https://fantasy402.com` | No | `BuckeyeAPI` | Fantasy402/Buckeye origin |
 | `DATABASE_URL` | `./data/terminal.db` | No | `backend/src/database.ts` | SQLite URL/path or Postgres URL |
