@@ -2,7 +2,7 @@
  * Health & metrics routes
  */
 import { corsHeaders, handleAsync } from '../helpers';
-import { logRequest } from '../../utils/logger';
+import { logRequest, logWarn } from '../../utils/logger';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 
 export function registerHealthRoutes(
@@ -258,7 +258,8 @@ async function safeAll(db: any, sql: string, params: unknown[] = []): Promise<an
   if (!sql) return [];
   try {
     return await db.all(sql, params);
-  } catch {
+  } catch (err: any) {
+    logWarn('safeAll query failed', { sql: sql?.slice(0, 120), error: err?.message });
     return [];
   }
 }
@@ -267,7 +268,8 @@ async function safeGet(db: any, sql: string, params: unknown[] = []): Promise<an
   if (!sql) return null;
   try {
     return await db.get(sql, params);
-  } catch {
+  } catch (err: any) {
+    logWarn('safeGet query failed', { sql: sql?.slice(0, 120), error: err?.message });
     return null;
   }
 }

@@ -495,7 +495,8 @@ export class BuckeyeAPI {
       });
 
       return response.ok;
-    } catch {
+    } catch (err: any) {
+      console.warn('[BuckeyeAPI] testAccess failed:', err?.message || err);
       return false;
     }
   }

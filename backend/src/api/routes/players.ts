@@ -3,7 +3,7 @@
  */
 import { createParamRouteHandler, createRouteHandler } from './base';
 import { ApiError, clampInt, corsHeaders } from '../helpers';
-import { logRequest } from '../../utils/logger';
+import { logRequest, logWarn } from '../../utils/logger';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 import {
   classifyPlayer360Freshness,
@@ -525,7 +525,8 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
        WHERE login = ? OR customer_id = ?`,
       [playerId, playerId]
     );
-  } catch {
+  } catch (err: any) {
+    logWarn('Player profile: agent_performance query failed', { playerId, error: err?.message });
     agentPerformance = {};
   }
   const performanceRisk = Number((agentPerformance as any)?.risk || 0);
@@ -765,7 +766,8 @@ async function hasTables(db: any, tableNames: string[]): Promise<boolean> {
       tableNames
     );
     return rows.length === tableNames.length;
-  } catch {
+  } catch (err: any) {
+    logWarn('hasTables query failed', { error: err?.message });
     return false;
   }
 }
@@ -1090,7 +1092,8 @@ async function sourceFreshness(
       rowCount: Number(row?.rowCount || 0),
       lastSeen: row?.lastSeen || null,
     };
-  } catch {
+  } catch (err: any) {
+    logWarn('Source freshness query failed', { table, params, error: err?.message });
     return { rowCount: 0, lastSeen: null };
   }
 }
@@ -1105,7 +1108,8 @@ async function getPlayerSourceStatusMap(db: any, playerId: string): Promise<Reco
       [playerId, playerId]
     );
     return Object.fromEntries(rows.map((row: any) => [row.source_key, row]));
-  } catch {
+  } catch (err: any) {
+    logWarn('Player source status query failed', { playerId, error: err?.message });
     return {};
   }
 }
@@ -1131,7 +1135,8 @@ async function rawEndpointProbe(db: any, endpoints: string[]): Promise<{ seen: b
       endpoints
     );
     return { seen: Number(row?.seen || 0) > 0, lastSeen: row?.lastSeen || null };
-  } catch {
+  } catch (err: any) {
+    logWarn('Watermark query failed', { key, error: err?.message });
     return { seen: false, lastSeen: null };
   }
 }
@@ -1425,7 +1430,8 @@ function parseRawJson(value: unknown): Record<string, any> {
   try {
     const parsed = JSON.parse(String(value));
     return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
+  } catch (err: any) {
+    logWarn('Raw JSON parse failed', { error: err?.message });
     return {};
   }
 }
@@ -1458,7 +1464,8 @@ function extractAccessMeta(row: any, key: 'device' | 'geo'): string {
         ? parsed?.device || parsed?.Device || parsed?.deviceName || parsed?.userAgent
         : parsed?.geo || parsed?.Geo || parsed?.country || parsed?.city || parsed?.region;
       if (found) return String(found);
-    } catch {
+    } catch (err: any) {
+      logWarn('Access log data parse failed', { key, error: err?.message });
       if (key === 'device') {
         const deviceMatch = text.match(/(Mobile|Desktop|Windows|Mac|iPhone|Android|Chrome|Safari|Firefox)/i);
         if (deviceMatch) return deviceMatch[0];

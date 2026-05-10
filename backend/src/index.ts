@@ -39,8 +39,8 @@ function broadcast(msg: object) {
         }
         client.send(payload);
       }
-    } catch {
-      // Ignore dead sockets
+    } catch (err: any) {
+      console.warn('[WS] Broadcast to client failed:', err?.message || err);
     }
   }
 }

@@ -4,6 +4,7 @@
  */
 
 import { ApiError, corsHeaders, handleAsync } from '../helpers';
+import { logDebug } from '../../utils/logger';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 
 export function registerAnalyticsRoutes(
@@ -440,8 +441,8 @@ function summarizeParams(value: unknown): string {
         .map(([key, child]) => `${key}=${child === null || child === undefined ? '' : String(child)}`)
         .join(' · ');
     }
-  } catch {
-    // Try URLSearchParams below.
+  } catch (err: any) {
+    logDebug('Analytics param parse: JSON failed, trying URLSearchParams', { error: err?.message });
   }
 
   try {
@@ -450,7 +451,8 @@ function summarizeParams(value: unknown): string {
       .slice(0, 8)
       .map(([key, child]) => `${key}=${child}`)
       .join(' · ');
-  } catch {
+  } catch (err: any) {
+    logDebug('Analytics param parse: URLSearchParams failed, falling back to slice', { error: err?.message });
     return text.slice(0, 160);
   }
 }
