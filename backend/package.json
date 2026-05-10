@@ -7,6 +7,8 @@
     "start": "bun run src/index.ts",
     "build": "bun build src/index.ts --target bun --outdir dist",
     "test": "bun test",
+    "lint": "eslint src/ --max-warnings 50",
+    "typecheck": "tsc --noEmit",
     "probe:player360": "bun run scripts/probe-player360.ts",
     "backfill:hierarchy": "bun run scripts/backfill-hierarchy.ts"
   },
@@ -15,7 +17,10 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/bun": "latest",
     "bun-types": "latest",
-    "@types/bun": "latest"
+    "eslint": "^10.3.0",
+    "typescript-eslint": "^8.59.2"
   }
 }
