@@ -116,6 +116,19 @@ describe('system status health route', () => {
         if (sql.includes('FROM agent_hierarchy')) {
           return { row_count: 2288, roots: 3, max_level: 17, last_seen: '2026-05-09T20:23:00Z' };
         }
+        if (sql.includes('player_agent_rows')) {
+          return {
+            player_agent_rows: 56019,
+            player_agent_last_seen: '2026-05-09T20:24:00Z',
+            access_rows: 120,
+            unique_ips: 42,
+            access_last_seen: '2026-05-09T20:26:00Z',
+            player_link_rows: 8,
+            player_link_last_seen: '2026-05-09T20:27:00Z',
+            pattern_agent_rows: 12,
+            pattern_agent_last_seen: '2026-05-09T20:28:00Z',
+          };
+        }
         if (sql.includes('FROM player_agent_map')) {
           return { row_count: 56019, orphan_count: 0, last_seen: '2026-05-09T20:24:00Z' };
         }
@@ -152,6 +165,9 @@ describe('system status health route', () => {
     expect(body.dataFlows.playerAgentMap.orphanCount).toBe(0);
     expect(body.dataFlows.patterns.last24h).toBe(12);
     expect(body.dataFlows.exposureInputs.sportCount).toBe(4);
+    expect(body.dataFlows.crossReferences.playerAgentRows).toBe(56019);
+    expect(body.dataFlows.crossReferences.uniqueIps).toBe(42);
+    expect(body.dataFlows.crossReferences.patternAgentRows).toBe(12);
     expect(body.status).toBe('ok');
   });
 });

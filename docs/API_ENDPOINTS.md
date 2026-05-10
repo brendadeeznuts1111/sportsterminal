@@ -81,13 +81,14 @@ Consolidated System Status issue feed for operator bug/risk tracking. Rolls up s
     "agentHierarchy": {"status": "live", "rowCount": 2288, "roots": 3, "maxLevel": 17},
     "playerAgentMap": {"status": "live", "rowCount": 56028, "orphanCount": 0},
     "patterns": {"status": "live", "rowCount": 929, "last24h": 929},
-    "exposureInputs": {"status": "live", "rowCount": 25654, "sportCount": 26, "agentCount": 485}
+    "exposureInputs": {"status": "live", "rowCount": 25654, "sportCount": 26, "agentCount": 485},
+    "crossReferences": {"status": "live", "rowCount": 58491, "playerAgentRows": 56028, "accessRows": 2102, "uniqueIps": 422, "playerLinkRows": 94, "patternAgentRows": 267}
   },
   "issues": []
 }
 ```
 
-`status` is the overall operator status. `operationalStatus` excludes pattern/risk detections so a healthy data pipeline is distinguishable from a high-risk betting day. `dataFlows` is computed from local tables only and is safe to poll from the Status page.
+`status` is the overall operator status. `operationalStatus` excludes pattern/risk detections so a healthy data pipeline is distinguishable from a high-risk betting day. `dataFlows` is computed from local tables only and is safe to poll from the Status page. `crossReferences` is a cheap readiness row for Player 360 investigation links; it combines player-agent maps, access logs, player links, and pattern-agent links.
 
 ### `GET /api/stats`
 
@@ -312,6 +313,32 @@ Query params: `playerId`, `agentId`, `from`, `to`, `groupBy=player|agent|day`.
 Response totals include `issued`, `redeemed`, `expired`, `adjustments`, `outstandingEstimate`, `transactionCount`, and `sourceConfidence`. Groups use the same totals contract.
 
 `sourceConfidence` is computed at response time from `tranType`, `description`, and `rawJson`; it is not stored as a `player_transactions` column. Rows with explicit `free play`, `freeplay`, or `bonus play` text are `confirmed`; broader promotional/free-play candidates remain `candidate`.
+
+### `GET /api/v1/cross-reference?playerId=&agentId=`
+
+Read-only local context graph for operator investigations. It does not call Buckeye. It joins the selected player or agent across player-agent maps, agent hierarchy, wager archive, access logs, free-play ledger rows, source status, player links, and detected patterns.
+
+**Response shape:**
+
+```json
+{
+  "entity": {"playerId": "WC8036", "agentId": "ADAM", "type": "player"},
+  "agentContext": {"assigned": {"login": "ADAM", "level": 5}, "lineageLabel": "BLUEPPH > ADAM"},
+  "playerContext": {"linkCount": 2},
+  "wagerContext": {"rowCount": 24, "totalVolume": 15420, "lastSeen": "2026-05-09 20:31:00"},
+  "accessContext": {"rowCount": 8, "uniqueIps": 3, "sharedIpCount": 1, "latestGeo": "Dallas, TX, US"},
+  "freePlayContext": {"issued": 0, "redeemed": 0, "expired": 0, "outstandingEstimate": 0, "sourceConfidence": "confirmed"},
+  "patternContext": {"total": 1, "critical": 0, "warning": 1},
+  "dataQuality": {
+    "missingAgentMap": false,
+    "staleAccessLogs": false,
+    "missingTransactions": false,
+    "orphanPlayerAgentMap": false,
+    "patternEvidencePresent": true,
+    "freePlayCandidateOnly": false
+  }
+}
+```
 
 ### Local Integrity Check
 

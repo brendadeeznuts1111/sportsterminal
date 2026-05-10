@@ -311,6 +311,7 @@ async function buildDataFlowSummary(db: any): Promise<any> {
     playerAgentMap,
     patterns,
     exposure,
+    crossReferences,
   ] = await Promise.all([
     safeGet(db,
       `SELECT COUNT(*) AS row_count, MAX(scraped_at) AS last_seen, MAX(insert_datetime) AS last_event_at
@@ -348,6 +349,18 @@ async function buildDataFlowSummary(db: any): Promise<any> {
               SUM(amount_wagered) AS total_amount,
               MAX(scraped_at) AS last_seen
        FROM wagers`, []),
+    safeGet(db,
+      `SELECT
+          (SELECT COUNT(*) FROM player_agent_map) AS player_agent_rows,
+          (SELECT MAX(last_refreshed) FROM player_agent_map) AS player_agent_last_seen,
+          (SELECT COUNT(*) FROM access_logs) AS access_rows,
+          (SELECT COUNT(DISTINCT ip_address) FROM access_logs) AS unique_ips,
+          (SELECT MAX(access_datetime) FROM access_logs) AS access_last_seen,
+          (SELECT COUNT(*) FROM player_links WHERE status = 'active') AS player_link_rows,
+          (SELECT MAX(detected_at) FROM player_links WHERE status = 'active') AS player_link_last_seen,
+          (SELECT COUNT(*) FROM pattern_agents) AS pattern_agent_rows,
+          (SELECT MAX(created_at) FROM pattern_agents) AS pattern_agent_last_seen`,
+      []),
   ]);
 
   return {
@@ -377,6 +390,24 @@ async function buildDataFlowSummary(db: any): Promise<any> {
       agentCount: Number(exposure?.agent_count || 0),
       totalAmount: Number(exposure?.total_amount || 0),
     }),
+    crossReferences: flow(
+      'crossReferences',
+      Number(crossReferences?.player_agent_rows || 0)
+        + Number(crossReferences?.access_rows || 0)
+        + Number(crossReferences?.player_link_rows || 0)
+        + Number(crossReferences?.pattern_agent_rows || 0),
+      latestTimestamp(
+        latestTimestamp(crossReferences?.player_agent_last_seen || null, crossReferences?.access_last_seen || null),
+        latestTimestamp(crossReferences?.player_link_last_seen || null, crossReferences?.pattern_agent_last_seen || null)
+      ),
+      {
+        playerAgentRows: Number(crossReferences?.player_agent_rows || 0),
+        accessRows: Number(crossReferences?.access_rows || 0),
+        uniqueIps: Number(crossReferences?.unique_ips || 0),
+        playerLinkRows: Number(crossReferences?.player_link_rows || 0),
+        patternAgentRows: Number(crossReferences?.pattern_agent_rows || 0),
+      }
+    ),
   };
 }
 
@@ -406,6 +437,13 @@ function addDataFlowIssues(issues: any[], dataFlows: any, activeAgents: number):
   }
   if (activeAgents > 0 && dataFlows.exposureInputs.rowCount === 0) {
     issues.push(dataFlowIssue('warning', 'Exposure inputs are empty', 'Positions and exposure need live wager rows before they can render meaningful totals.', dataFlows.exposureInputs));
+  }
+  if (
+    dataFlows.agentHierarchy.rowCount > 0
+    && dataFlows.playerAgentMap.rowCount > 0
+    && dataFlows.crossReferences.rowCount === 0
+  ) {
+    issues.push(dataFlowIssue('warning', 'Cross-reference inputs are empty', 'Players and agents exist, but access, link, and pattern cross-reference inputs are empty.', dataFlows.crossReferences));
   }
 }
 

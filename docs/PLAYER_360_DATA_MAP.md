@@ -43,6 +43,7 @@ Hot players are players with a wager in the last 24 hours, an opened profile, an
 | Search | `/api/v1/players/search?q=&agent=&from=&to=&sort=` | `wager_archive` aggregation |
 | Profile | `/api/v1/players/:playerId/profile` | `wager_archive`, `access_logs`, `agent_performance_snapshots` from `getPerformancePlayer`, `player_transactions` from `getTransactionList` / `getTransactionHistory` / `getReportDeletedTransactions`, `deposits`, `customer_snapshots`, `player_links`, `player_flags`, `player_notes` |
 | Intelligence map | `/api/v1/players/:playerId/intelligence-map` | Source freshness, watermarks, raw API probe history |
+| Cross-reference summary | `/api/v1/cross-reference?playerId=&agentId=` | Read-only local context graph for Player 360 Overview: agent lineage, wager exposure, shared IPs, free-play totals, pattern evidence, and data-quality flags. |
 | Deposits | `/api/v1/players/:playerId/deposits` | `deposits` plus login-IP match against `access_logs` |
 | Transaction ledger | `/api/v1/players/:playerId/transactions` | Combined `getTransactionList` / `getTransactionHistory` / `getReportDeletedTransactions` ledger: wager wins/losses, credits/debits, deleted rows, balances, document numbers. Pass `category=freeplay` to return only free-play rows. |
 | Free-play analysis | `/api/v1/freeplay/analysis?playerId=&agentId=&from=&to=&groupBy=player\|agent\|day` | Aggregates `player_transactions` categories `freeplay_issued`, `freeplay_redeemed`, `freeplay_expired`, and `freeplay_adjustment` into totals and grouped rows with response-computed `sourceConfidence`. |
@@ -67,6 +68,12 @@ Every source row returned by `/intelligence-map` includes `refreshPolicy`, `ttlS
 | `teaser_profile` | Always a mapped `probe` until a real payload shape is confirmed and explicit fields are promoted. |
 | `player_links` | `derived`; rows depend on access-log overlap checks. |
 | `player_flags` / `player_notes` | `manual`; operator-entered compliance overlay. |
+
+## Cross-Reference Overview Panel
+
+The Player 360 Overview uses `/api/v1/cross-reference` to render the Cross-Refs card. The endpoint is local-only and must not trigger new Buckeye calls. It provides operator shortcuts from a player to the assigned agent tree, access-log evidence, related pattern rows, and the Free-Play ledger sub-tab.
+
+Trust flags are derived from local tables: missing player-agent maps, stale access logs, missing transaction coverage, orphan mappings, pattern evidence, and candidate-only free-play rows.
 
 ## Missing Or Probe Data
 

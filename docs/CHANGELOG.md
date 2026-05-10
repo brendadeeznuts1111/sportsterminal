@@ -6,6 +6,7 @@
 
 - **System Status issue rollup** — `/api/health/system-status` now consolidates scraper errors, action queue backlog, raw API failures, Player 360 source errors, offline books, and critical/high patterns into a single operator issue feed.
 - **System Status data flows** — `/api/health/system-status` now includes `operationalStatus`, `riskStatus`, and local `dataFlows` evidence for wagers, archive reconciliation, Player 360 ledgers, hierarchy, player-agent maps, patterns, and exposure inputs.
+- **Cross-reference investigation layer** — `/api/v1/cross-reference` and the Player 360 Overview Cross-Refs card connect assigned agents, lineage, wagers, access logs, free-play totals, related players, pattern evidence, and source trust flags without adding new Buckeye calls.
 - **Pattern detector catalog** — `/api/patterns/catalog` and the Patterns tab now expose active detector definitions, thresholds, source tables, evidence fields, reason codes, and confidence so operators can see exactly how live wager, odds, event, and access-log patterns are produced.
 - **Sensitive artifact guard** — `bun run artifacts:check` now fails if raw Buckeye exports, root-level database dumps, HTML captures, or one-off scratch scripts become tracked or unignored.
 - **Player 360 real-data contract map** — `/api/v1/players/:id/intelligence-map` now includes field-level UI mappings, source freshness, endpoint coverage, explicit contract mismatches, and real/probe/missing status for each profile source.

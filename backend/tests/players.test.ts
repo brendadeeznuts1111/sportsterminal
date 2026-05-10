@@ -17,6 +17,7 @@ import {
   registerPlayerTransactionsRoutes,
 } from '../src/api/routes/players';
 import { registerFreePlayAnalysisRoutes } from '../src/api/routes/freeplay';
+import { registerCrossReferenceRoutes } from '../src/api/routes/cross-reference';
 
 let db: Database;
 let scraperManager: { getDatabase: () => Database };
@@ -134,6 +135,34 @@ beforeEach(async () => {
       UNIQUE(provider, customer_id, source_key)
     );
 
+    CREATE TABLE agent_hierarchy (
+      agent_id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL DEFAULT 'buckeye',
+      login TEXT,
+      display_name TEXT,
+      parent_agent_id TEXT,
+      level INTEGER,
+      agent_type TEXT,
+      player_count INTEGER DEFAULT 0,
+      head_count_rate_m REAL DEFAULT 0,
+      inet_head_count_rate_m REAL DEFAULT 0,
+      casino_head_count_rate_m REAL DEFAULT 0,
+      live_betting_rate_m REAL DEFAULT 0,
+      prop_builder_rate_m REAL DEFAULT 0,
+      last_refreshed TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE player_agent_map (
+      player_id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL DEFAULT 'buckeye',
+      player_login TEXT,
+      agent_id TEXT,
+      agent_login TEXT,
+      source TEXT,
+      linked_accounts_json TEXT NOT NULL DEFAULT '{}',
+      last_refreshed TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE player_links (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       provider TEXT NOT NULL DEFAULT 'buckeye',
@@ -187,6 +216,31 @@ beforeEach(async () => {
       status_code INTEGER,
       request_params TEXT,
       response_json TEXT
+    );
+
+    CREATE TABLE detected_patterns (
+      id TEXT PRIMARY KEY,
+      event_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      market TEXT NOT NULL,
+      side TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      score INTEGER NOT NULL DEFAULT 0,
+      category TEXT NOT NULL DEFAULT 'odds',
+      wager_number INTEGER,
+      agent_login TEXT,
+      trigger_book TEXT,
+      details_json TEXT NOT NULL DEFAULT '{}',
+      description TEXT,
+      detected_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE pattern_agents (
+      pattern_id TEXT NOT NULL,
+      agent_login TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (pattern_id, agent_login)
     );
   `);
 
@@ -243,6 +297,23 @@ beforeEach(async () => {
   );
 
   await db.run(
+    `INSERT INTO agent_hierarchy
+      (agent_id, login, display_name, parent_agent_id, level, agent_type, player_count, head_count_rate_m, inet_head_count_rate_m, last_refreshed)
+     VALUES
+      ('ROOT', 'ROOT', 'Root', NULL, 1, 'M', 2, 0, 0, '2026-05-02 07:00:00'),
+      ('A1', 'AGENT1', 'Agent One', 'ROOT', 2, 'A', 1, 5, 4, '2026-05-02 07:00:00'),
+      ('A2', 'AGENT2', 'Agent Two', 'ROOT', 2, 'A', 1, 5, 4, '2026-05-02 07:00:00')`
+  );
+
+  await db.run(
+    `INSERT INTO player_agent_map
+      (player_id, player_login, agent_id, agent_login, source, linked_accounts_json, last_refreshed)
+     VALUES
+      ('PLAYER1', 'PLAYER1', 'A1', 'AGENT1', 'test', '{}', '2026-05-02 07:00:00'),
+      ('PLAYER2', 'PLAYER2', 'A2', 'AGENT2', 'test', '{}', '2026-05-02 07:00:00')`
+  );
+
+  await db.run(
     `INSERT INTO player_links
       (player_a, player_b, reason, confidence, evidence_json, detected_at, status)
      VALUES
@@ -275,6 +346,18 @@ beforeEach(async () => {
      VALUES
       ('getCustomerDeposits', '2026-05-02 09:20:00', 'AGENT1', 12, 200, '{}', '{}'),
       ('getCustomerInfo', '2026-05-02 09:21:00', 'AGENT1', 12, 200, '{}', '{}')`
+  );
+
+  await db.run(
+    `INSERT INTO detected_patterns
+      (id, event_id, type, market, side, severity, score, category, agent_login, description, detected_at)
+     VALUES
+      ('pat-1', 'evt-1', 'Shared IP Cluster', 'access', 'ip', 'warning', 72, 'ip', 'AGENT1', 'Shared IP across players', '2026-05-02 09:30:00')`
+  );
+
+  await db.run(
+    `INSERT INTO pattern_agents (pattern_id, agent_login, created_at)
+     VALUES ('pat-1', 'AGENT1', '2026-05-02 09:30:00')`
   );
 });
 
@@ -502,6 +585,43 @@ describe('player archive routes', () => {
     expect(body.filters.groupBy).toBe('player');
     expect(body.totals.sourceConfidence).toBe('candidate');
     expect(body.transactions.find((row: any) => row.id === 'fp-candidate').sourceConfidence).toBe('candidate');
+  });
+
+  test('cross-reference endpoint returns linked player, agent, access, free-play, and pattern context', async () => {
+    const res = await registerCrossReferenceRoutes(
+      new URL('http://localhost/api/cross-reference?playerId=PLAYER1'),
+      new Request('http://localhost/api/cross-reference?playerId=PLAYER1'),
+      scraperManager as any
+    );
+    expect(res?.status).toBe(200);
+    const body = await res!.json();
+    expect(body.entity.playerId).toBe('PLAYER1');
+    expect(body.entity.agentId).toBe('A1');
+    expect(body.agentContext.assigned.login).toBe('AGENT1');
+    expect(body.agentContext.lineageLabel).toBe('ROOT > AGENT1');
+    expect(body.playerContext.agentMap.agentId).toBe('A1');
+    expect(body.playerContext.linkCount).toBe(1);
+    expect(body.wagerContext.rowCount).toBe(2);
+    expect(body.accessContext.sharedIpCount).toBe(1);
+    expect(body.freePlayContext.outstandingEstimate).toBe(50);
+    expect(body.patternContext.total).toBe(1);
+    expect(body.dataQuality.patternEvidencePresent).toBe(true);
+    expect(body.dataQuality.missingAgentMap).toBe(false);
+  });
+
+  test('cross-reference endpoint returns clean empty sections for unknown player', async () => {
+    const res = await registerCrossReferenceRoutes(
+      new URL('http://localhost/api/cross-reference?playerId=UNKNOWN'),
+      new Request('http://localhost/api/cross-reference?playerId=UNKNOWN'),
+      scraperManager as any
+    );
+    expect(res?.status).toBe(200);
+    const body = await res!.json();
+    expect(body.entity.playerId).toBe('UNKNOWN');
+    expect(body.agentContext.assigned).toBeNull();
+    expect(body.wagerContext.rowCount).toBe(0);
+    expect(body.freePlayContext.transactionCount).toBe(0);
+    expect(body.dataQuality.missingAgentMap).toBe(true);
   });
 
   test('player intelligence map reports source coverage, freshness, and gaps', async () => {

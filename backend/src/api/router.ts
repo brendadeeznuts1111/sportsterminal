@@ -58,6 +58,7 @@ import { registerStaticRoutes } from './routes/static';
 import { registerPerformanceRoutes } from './routes/performance';
 import { registerAnalyticsRoutes } from './routes/analytics';
 import { registerFreePlayAnalysisRoutes } from './routes/freeplay';
+import { registerCrossReferenceRoutes } from './routes/cross-reference';
 import { UrlPatternRouter } from './UrlPatternRouter';
 import type { BuckeyeScraperManager } from '../scrapers/ScraperManager';
 import type { OddsPoller } from '../odds/OddsPoller';
@@ -235,6 +236,10 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
 
   router.get('/api/freeplay/analysis', async (url, request) => {
     return registerFreePlayAnalysisRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/cross-reference', async (url, request) => {
+    return registerCrossReferenceRoutes(url, request, deps.scraperManager);
   });
 
   router.get('/api/risk/alerts', async (url, request) => {

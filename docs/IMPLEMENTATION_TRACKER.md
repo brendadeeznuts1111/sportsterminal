@@ -21,7 +21,7 @@ Key current pillars:
 - Odds grid with live-provider support, book health, movements, best-line highlighting, and pattern hooks. Synthetic odds are dev/test-only behind `ODDS_DEMO_MODE=true`.
 - Alert center, webhook delivery, status page, and operational health endpoints.
 - System Status issue rollup for scraper errors, action queues, raw API failures, Player 360 source errors, offline books, and critical patterns.
-- Player 360 profile modal with real API-only hydration, source coverage, field-contract mapping, explicit gaps, endpoint health, mismatch tracking, and focused frontend modules for transaction and Docs/data-map rendering.
+- Player 360 profile modal with real API-only hydration, source coverage, field-contract mapping, explicit gaps, endpoint health, cross-reference overview, mismatch tracking, and focused frontend modules for transaction and Docs/data-map rendering.
 - Project docs reorganized into README, Buckeye scope, implementation tracker, changelog, and project organization guide.
 
 ---
@@ -153,6 +153,7 @@ Delivered:
 - `backend/src/database.ts` uses Bun SQL while preserving the local database wrapper API.
 - Status sidebar tab shows backend, vault, book, and pattern health.
 - System Status now includes a consolidated issue feed from `/api/health/system-status` so operators can track likely bugs/regressions from one panel.
+- System Status includes a data-flow strip and `crossReferences` readiness row for player-agent maps, access-log evidence, player links, and pattern-agent links.
 
 Notes:
 

@@ -38,6 +38,8 @@ FactoryWager.state.playerProfile = FactoryWager.state.playerProfile || {
   docsLoading: false,
   statusLoading: false,
   statusMap: null,
+  crossReference: null,
+  crossReferenceLoading: false,
   statusEndpointChecks: [],
   tab: 'overview',
   transactionTab: 'all',
@@ -3701,11 +3703,13 @@ async function loadStatusPage(force = false) {
   const booksEl = document.getElementById('statusBooksList');
   const countersEl = document.getElementById('statusCountersList');
   const queueEl = document.getElementById('statusQueueList');
+  const dataFlowEl = document.getElementById('statusDataFlowStrip');
   const issuesEl = document.getElementById('statusIssuesList');
   const issuesSummaryEl = document.getElementById('statusIssuesSummary');
   if (!summary || !agentsEl || !booksEl || !countersEl || !queueEl || !issuesEl) return;
 
   summary.innerHTML = statusLoadingCards();
+  if (dataFlowEl) dataFlowEl.innerHTML = statusLoadingRow('Checking data flows...');
   issuesEl.innerHTML = statusLoadingRow('Checking recent failures...');
   if (issuesSummaryEl) issuesSummaryEl.textContent = 'Checking...';
   agentsEl.innerHTML = statusLoadingRow('Loading Buckeye agents...');
@@ -3755,6 +3759,10 @@ async function loadStatusPage(force = false) {
       statusCard('Player 360', player360 ? 'Mapped' : 'Issue', player360 ? `${player360.coverage?.missingSourceCount || 0} missing/probe gaps` : `${player360Id} unavailable`, player360 ? 'var(--green)' : 'var(--red)'),
       statusCard('System Issues', String(systemIssues.length), `${criticalIssues} critical / ${warningIssues} warning`, criticalIssues > 0 ? 'var(--red)' : warningIssues > 0 ? 'var(--yellow)' : 'var(--green)'),
     ].join('');
+
+    if (dataFlowEl) {
+      dataFlowEl.innerHTML = renderStatusDataFlowStrip(system?.dataFlows || {});
+    }
 
     issuesEl.innerHTML = renderStatusIssues(system);
     if (issuesSummaryEl) {
@@ -3814,6 +3822,7 @@ async function loadStatusPage(force = false) {
     updateStatusBadge(statusOk, activeAgents, criticalPatterns);
   } catch (error) {
     summary.innerHTML = statusCard('Backend', 'Offline', error instanceof Error ? error.message : 'Status unavailable', 'var(--red)');
+    if (dataFlowEl) dataFlowEl.innerHTML = '';
     issuesEl.innerHTML = '<div style="color:var(--red);">Could not load system issues.</div>';
     if (issuesSummaryEl) issuesSummaryEl.textContent = 'Unavailable';
     agentsEl.innerHTML = '<div style="color:var(--red);">Could not load status. Is the backend running?</div>';
@@ -3843,6 +3852,33 @@ function statusCard(label, value, subtext, color) {
     <div class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);">${escapeHtml(label)}</div>
     <div class="text-xl font-bold mt-1" style="color:${color};">${escapeHtml(value)}</div>
     <div class="text-xs mt-1" style="color:var(--text-dim);">${escapeHtml(subtext || '')}</div>
+  </div>`;
+}
+
+function renderStatusDataFlowStrip(dataFlows) {
+  const items = [
+    ['Wagers', dataFlows.wagerArchive || dataFlows.liveWagers],
+    ['Players', dataFlows.playerAgentMap],
+    ['Agents', dataFlows.agentHierarchy],
+    ['Access Logs', { ...(dataFlows.crossReferences || {}), rowCount: dataFlows.crossReferences?.accessRows, lastSeen: dataFlows.crossReferences?.lastSeen }],
+    ['Free-Play', dataFlows.playerTransactions],
+    ['Patterns', dataFlows.patterns],
+    ['Cross-Refs', dataFlows.crossReferences],
+  ];
+  return items.map(([label, flow]) => statusDataFlowPill(label, flow || {})).join('');
+}
+
+function statusDataFlowPill(label, flow) {
+  const rowCount = Number(flow.rowCount || 0);
+  const status = flow.status || (rowCount > 0 ? 'live' : 'empty');
+  const color = status === 'live' ? 'var(--green)' : status === 'empty' ? 'var(--yellow)' : 'var(--text-dim)';
+  return `<div class="rounded-lg border px-2 py-2" style="background:var(--panel);border-color:var(--border);">
+    <div class="flex items-center justify-between gap-2">
+      <span class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);">${escapeHtml(label)}</span>
+      <span class="w-2 h-2 rounded-full" style="background:${color};"></span>
+    </div>
+    <div class="font-mono text-sm mt-1" style="color:var(--text);">${rowCount.toLocaleString()}</div>
+    <div class="text-[10px] truncate" style="color:var(--text-dim);">${flow.lastSeen ? escapeHtml(formatShortDateTime(flow.lastSeen)) : 'no rows'}</div>
   </div>`;
 }
 
@@ -3995,6 +4031,7 @@ const API_ENDPOINTS = [
   { path: '/api/players/A17566/profile', label: 'Player Profile', group: 'Player 360' },
   { path: '/api/players/A17566/agent-context', label: 'Agent Context', group: 'Player 360' },
   { path: '/api/players/A17566/intelligence-map', label: 'Intel Map', group: 'Player 360' },
+  { path: '/api/cross-reference?playerId=A17566', label: 'Cross-Refs', group: 'Player 360' },
   { path: '/api/players/A17566/deposits', label: 'Deposits', group: 'Player 360' },
   { path: '/api/players/A17566/account-snapshots', label: 'Snapshots', group: 'Player 360' },
   { path: '/api/players/A17566/links', label: 'Links', group: 'Player 360' },
@@ -6218,6 +6255,14 @@ async function fetchBuckeyePlayerTransactions(playerId, timeoutMs = 15000) {
 async function fetchPlayerProfile(playerId) {
   const profile = await FactoryWager.apiFetch(`/players/${encodeURIComponent(playerId)}/profile`);
   try {
+    profile.crossReference = await fetchPlayerCrossReference(playerId);
+    playerProfileState.crossReference = profile.crossReference;
+  } catch (err) {
+    console.warn('[Players] Cross-reference summary failed:', err?.message || err);
+    profile.crossReference = null;
+    playerProfileState.crossReference = null;
+  }
+  try {
     const live = await fetchBuckeyePlayerLiveData(playerId);
     profile.buckeye = live;
   } catch (err) {
@@ -6257,6 +6302,10 @@ async function fetchPlayerIntelligenceMap(playerId) {
   return FactoryWager.apiFetch(`/players/${encodeURIComponent(playerId)}/intelligence-map`);
 }
 
+async function fetchPlayerCrossReference(playerId) {
+  return FactoryWager.apiFetch('/cross-reference', { query: { playerId } });
+}
+
 async function refreshOpenPlayerProfile(playerId) {
   try {
     const profile = await fetchPlayerProfile(playerId);
@@ -6279,6 +6328,8 @@ function closePlayerProfileModal(updateHistory = true) {
   playerProfileState.playerId = null;
   playerProfileState.profile = null;
   playerProfileState.intelligenceMap = null;
+  playerProfileState.crossReference = null;
+  playerProfileState.crossReferenceLoading = false;
   playerProfileState.docsLoading = false;
   playerProfileState.statusLoading = false;
   playerProfileState.statusMap = null;
@@ -6500,6 +6551,9 @@ function renderPlayerProfileOverview(profile) {
           <div class="intel-risk-factors">${renderRiskFactors(profile)}</div>
         </div>
 
+        <!-- Cross References -->
+        ${renderCrossReferencePanel(profile)}
+
         <!-- Active Flags -->
         <div class="intel-glass-card">
           <div class="intel-section-header">
@@ -6624,6 +6678,82 @@ function renderPlayerProfileOverview(profile) {
 
 function profileStatCard(label, value) {
   return `<div class="profile-stat-card"><div class="profile-stat-label">${label}</div><div class="profile-stat-value">${value}</div></div>`;
+}
+
+function renderCrossReferencePanel(profile) {
+  const cross = profile.crossReference || playerProfileState.crossReference;
+  if (!cross) {
+    return `<div class="intel-glass-card">
+      <div class="intel-section-header">
+        <h3>Cross-Refs</h3>
+        <span class="intel-chip probe">loading</span>
+      </div>
+      <div class="intel-empty">Cross-reference summary is not available yet.</div>
+    </div>`;
+  }
+  const agent = cross.agentContext?.assigned || {};
+  const lineage = cross.agentContext?.lineageLabel || agent.login || agent.agentId || 'No agent linked';
+  const access = cross.accessContext || {};
+  const freePlay = cross.freePlayContext || {};
+  const patterns = cross.patternContext || {};
+  const quality = cross.dataQuality || {};
+  const latestIp = access.recent?.[0]?.ipAddress || access.recent?.[0]?.ip_address || '-';
+  const latestGeo = access.latestGeo || 'Geo pending';
+  return `<div class="intel-glass-card">
+    <div class="intel-section-header">
+      <h3>Cross-Refs</h3>
+      <span class="intel-chip ${Object.values(quality).some(Boolean) ? 'probe' : 'live'}">${Object.values(quality).filter(Boolean).length} trust flags</span>
+    </div>
+    <div class="intel-kv-list">
+      ${intelKvRow('Agent Lineage', lineage)}
+      ${intelKvRow('Shared IPs', `${Number(access.sharedIpCount || 0).toLocaleString()} clusters · ${escapeHtml(latestIp)}`)}
+      ${intelKvRow('Latest Geo', latestGeo)}
+      ${intelKvRow('Free-Play', `${formatCompactDollars(freePlay.outstandingEstimate || 0)} outstanding · ${freePlay.sourceConfidence || 'confirmed'}`)}
+      ${intelKvRow('Patterns', `${Number(patterns.total || 0).toLocaleString()} linked · ${Number(patterns.critical || 0)} critical`)}
+    </div>
+    <div class="mt-3 flex flex-wrap gap-2">
+      ${crossRefQualityChip('Agent map', !quality.missingAgentMap)}
+      ${crossRefQualityChip('Access logs', !quality.staleAccessLogs && Number(access.rowCount || 0) > 0)}
+      ${crossRefQualityChip('Ledger', !quality.missingTransactions)}
+      ${crossRefQualityChip('Patterns', quality.patternEvidencePresent)}
+      ${crossRefQualityChip('Free-play', !quality.freePlayCandidateOnly)}
+    </div>
+    <div class="mt-3 grid grid-cols-2 gap-2">
+      <button type="button" class="profile-action-button" onclick="viewPlayerRelated('agent')">Agent Tree</button>
+      <button type="button" class="profile-action-button" onclick="viewPlayerRelated('access')">Access Logs</button>
+      <button type="button" class="profile-action-button" onclick="viewPlayerRelated('patterns')">Patterns</button>
+      <button type="button" class="profile-action-button" onclick="viewPlayerRelated('freeplay')">Free-Play</button>
+    </div>
+  </div>`;
+}
+
+function crossRefQualityChip(label, ok) {
+  return `<span class="status-coverage-chip ${ok ? 'live' : 'probe'}">${escapeHtml(label)}: ${ok ? 'ok' : 'check'}</span>`;
+}
+
+function viewPlayerRelated(target) {
+  const profile = playerProfileState.profile || {};
+  const cross = profile.crossReference || playerProfileState.crossReference || {};
+  const agent = cross.agentContext?.assigned?.login || cross.agentContext?.assigned?.agentId || profile.stats?.agentLogin || '';
+  if (target === 'agent') {
+    setPlayerProfileTab('agent');
+    return false;
+  }
+  if (target === 'access') {
+    setPlayerProfileTab('access');
+    return false;
+  }
+  if (target === 'freeplay') {
+    setPlayerProfileTab('transactions');
+    setPlayerTransactionTab('freeplay');
+    return false;
+  }
+  if (target === 'patterns') {
+    if (agent) openPatternsForAgent(agent);
+    else switchSection('patterns', getSidebarButton('patterns'));
+    return false;
+  }
+  return false;
 }
 
 /* ===== ARTIFACT-STYLE RENDER HELPERS ===== */
@@ -8690,6 +8820,7 @@ Object.assign(window, {
   updateTopBarStatus,
   updateWagerFilterCounts,
   updateWSStatus,
+  viewPlayerRelated,
   viewPlayer
 });
 Object.assign(window, {
