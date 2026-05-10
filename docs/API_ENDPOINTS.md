@@ -375,6 +375,30 @@ Book health status.
 
 Detected pattern history.
 
+### `GET /api/patterns/catalog`
+
+Active detector catalog for the Patterns tab. This is the operator-facing contract for pattern definitions and includes source tables, thresholds, severity rules, reason codes, evidence fields, detector name, and confidence.
+
+**Response 200:**
+```json
+{
+  "generatedAt": "2026-05-10T00:00:00.000Z",
+  "count": 16,
+  "patterns": [
+    {
+      "type": "Agent Swarm",
+      "label": "Agent Swarm",
+      "category": "agents",
+      "status": "active",
+      "sourceTables": ["wagers", "detected_patterns", "pattern_agents"],
+      "detector": "PatternService.analyzeWager",
+      "trigger": "Same agent has 4 or more matching wagers, or 3 or more distinct players, inside 10 minutes.",
+      "confidence": "derived"
+    }
+  ]
+}
+```
+
 ### `GET /api/patterns/summary`
 
 Pattern summary by type.

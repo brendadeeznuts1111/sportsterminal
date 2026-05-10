@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { AppDatabase, type Database } from '../src/database';
 import { buildManagerOperationBody, buildWebLogBody, validateWebLogRange } from '../src/scrapers/BuckeyeAPI';
 import { PatternService } from '../src/patterns/PatternService';
+import { getPatternCatalog } from '../src/patterns/catalog';
 import { parseWagerDescription } from '../src/patterns/wagerParser';
 import type { EnrichedWager } from '../src/risk/AlertEngine';
 
@@ -193,6 +194,19 @@ describe('Buckeye manager operation helpers', () => {
 });
 
 describe('PatternService detectors', () => {
+  test('documents active detector catalog with source tables and thresholds', () => {
+    const catalog = getPatternCatalog();
+    const byType = new Map(catalog.patterns.map((pattern) => [pattern.type, pattern]));
+
+    expect(catalog.count).toBeGreaterThan(10);
+    expect(byType.get('Agent Swarm')?.trigger).toContain('10 minutes');
+    expect(byType.get('Pinnacle Drift Bet')?.trigger).toContain('20');
+    expect(byType.get('Steam Move')?.sourceTables).toContain('line_movements');
+    expect(byType.get('Shared IP Cluster')?.sourceTables).toContain('access_logs');
+    expect(catalog.patterns.every((pattern) => pattern.sourceTables.length > 0)).toBe(true);
+    expect(catalog.patterns.every((pattern) => pattern.evidenceFields.length > 0)).toBe(true);
+  });
+
   test('detects agent swarm and past-post risk from correlated wagers', async () => {
     const service = new PatternService(db);
     const start = new Date(Date.now() - 15 * 60 * 1000).toISOString();

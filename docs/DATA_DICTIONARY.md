@@ -840,6 +840,7 @@ Odds, books, and patterns:
 | `/api/books` | GET | Book list/settings |
 | `/api/books/status` | GET | Book health |
 | `/api/patterns/history` | GET | Pattern history |
+| `/api/patterns/catalog` | GET | Active pattern detector catalog with source tables, thresholds, severity rules, reason codes, evidence fields, detector name, and confidence |
 | `/api/patterns/summary` | GET | Pattern summary |
 | `/api/patterns/agents` | GET | Pattern-agent rollup |
 

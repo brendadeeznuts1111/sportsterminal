@@ -42,6 +42,10 @@ export function loadEnv(source: Record<string, string | undefined> = Bun.env): A
   };
 }
 
+export function getEnv(): AppEnv {
+  return loadEnv();
+}
+
 function parsePort(value: string): number {
   const port = Number.parseInt(value, 10);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {

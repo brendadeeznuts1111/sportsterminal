@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import { createRouter, routeRequest } from '../src/api/router';
 import { RateLimiter } from '../src/api/rateLimiter';
@@ -11,12 +11,22 @@ function createTestRouter() {
 }
 
 const originalAdminToken = process.env.ADMIN_API_TOKEN;
+const originalNodeEnv = process.env.NODE_ENV;
+
+beforeEach(() => {
+  process.env.NODE_ENV = 'development';
+});
 
 afterEach(() => {
   if (originalAdminToken === undefined) {
     delete process.env.ADMIN_API_TOKEN;
   } else {
     process.env.ADMIN_API_TOKEN = originalAdminToken;
+  }
+  if (originalNodeEnv === undefined) {
+    delete process.env.NODE_ENV;
+  } else {
+    process.env.NODE_ENV = originalNodeEnv;
   }
 });
 
@@ -91,6 +101,7 @@ describe('API route registration', () => {
       ['GET', '/api/books'],
       ['GET', '/api/books/status'],
       ['GET', '/api/patterns/history'],
+      ['GET', '/api/patterns/catalog'],
       ['GET', '/api/patterns/summary'],
       ['GET', '/api/patterns/agents'],
       ['GET', '/api/buckeye/vault-status'],
@@ -141,10 +152,12 @@ describe('API route registration', () => {
     expect(router.match('GET', '/api/v1/agents/BILLY666/players')).not.toBeNull();
     expect(router.match('GET', '/api/v1/freeplay/analysis')).not.toBeNull();
     expect(router.match('GET', '/api/v1/logs/access')).not.toBeNull();
+    expect(router.match('GET', '/api/v1/patterns/catalog')).not.toBeNull();
     expect(router.match('POST', '/api/v1/players/A17566/flags')).not.toBeNull();
   });
 
   it('applies local rate limiting before dispatching routes', async () => {
+    process.env.NODE_ENV = 'production';
     const deps = {
       scraperManager: {
         getDatabase: () => ({ run: async () => ({ lastID: 1, changes: 1 }) }),

@@ -3,6 +3,7 @@
  */
 import { clampInt, handleAsync, corsHeaders } from '../helpers';
 import type { OddsPoller } from '../../odds/OddsPoller';
+import { getPatternCatalog } from '../../patterns/catalog';
 
 export function registerOddsRoutes(
   url: URL,
@@ -46,6 +47,10 @@ export function registerOddsRoutes(
       }),
       corsHeaders
     );
+  }
+
+  if (url.pathname === '/api/patterns/catalog') {
+    return handleAsync(async () => getPatternCatalog(), corsHeaders);
   }
 
   if (url.pathname === '/api/patterns/summary') {
