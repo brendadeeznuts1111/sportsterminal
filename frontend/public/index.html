@@ -93,13 +93,17 @@
 
       <div class="sidebar-group" data-sidebar-group="pph">
       <button type="button" class="sidebar-group-header" data-sidebar-toggle="pph" onclick="toggleSidebarGroup('pph')" title="Collapse or expand PPH Books">
-        <span class="sidebar-group-chevron">▾</span><span>PPH Books</span><span class="sidebar-group-count">1</span>
+        <span class="sidebar-group-chevron">▾</span><span>PPH Books</span><span class="sidebar-group-count">2</span>
       </button>
       <div class="sidebar-group-body">
       <button class="sidebar-item w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all" data-section="buckeye" onclick="switchSection('buckeye', this)">
         <div class="w-4 h-4 rounded-full flex items-center justify-center text-xs font-bold" style="background:#8B4513;color:#fff;">B</div>
         <span>Buckeye</span>
         <span id="buckeyeBadge" class="ml-auto text-xs px-1.5 py-0.5 rounded-full hidden" style="background:var(--red);color:#fff;">!</span>
+      </button>
+      <button class="sidebar-item w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all" data-section="propBuilder" onclick="switchSection('propBuilder', this)">
+        <svg class="w-4 h-4 icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/></svg>
+        <span>Zone 3 — Prop Builder</span>
       </button>
       </div>
       </div>
@@ -441,6 +445,99 @@
         <div class="rounded-lg border p-4" style="background:var(--panel);border-color:var(--border);">
           <h3 class="text-sm font-semibold mb-3">Game Breakdown</h3>
           <div id="gameBreakdown" class="space-y-2"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION: Zone 3 — Prop Builder -->
+    <div id="propBuilderSection" class="section-content flex-1 overflow-y-auto p-4 hidden">
+      <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center gap-3">
+          <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/></svg>
+          <div>
+            <h2 class="text-lg font-bold">Zone 3 — Prop Builder</h2>
+            <p class="text-xs" style="color:var(--text-dim);">Player props • Game props • Extended offerings • Live prop lines</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <input id="propAgentId" type="text" placeholder="Agent ID (e.g. BILLY666)" class="text-xs px-2 py-1.5 rounded outline-none w-40" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">
+          <button onclick="loadProps()" class="px-3 py-1.5 text-xs rounded font-medium" style="background:var(--accent);color:#fff;">Load Props</button>
+          <button onclick="loadExtendedProps()" class="px-3 py-1.5 text-xs rounded font-medium" style="background:var(--panel);border:1px solid var(--border);color:var(--text);">Extended</button>
+        </div>
+      </div>
+
+      <!-- Prop Builder Toolbar -->
+      <div class="flex items-center gap-3 mb-4 p-3 rounded-lg border" style="background:var(--panel);border-color:var(--border);">
+        <div class="flex items-center gap-2">
+          <span class="text-xs" style="color:var(--text-dim);">Sport:</span>
+          <select id="propSportFilter" class="text-xs px-2 py-1 rounded border" style="background:var(--bg);border-color:var(--border);color:var(--text);" onchange="filterPropsBySport(this.value)">
+            <option value="">All Sports</option>
+            <option value="NFL">NFL</option>
+            <option value="NBA">NBA</option>
+            <option value="MLB">MLB</option>
+            <option value="NHL">NHL</option>
+            <option value="NCAAB">NCAAB</option>
+            <option value="Soccer">Soccer</option>
+          </select>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-xs" style="color:var(--text-dim);">Type:</span>
+          <select id="propTypeFilter" class="text-xs px-2 py-1 rounded border" style="background:var(--bg);border-color:var(--border);color:var(--text);" onchange="filterPropsByType(this.value)">
+            <option value="">All Types</option>
+            <option value="player">Player</option>
+            <option value="game">Game</option>
+            <option value="team">Team</option>
+            <option value="live">Live</option>
+          </select>
+        </div>
+        <div class="flex-1"></div>
+        <div class="flex items-center gap-2">
+          <span class="text-xs" style="color:var(--text-dim);">Search:</span>
+          <input id="propSearch" type="text" placeholder="Player, team, or prop..." class="text-xs px-2 py-1 rounded outline-none w-48" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" oninput="searchProps(this.value)">
+        </div>
+      </div>
+
+      <!-- Prop Builder Grid -->
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <!-- Props List -->
+        <div class="xl:col-span-2 space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-semibold">Available Props</h3>
+            <span id="propCount" class="text-xs px-2 py-0.5 rounded-full" style="background:var(--accent);color:#fff;">0</span>
+          </div>
+          <div id="propsGrid" class="space-y-2">
+            <div class="text-xs p-4 rounded-lg border text-center" style="background:var(--panel);border-color:var(--border);color:var(--text-dim);">
+              Enter an Agent ID and click "Load Props" to fetch prop offerings from the proxy.
+            </div>
+          </div>
+        </div>
+
+        <!-- Prop Cart / Builder -->
+        <div class="space-y-3">
+          <div class="rounded-lg border p-4" style="background:var(--panel);border-color:var(--border);">
+            <h3 class="text-sm font-semibold mb-3">Prop Slip</h3>
+            <div id="propSlip" class="space-y-2">
+              <div class="text-xs text-center py-4" style="color:var(--text-dim);">No props selected</div>
+            </div>
+            <div class="mt-3 pt-3 border-t" style="border-color:var(--border);">
+              <div class="flex items-center justify-between text-xs mb-2">
+                <span style="color:var(--text-dim);">Risk:</span>
+                <input id="propRisk" type="number" value="100" class="w-20 text-xs px-2 py-1 rounded outline-none text-right" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">
+              </div>
+              <div class="flex items-center justify-between text-xs mb-2">
+                <span style="color:var(--text-dim);">To Win:</span>
+                <span id="propToWin" class="font-mono font-bold" style="color:var(--green);">$0.00</span>
+              </div>
+              <button onclick="clearPropSlip()" class="w-full px-3 py-1.5 rounded text-xs font-medium" style="background:var(--red);color:#fff;">Clear Slip</button>
+            </div>
+          </div>
+
+          <!-- Prop Builder URL -->
+          <div class="rounded-lg border p-4" style="background:var(--panel);border-color:var(--border);">
+            <h3 class="text-sm font-semibold mb-2">Prop Builder URL</h3>
+            <div id="propBuilderUrl" class="text-xs font-mono break-all p-2 rounded" style="background:var(--bg);color:var(--text-dim);">—</div>
+            <button onclick="fetchPropBuilderURL()" class="mt-2 w-full px-3 py-1.5 rounded text-xs font-medium" style="background:var(--panel);border:1px solid var(--border);color:var(--text);">Refresh URL</button>
+          </div>
         </div>
       </div>
     </div>

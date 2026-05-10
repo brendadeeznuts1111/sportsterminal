@@ -838,6 +838,23 @@ setInterval(async () => {
   }
 }, 21600000 + 3600000);
 
+// Memory-efficient log rotation (Enhancement 23)
+setInterval(() => {
+  try {
+    const logDb = new Database("logs.sqlite", { readonly: true });
+    const logCount = logDb.query("SELECT COUNT(*) as c FROM logs").get() as { c: number } | null;
+    logDb.close();
+    if (logCount && logCount.c > 50000) {
+      const writeDb = new Database("logs.sqlite");
+      writeDb.run("DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY id LIMIT 10000)");
+      writeDb.close();
+      logger.log("info", "background", "Pruned old log rows", { before: logCount.c });
+    }
+  } catch {
+    // logs.sqlite may not exist
+  }
+}, 3600000);
+
 // ==========================================
 // RISK ENGINE — background alert evaluation
 // ==========================================
@@ -941,7 +958,7 @@ function scheduleTokenRenewal(customerID: string, expiresAtUnix: number) {
 }
 
 function scheduleExistingTokenRenewals() {
-  const rows = db.query("SELECT customerID, MAX(expires_at) AS expires_at FROM tokens WHERE bearer_token IS NOT NULL GROUP BY customerID").all() as Array<{ customerID: string; expires_at: number }>;
+  const rows = getReadDb().query("SELECT customerID, MAX(expires_at) AS expires_at FROM tokens WHERE bearer_token IS NOT NULL GROUP BY customerID").all() as Array<{ customerID: string; expires_at: number }>;
   for (const row of rows) {
     if (row.customerID && row.expires_at) scheduleTokenRenewal(row.customerID, row.expires_at);
   }
@@ -1161,6 +1178,10 @@ function serializeIntegrityCase(row: IntegrityCaseRow) {
 
 function hashPayloadImpl(payload: unknown): string {
   return Bun.hash(JSON.stringify(payload)).toString(36);
+}
+
+function getDemoCfClearance(): string {
+  return `demo_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
 
 function json(data: unknown, status = 200, headers: Record<string, string> = {}, acceptEncoding = "") {
@@ -3518,7 +3539,7 @@ async function fetchWithFallback(baseUrl: string, endpoint: string, payload: Jso
 async function dependencyHealth() {
   const [buckeyeOk, databaseOk] = await Promise.all([
     fetch(CONFIG.baseUrl, { method: "HEAD" }).then((res) => res.ok).catch(() => false),
-    Promise.resolve().then(() => db.query("SELECT 1 AS ok").get() !== undefined).catch(() => false),
+    Promise.resolve().then(() => getReadDb().query("SELECT 1 AS ok").get() !== undefined).catch(() => false),
   ]);
   const status = buckeyeOk && databaseOk ? "healthy" : "degraded";
   return {
@@ -3657,13 +3678,19 @@ function numberMetric(value: unknown): number {
 }
 
 async function readiness() {
-  const database = db.query("SELECT 1 AS ok").get() !== undefined;
-  const token = db.query("SELECT customerID FROM tokens WHERE bearer_token IS NOT NULL AND expires_at > unixepoch() ORDER BY expires_at DESC LIMIT 1").get() as { customerID?: string } | null;
-  const buckeye = await buckeyeCall(() => buckeyeFetch(CONFIG.baseUrl, { method: "HEAD" }), { endpoint: "ready" })
-    .then((response) => response.ok)
-    .catch(() => false);
-  const ready = database && buckeye && Boolean(token?.customerID);
-  return { ready, database, buckeye, hasUsableToken: Boolean(token?.customerID) };
+  const checks = {
+    sqlite: true,
+    buckeye: false,
+    tokenExists: false,
+  };
+  try { getReadDb().query("SELECT 1").get(); } catch { checks.sqlite = false; }
+  const latest = getLatestTokenWrite.get({ $customerID: "BILLY666" }) as TokenRow | null;
+  checks.tokenExists = !!latest?.bearer_token;
+  const buckeyeTest = await fetch(CONFIG.baseUrl, { method: "HEAD" }).catch(() => null);
+  checks.buckeye = buckeyeTest?.ok || false;
+
+  const ready = checks.sqlite && (CONFIG.demoMode || (checks.tokenExists && checks.buckeye));
+  return { ready, checks };
 }
 
 function buildOpenApiSpec() {
@@ -4003,10 +4030,38 @@ function stopTicker(id: string) {
 // ==========================================
 var configWatcher: ReturnType<typeof watch> | null = null;
 
+// TLS support (Enhancement 27)
+let tls: { key: string; cert: string } | undefined;
+try {
+  const key = await Bun.file("./certs/key.pem").text();
+  const cert = await Bun.file("./certs/cert.pem").text();
+  tls = { key, cert };
+  logger.log("info", "tls", "TLS enabled");
+} catch {
+  tls = undefined;
+}
+
+// Port fallback (Enhancement 30)
+async function findAvailablePort(startPort: number): Promise<number> {
+  for (let port = startPort; port < startPort + 10; port++) {
+    try {
+      const test = await fetch(`http://localhost:${port}`).catch(() => null);
+      if (!test) return port;
+    } catch {}
+  }
+  return startPort;
+}
+const actualPort = await findAvailablePort(CONFIG.port);
+if (actualPort !== CONFIG.port) {
+  logger.log("warn", "startup", `Port ${CONFIG.port} busy, using ${actualPort}`);
+  CONFIG.port = actualPort;
+}
+
 const server = Bun.serve<WsData>({
   port: CONFIG.port,
   hostname: "0.0.0.0",
   development: !CONFIG.production,
+  tls,
 
   websocket: ({
     compress: CONFIG.features.wsCompression,
@@ -4138,7 +4193,9 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
     const path = url.pathname;
 
     if (path === "/ping" || path === "/ping/") {
-      return new Response("pong", { status: 200, headers: cors });
+      const pingHeaders: Record<string, string> = { ...cors };
+      if (currentReqId) pingHeaders["X-Request-ID"] = currentReqId;
+      return new Response("pong", { status: 200, headers: pingHeaders });
     }
 
     if (shuttingDown) return json({ error: "Server is shutting down" }, 503);
@@ -4217,7 +4274,9 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
 
     // ---- /PING (liveness probe) ----
     if (path === "/ping") {
-      return new Response("pong", { status: 200 });
+      const pingHeaders: Record<string, string> = {};
+      if (currentReqId) pingHeaders["X-Request-ID"] = currentReqId;
+      return new Response("pong", { status: 200, headers: pingHeaders });
     }
 
     // ---- /READY (k8s probe) ----
@@ -4561,6 +4620,10 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
             const stored = getStoredCredentials(customerID);
             finalToken ||= stored?.token || "";
             finalCf ||= stored?.cf_clearance || "";
+          }
+          if (CONFIG.features.demoMode && (!finalToken || !finalCf)) {
+            finalToken = "demo-token";
+            finalCf = getDemoCfClearance();
           }
           if (!finalToken || !finalCf) {
             requestFinished(ctx, `alias:${alias}`, customerID, 400, "Missing token/cf_clearance");
@@ -4979,11 +5042,15 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
             finalCf ||= stored.cf_clearance;
           }
         }
+        if (CONFIG.features.demoMode && (!finalToken || !finalCf)) {
+          finalToken = "demo-token";
+          finalCf = getDemoCfClearance();
+        }
 
         if (!finalToken || !finalCf) {
-          requestFinished(ctx, endpoint, customerID, 400, "Missing token/cf_clearance");
+          requestFinished(ctx, endpoint, customerID, 400, "Missing token or cf_clearance");
           activeRequests--;
-          return respond(json({ error: "token/cf_clearance or customerID required" }, 400, { "X-Request-ID": ctx.reqId }));
+          return respond(json({ error: "token and cf_clearance (or stored customerID credentials) required" }, 400, { "X-Request-ID": ctx.reqId }));
         }
 
         const enrichedPayload = applySpecialHandler(endpoint, payload, body);
@@ -5167,7 +5234,7 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
         const test = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/`, {
           headers: { "Cookie": `cf_clearance=${cf_clearance}`, "User-Agent": browserHeaders()["User-Agent"] },
         }), { endpoint: "health" });
-        const dbOk = db.query("SELECT 1").get() !== undefined;
+        const dbOk = getReadDb().query("SELECT 1").get() !== undefined;
         return json({ valid: test.status === 200, status: test.status, dependencies: (await dependencyHealth()).body });
       } catch (err: unknown) {
         return json({ valid: false, error: err instanceof Error ? err.message : String(err) }, 500);
@@ -5213,6 +5280,7 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       const buckeyeRoutes: Record<string, string> = {};
       for (const [k, v] of Object.entries(all.proxy)) proxyRoutes[v.path] = `${v.method} - ${v.description}`;
       for (const [k, v] of Object.entries(all.buckeye)) buckeyeRoutes[k] = `[${v.test_ok ? "OK" : "FAIL"}] ${v.description}`;
+      const cacheControl = url.searchParams.get("_") ? "no-cache" : "max-age=300";
       return json({
         proxy: proxyRoutes,
         buckeye: buckeyeRoutes,
@@ -5253,7 +5321,7 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
         ])),
         counts: ENDPOINT_COUNTS,
         test_summary: `${TEST_SUMMARY.passed}/${TEST_SUMMARY.total} passed`,
-      });
+      }, 200, { "Cache-Control": cacheControl });
     }
 
     // ---- /API/PROXY/AGENT/HEATMAP ----
@@ -6027,6 +6095,19 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       }
 
       return json({ error: "Method not allowed" }, 405);
+    }
+
+    // ---- /ADMIN/WS ----
+    if (path === "/admin/ws" && req.method === "GET") {
+      const authErr = adminApiKeyAuth(req);
+      if (authErr) return authErr;
+      const clients = Array.from(subscribers.entries()).map(([id, sub]) => ({
+        id: id.slice(0, 8),
+        customerID: sub.customerID,
+        connected: sub.ws.readyState === 1,
+        batched: !!sub.batchInterval,
+      }));
+      return json({ count: clients.length, clients });
     }
 
     // ---- /API/PROXY/RENEWTOKEN ----

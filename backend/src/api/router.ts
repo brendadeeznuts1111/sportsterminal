@@ -519,6 +519,26 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
     return Response.json(await client.manager(operation, body));
   });
 
+  // Zone 3 — Prop Builder live routes
+  router.post('/api/live/props', async (url, request) => {
+    const body = await request.json() as Record<string, unknown>;
+    const agentID = String(body.agentID || body.agentId || url.searchParams.get('agentID') || '');
+    const client = new ProxyClient(deps.scraperManager);
+    return Response.json(await client.getProps(agentID));
+  });
+
+  router.post('/api/live/extendedProps', async (url, request) => {
+    const body = await request.json() as Record<string, unknown>;
+    const agentID = String(body.agentID || body.agentId || url.searchParams.get('agentID') || '');
+    const client = new ProxyClient(deps.scraperManager);
+    return Response.json(await client.getExtendedProps(agentID));
+  });
+
+  router.post('/api/live/propBuilderURL', async (url, request) => {
+    const client = new ProxyClient(deps.scraperManager);
+    return Response.json(await client.getPropBuilderURL());
+  });
+
   // Performance cache routes. Keep status before :agentId so it does not
   // get interpreted as an agent login.
   router.get('/api/performance/status', async (url, request) => {

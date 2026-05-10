@@ -3,6 +3,7 @@ import { BUCKEYE_ARCHIVE_LIMIT, DATA_SOURCES, SIDEBAR_GROUP_STORAGE_KEY } from '
 import { createPlayerDocsRenderer } from './player-docs.js';
 import { createPlayerTransactionRenderer } from './player-transactions.js';
 import { cssEscape, escapeHtml, escapeJs, formatCompactDollars, formatShortDateTime, money, setText, timeAgo } from './utils.js';
+import { initPropBuilder, loadProps, loadExtendedProps, fetchPropBuilderURL } from './prop-builder.js';
 
 // ==================== STATE ====================
 let currentSection = 'floor';
@@ -1068,6 +1069,9 @@ function switchSection(section, btn) {
     case 'positions':
       renderPositions();
       fetchExposureData();
+      break;
+    case 'propBuilder':
+      initPropBuilder();
       break;
     case 'agentNetwork':
       initializeZone2PerformanceDates();
