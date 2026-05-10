@@ -50,9 +50,27 @@ These apply to `enhanced-proxy.ts` / `proxy-enhanced.ts`, not the main backend s
 | `ENABLE_AUTO_RENEWAL` / `ENABLE_TOKEN_PRE_RENEWAL` | `true` | No | token renewal job | Enables proactive token renewal for stored Buckeye tokens |
 | `ENABLE_IDEMPOTENCY` | `true` | No | proxy POST handler | Enables `Idempotency-Key` replay protection for proxied POSTs |
 | `ENABLE_WS_BATCHING` | `false` | No | WebSocket ticker | Sends ticker batches instead of one frame per tick |
+| `ENABLE_WS_VALIDATION` | `true` | No | WebSocket ticker | Rejects malformed subscribe/unsubscribe messages before starting ticker work |
+| `ENABLE_WS_CLIENT_BATCHING` | `true` | No | WebSocket ticker | Allows subscribers to request a bounded `batchMs` interval |
 | `WS_BATCH_INTERVAL_MS` | `200` | No | WebSocket ticker | Batch flush interval when batching is enabled |
 | `ENABLE_STREAM_MODE` | `true` | No | proxy POST handler | Enables streaming upstream bodies when `stream=true` |
 | `ENABLE_REQUEST_LOGGING` | `true` | No | request logger | Persists/logs enhanced-proxy request metadata |
+| `ENABLE_MEMORY_CACHE` | `true` | No | ticker and taxonomy proxy | Enables short-lived in-memory caching for hot ticker and taxonomy reads |
+| `MEMORY_CACHE_TTL_MS` | `2000` | No | memory cache | Default in-memory cache TTL for hot paths |
+| `ENABLE_REQUEST_DEDUPE` | `true` | No | proxy POST handler | Coalesces identical in-flight upstream requests |
+| `ENABLE_TOKEN_EXPIRY_CHECK` | `true` | No | WebSocket ticker | Closes ticker subscriptions whose stored token is expired |
+| `TOKEN_CACHE_TTL_MS` | `5000` | No | token lookup helper | Caches latest stored token rows for repeated checks |
+
+Enhanced proxy taxonomy levels:
+
+| Level | Buckeye Endpoint | Cache TTL | Normalized Shape |
+|-------|------------------|-----------|------------------|
+| `sports` | `System/getSports` | 3600s | `Sport[]` |
+| `leagues` | `System/getLeagues` | 1800s | `League[]` |
+| `schedule` | `Manager/getSchedule` | 300s | `Game[]` |
+| `lines` | `Manager/getLines` | 60s | `Line[]` |
+| `periods` | `Manager/getPeriods` | 600s | `Period[]` |
+| `gametypes` | `System/getGameTypes` | 3600s | `GameType[]` |
 
 Do not store Buckeye passwords, Buckeye JWTs, or Cloudflare cookies in `.env`. Use Settings and the OS vault.
 

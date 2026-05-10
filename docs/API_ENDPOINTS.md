@@ -532,6 +532,7 @@ The standalone proxy runs through `bun run enhanced-proxy.ts` and is separate fr
 | `/ws` | WebSocket | Subscribe to live ticker events with `{ "type": "subscribe", "customerID", "token", "cf_clearance" }` |
 | `/api/proxy/auth` | POST | Authenticate against Buckeye and persist an auth-code/token row |
 | `/api/proxy/:endpoint` | POST | Proxy a Buckeye endpoint with optional cache, stream mode, retry, idempotency, and rate limiting |
+| `/api/proxy/taxonomy/:level` | POST | Zone 1 sportsbook taxonomy proxy for `sports`, `leagues`, `schedule`, `lines`, `periods`, and `gametypes`; responses are normalized and cached |
 | `/api/proxy/tokens?customerID=...` | GET | Stored token status for one customer |
 | `/api/proxy/logs?limit=50` | GET | Recent enhanced-proxy request log rows |
 | `/api/proxy/health?cf_clearance=...` | GET | Buckeye and SQLite dependency check |
@@ -547,6 +548,17 @@ $env:ENABLE_PER_CUSTOMER_RATE_LIMIT='true'
 bun run enhanced-proxy.ts
 Invoke-RestMethod http://localhost:3001/features
 Invoke-RestMethod http://localhost:3001/metrics
+```
+
+Taxonomy smoke test:
+
+```powershell
+Invoke-RestMethod `
+  -Method POST `
+  -Uri http://localhost:3001/api/proxy/taxonomy/sports `
+  -Headers @{ 'X-API-Key' = 'dev-key-123' } `
+  -ContentType 'application/json' `
+  -Body '{ "customerID": "BILLY666" }'
 ```
 
 ---

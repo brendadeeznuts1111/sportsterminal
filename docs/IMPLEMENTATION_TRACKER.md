@@ -155,7 +155,7 @@ Delivered:
 - Status sidebar tab shows backend, vault, book, and pattern health.
 - System Status now includes a consolidated issue feed from `/api/health/system-status` so operators can track likely bugs/regressions from one panel.
 - System Status includes a data-flow strip and `crossReferences` readiness row for player-agent maps, access-log evidence, player links, and pattern-agent links.
-- Standalone enhanced proxy has a documented feature-flag matrix, runtime `/features` endpoint, metrics endpoint, isolated smoke coverage, and config alias tests.
+- Standalone enhanced proxy has a documented feature-flag matrix, runtime `/features` endpoint, metrics endpoint, isolated smoke coverage, config alias tests, and Zone 1 taxonomy proxy endpoints for sports, leagues, schedules, lines, periods, and game types.
 
 Notes:
 

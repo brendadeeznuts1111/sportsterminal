@@ -15,6 +15,13 @@ export interface FeatureFlags {
   tokenPreRenewal: boolean;
   idempotency: boolean;
   streamMode: boolean;
+  tokenExpiryCheck: boolean;
+  wsValidation: boolean;
+  wsClientBatching: boolean;
+  memoryCache: boolean;
+  requestDedupe: boolean;
+  tokenCache: boolean;
+  adminApi: boolean;
 }
 
 export interface RateLimitConfig {
@@ -44,6 +51,8 @@ export interface ProxyConfig {
   wsBatchIntervalMs: number;
   maxRetries: number;
   retryBaseMs: number;
+  tokenCacheTtlMs: number;
+  memoryCacheTtlMs: number;
   defaultRateLimit: RateLimitConfig;
   tokenRenewal: TokenRenewalConfig;
   otel: OpenTelemetryConfig;
@@ -86,11 +95,20 @@ export const config: ProxyConfig = {
     tokenPreRenewal: envBool("ENABLE_TOKEN_PRE_RENEWAL", true, ["ENABLE_AUTO_RENEWAL"]),
     idempotency: envBool("ENABLE_IDEMPOTENCY", true),
     streamMode: envBool("ENABLE_STREAM_MODE", true),
+    tokenExpiryCheck: envBool("ENABLE_TOKEN_EXPIRY_CHECK", true),
+    wsValidation: envBool("ENABLE_WS_VALIDATION", true),
+    wsClientBatching: envBool("ENABLE_WS_CLIENT_BATCHING", true),
+    memoryCache: envBool("ENABLE_MEMORY_CACHE", true),
+    requestDedupe: envBool("ENABLE_REQUEST_DEDUPE", true),
+    tokenCache: envBool("ENABLE_TOKEN_CACHE", true),
+    adminApi: envBool("ENABLE_ADMIN_API", false),
   },
 
   wsBatchIntervalMs: envInt("WS_BATCH_INTERVAL_MS", 200),
   maxRetries: envInt("MAX_RETRIES", 3),
   retryBaseMs: envInt("RETRY_BASE_MS", 1000),
+  tokenCacheTtlMs: envInt("TOKEN_CACHE_TTL_MS", 5000),
+  memoryCacheTtlMs: envInt("MEMORY_CACHE_TTL_MS", 2000),
   defaultRateLimit: {
     limit: envInt("RATE_LIMIT_PER_MIN", 60),
     window: 60,
@@ -129,10 +147,19 @@ export function reloadFromEnv(): ProxyConfig {
       tokenPreRenewal: envBool("ENABLE_TOKEN_PRE_RENEWAL", config.features.tokenPreRenewal, ["ENABLE_AUTO_RENEWAL"]),
       idempotency: envBool("ENABLE_IDEMPOTENCY", config.features.idempotency),
       streamMode: envBool("ENABLE_STREAM_MODE", config.features.streamMode),
+      tokenExpiryCheck: envBool("ENABLE_TOKEN_EXPIRY_CHECK", config.features.tokenExpiryCheck),
+      wsValidation: envBool("ENABLE_WS_VALIDATION", config.features.wsValidation),
+      wsClientBatching: envBool("ENABLE_WS_CLIENT_BATCHING", config.features.wsClientBatching),
+      memoryCache: envBool("ENABLE_MEMORY_CACHE", config.features.memoryCache),
+      requestDedupe: envBool("ENABLE_REQUEST_DEDUPE", config.features.requestDedupe),
+      tokenCache: envBool("ENABLE_TOKEN_CACHE", config.features.tokenCache),
+      adminApi: envBool("ENABLE_ADMIN_API", config.features.adminApi),
     },
     wsBatchIntervalMs: envInt("WS_BATCH_INTERVAL_MS", config.wsBatchIntervalMs),
     maxRetries: envInt("MAX_RETRIES", config.maxRetries),
     retryBaseMs: envInt("RETRY_BASE_MS", config.retryBaseMs),
+    tokenCacheTtlMs: envInt("TOKEN_CACHE_TTL_MS", config.tokenCacheTtlMs),
+    memoryCacheTtlMs: envInt("MEMORY_CACHE_TTL_MS", config.memoryCacheTtlMs),
     defaultRateLimit: {
       limit: envInt("RATE_LIMIT_PER_MIN", config.defaultRateLimit.limit),
       window: 60,

@@ -43,8 +43,58 @@ interface IdempotencyRow {
   created_at: number;
 }
 
+interface TaxonomyConfig {
+  endpoint: string;
+  cacheTtl: number;
+  shape: string;
+}
+
+type TaxonomyLevel = "sports" | "leagues" | "schedule" | "lines" | "periods" | "gametypes";
+type TaxonomyRecord = Record<string, unknown>;
+type PerformancePeriod = "daily" | "weekly";
+
+interface AgentSummary {
+  id: string;
+  name: string;
+  level: number;
+  parent: string;
+  totalBets: number;
+  totalWagered: number;
+  netProfit: number;
+  commission: number;
+  activeCount: number;
+  lastActive: string;
+}
+
+interface PerformanceBucket {
+  date: string;
+  startDate: string;
+  endDate: string;
+  bets: number;
+  wager: number;
+  win: number;
+  loss: number;
+  net: number;
+  commission: number;
+  customers: number;
+}
+
+interface PerformanceReport {
+  period: PerformancePeriod;
+  data: PerformanceBucket[];
+  totals: Omit<PerformanceBucket, "date" | "startDate" | "endDate">;
+}
+
 const CONFIG = config;
 const AUTH_ENDPOINT = "/cloud/api/System/authenticateCustomer";
+const TAXONOMY_MAP: Record<TaxonomyLevel, TaxonomyConfig> = {
+  sports: { endpoint: "System/getSports", cacheTtl: 3600, shape: "Sport[]" },
+  leagues: { endpoint: "System/getLeagues", cacheTtl: 1800, shape: "League[]" },
+  schedule: { endpoint: "Manager/getSchedule", cacheTtl: 300, shape: "Game[]" },
+  lines: { endpoint: "Manager/getLines", cacheTtl: 60, shape: "Line[]" },
+  periods: { endpoint: "Manager/getPeriods", cacheTtl: 600, shape: "Period[]" },
+  gametypes: { endpoint: "System/getGameTypes", cacheTtl: 3600, shape: "GameType[]" },
+};
 
 // ==========================================
 // ACTIVE REQUEST TRACKING + SHUTDOWN
@@ -131,6 +181,15 @@ db.run(`
   )
 `);
 
+db.run(`
+  CREATE TABLE IF NOT EXISTS rate_limit_overrides (
+    endpoint TEXT PRIMARY KEY,
+    "limit" INTEGER NOT NULL,
+    window INTEGER NOT NULL,
+    updated_at INTEGER DEFAULT (unixepoch())
+  )
+`);
+
 // Add missing columns if upgrading from older schema
 for (const column of [
   "ALTER TABLE request_log ADD COLUMN customerID TEXT",
@@ -166,10 +225,30 @@ const purgeExpiredCache = db.prepare(`DELETE FROM api_cache WHERE (unixepoch() -
 const purgeOldIdempotency = db.prepare(`DELETE FROM idempotency WHERE (unixepoch() - created_at) > 86400`);
 const tokenCount = dbRead.prepare(`SELECT COUNT(*) as total FROM tokens WHERE bearer_token IS NOT NULL`);
 
+const getRateLimitOverrideStmt = dbRead.prepare(`SELECT endpoint, "limit", window, updated_at FROM rate_limit_overrides WHERE endpoint = $endpoint`);
+const setRateLimitOverrideStmt = db.prepare(`INSERT OR REPLACE INTO rate_limit_overrides (endpoint, "limit", window, updated_at) VALUES ($endpoint, $limit, $window, unixepoch())`);
+const getAllRateLimitOverridesStmt = dbRead.prepare(`SELECT endpoint, "limit", window, updated_at FROM rate_limit_overrides`);
+
 // Request counters for /metrics
 let totalRequests = 0;
 let errorRequests = 0;
 const endpointLatencies = new Map<string, number[]>();
+
+// Rate limit overrides
+const rateLimitOverrides = new Map<string, { limit: number; window: number }>();
+
+function loadRateLimitOverrides() {
+  const rows = getAllRateLimitOverridesStmt.all() as Array<{ endpoint: string; limit: number; window: number }>;
+  rateLimitOverrides.clear();
+  for (const row of rows) {
+    rateLimitOverrides.set(row.endpoint, { limit: row.limit, window: row.window });
+  }
+  logger.info("Rate limit overrides loaded", { count: rateLimitOverrides.size });
+}
+
+function findRateLimitOverride(endpoint: string): { limit: number; window: number } | null {
+  return rateLimitOverrides.get(endpoint) || null;
+}
 
 // ==========================================
 // WAL CHECKPOINT + CACHE PURGE INTERVALS
@@ -208,6 +287,7 @@ async function renewTokenForCustomer(customerID: string, reqId = "token-renewal"
 
   const expiresAt = Math.floor(Date.now() / 1000) + 7200;
   insertToken.run({ $customerID: customerID, $cf_clearance: stored.cf_clearance, $auth_code: null, $bearer_token: String(token), $expires_at: expiresAt });
+  invalidateTokenCache(customerID);
   scheduleTokenRenewal(customerID, expiresAt);
   logger.info("Token pre-renewed", { reqId, customerID, expiresAt });
   return true;
@@ -370,6 +450,548 @@ function json(data: unknown, status = 200, headers: Record<string, string> = {},
   return new Response(body, { status, headers: { "Content-Type": "application/json", ...cors, ...headers } });
 }
 
+function shouldLog(): boolean {
+  const sampleRate = Number(process.env.LOG_SAMPLE_RATE ?? Bun.env.LOG_SAMPLE_RATE ?? "1");
+  if (!Number.isFinite(sampleRate) || sampleRate >= 1) return true;
+  if (sampleRate <= 0) return false;
+  return Math.random() < sampleRate;
+}
+
+// ==========================================
+// HEATMAP AGGREGATION HELPERS
+// ==========================================
+interface HeatmapCell {
+  day: number;
+  hour: number;
+  dayName: string;
+  count: number;
+  volume: number;
+}
+
+interface HeatmapResult {
+  days: number;
+  matrix: HeatmapCell[][];
+  peakHour: number | null;
+  peakDay: number | null;
+  total: number;
+  totalVolume: number;
+}
+
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+function parseWebLogEntries(raw: unknown): Array<Record<string, unknown>> {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  const obj = raw as Record<string, unknown>;
+  const list = obj.LIST || obj.data || obj.list || obj.weblog || obj.result;
+  if (Array.isArray(list)) return list as Array<Record<string, unknown>>;
+  return [];
+}
+
+function buildHeatmapFromEntries(entries: Array<Record<string, unknown>>, days: number, timeField: string): HeatmapResult {
+  const matrix: HeatmapCell[][] = [];
+  for (let d = 0; d < 7; d++) {
+    matrix[d] = [];
+    for (let h = 0; h < 24; h++) {
+      matrix[d][h] = { day: d, hour: h, dayName: DAY_NAMES[d], count: 0, volume: 0 };
+    }
+  }
+
+  const cutoff = Date.now() - days * 86400000;
+  let total = 0;
+
+  for (const entry of entries) {
+    const rawTime = String(entry[timeField] || entry.Access_Date || entry.access_datetime || entry.logDate || "");
+    const ts = Date.parse(rawTime);
+    if (isNaN(ts) || ts < cutoff) continue;
+    const date = new Date(ts);
+    const dow = date.getDay();
+    const hod = date.getHours();
+    matrix[dow][hod].count++;
+    total++;
+  }
+
+  let peakHour: number | null = null;
+  let peakDay: number | null = null;
+  let maxCount = 0;
+  for (let d = 0; d < 7; d++) {
+    for (let h = 0; h < 24; h++) {
+      if (matrix[d][h].count > maxCount) {
+        maxCount = matrix[d][h].count;
+        peakDay = d;
+        peakHour = h;
+      }
+    }
+  }
+
+  return { days, matrix, peakHour, peakDay, total, totalVolume: 0 };
+}
+
+function buildHeatmapFromWagers(wagers: Array<Record<string, unknown>>, days: number): HeatmapResult {
+  const matrix: HeatmapCell[][] = [];
+  for (let d = 0; d < 7; d++) {
+    matrix[d] = [];
+    for (let h = 0; h < 24; h++) {
+      matrix[d][h] = { day: d, hour: h, dayName: DAY_NAMES[d], count: 0, volume: 0 };
+    }
+  }
+
+  const cutoff = Date.now() - days * 86400000;
+  let total = 0;
+  let totalVolume = 0;
+
+  for (const wager of wagers) {
+    const rawTime = String(wager.Insert_Date_Time || wager.insert_date_time || wager.Date || wager.Time || "");
+    const ts = Date.parse(rawTime);
+    if (isNaN(ts) || ts < cutoff) continue;
+    const date = new Date(ts);
+    const dow = date.getDay();
+    const hod = date.getHours();
+    const amount = Number(wager.AmountWagered || wager.amount_wagered || wager.Risk || wager.volume || 0) / 100;
+    matrix[dow][hod].count++;
+    matrix[dow][hod].volume += amount;
+    total++;
+    totalVolume += amount;
+  }
+
+  let peakHour: number | null = null;
+  let peakDay: number | null = null;
+  let maxCount = 0;
+  for (let d = 0; d < 7; d++) {
+    for (let h = 0; h < 24; h++) {
+      if (matrix[d][h].count > maxCount) {
+        maxCount = matrix[d][h].count;
+        peakDay = d;
+        peakHour = h;
+      }
+    }
+  }
+
+  return { days, matrix, peakHour, peakDay, total, totalVolume };
+}
+
+const memCache = new Map<string, { value: unknown; expires: number }>();
+const tokenMemCache = new Map<string, { token: TokenRow | null; expires: number }>();
+const inflight = new Map<string, Promise<unknown>>();
+
+function setMemCache(key: string, value: unknown, ttlMs = CONFIG.memoryCacheTtlMs): void {
+  if (!CONFIG.features.memoryCache) return;
+  memCache.set(key, { value, expires: Date.now() + ttlMs });
+}
+
+function getMemCache(key: string): unknown | null {
+  if (!CONFIG.features.memoryCache) return null;
+  const hit = memCache.get(key);
+  if (!hit) return null;
+  if (Date.now() > hit.expires) {
+    memCache.delete(key);
+    return null;
+  }
+  return hit.value;
+}
+
+function getCachedToken(customerID: string): TokenRow | null {
+  if (!CONFIG.features.tokenCache) {
+    return getLatestTokenWrite.get({ $customerID: customerID }) as TokenRow | null;
+  }
+  const cached = tokenMemCache.get(customerID);
+  if (cached && Date.now() < cached.expires) return cached.token;
+  const token = getLatestTokenWrite.get({ $customerID: customerID }) as TokenRow | null;
+  tokenMemCache.set(customerID, { token, expires: Date.now() + CONFIG.tokenCacheTtlMs });
+  return token;
+}
+
+function invalidateTokenCache(customerID: string): void {
+  tokenMemCache.delete(customerID);
+}
+
+function memCacheKey(endpoint: string, payload: JsonObject): string {
+  return `${endpoint}:${hashPayloadImpl({ endpoint, ...payload })}`;
+}
+
+function isTokenExpired(customerID: string): boolean {
+  const token = getCachedToken(customerID);
+  if (!token?.expires_at) return true;
+  return token.expires_at <= Math.floor(Date.now() / 1000);
+}
+
+async function dedupeRequest<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  if (!CONFIG.features.requestDedupe) return fn();
+  const existing = inflight.get(key) as Promise<T> | undefined;
+  if (existing) return existing;
+  const promise = fn().finally(() => inflight.delete(key));
+  inflight.set(key, promise);
+  return promise;
+}
+
+function normalizeResponse(endpoint: string, raw: unknown): unknown {
+  if (endpoint.includes("getBetTicker") && typeof raw === "object" && raw !== null) {
+    const obj = raw as JsonObject;
+    return obj.LIST ?? obj.data ?? obj.result ?? raw;
+  }
+  return raw;
+}
+
+function isTaxonomyLevel(level: string): level is TaxonomyLevel {
+  return Object.prototype.hasOwnProperty.call(TAXONOMY_MAP, level);
+}
+
+function taxonomyList(raw: unknown): TaxonomyRecord[] {
+  const root = asTaxonomyRecord(raw);
+  const candidate = root ? (root.LIST ?? root.data ?? root.result) : raw;
+  const rows = Array.isArray(candidate) ? candidate : candidate === undefined || candidate === null ? [] : [candidate];
+  return rows.filter(isTaxonomyRecord);
+}
+
+function isTaxonomyRecord(value: unknown): value is TaxonomyRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asTaxonomyRecord(value: unknown): TaxonomyRecord | null {
+  return isTaxonomyRecord(value) ? value : null;
+}
+
+function stringField(row: TaxonomyRecord, keys: string[], fallback = ""): string {
+  for (const key of keys) {
+    const value = row[key];
+    if (value !== null && value !== undefined && value !== "") return String(value);
+  }
+  return fallback;
+}
+
+function nullableStringField(row: TaxonomyRecord, keys: string[]): string | null {
+  const value = stringField(row, keys);
+  return value || null;
+}
+
+function numberField(row: TaxonomyRecord, keys: string[], fallback = 0): number {
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
+  }
+  return fallback;
+}
+
+function activeField(row: TaxonomyRecord): boolean {
+  return row.Active !== false && row.Status !== "Inactive";
+}
+
+function normalizeTaxonomy(level: TaxonomyLevel, raw: unknown): unknown[] {
+  const list = taxonomyList(raw);
+
+  switch (level) {
+    case "sports":
+      return list.map((sport) => ({
+        id: stringField(sport, ["SportID", "id", "Sport", "code"]),
+        code: stringField(sport, ["Sport", "code", "SportCode"]),
+        name: stringField(sport, ["SportName", "name", "SportDescription", "Description"]),
+        icon: nullableStringField(sport, ["SportIcon", "icon"]),
+        active: activeField(sport),
+        seasons: Array.isArray(sport.Seasons) ? sport.Seasons : [],
+      }));
+    case "leagues":
+      return list.map((league) => ({
+        id: stringField(league, ["LeagueID", "id", "League"]),
+        code: stringField(league, ["League", "code", "LeagueCode"]),
+        name: stringField(league, ["LeagueName", "name", "Description"]),
+        sport: stringField(league, ["Sport", "sport", "SportCode"]),
+        region: stringField(league, ["Region", "region", "Country"], "INT"),
+        season: stringField(league, ["Season", "season", "CurrentSeason"]),
+        active: activeField(league),
+      }));
+    case "schedule":
+      return list.map((game) => ({
+        id: stringField(game, ["GameID", "id", "GameNum", "EventID"]),
+        sport: stringField(game, ["Sport", "sport"]),
+        league: stringField(game, ["League", "league"]),
+        away: {
+          team: stringField(game, ["AwayTeam", "away", "Away"]),
+          pitcher: nullableStringField(game, ["AwayPitcher", "awayPitcher"]),
+          score: nullableStringField(game, ["AwayScore", "awayScore"]),
+        },
+        home: {
+          team: stringField(game, ["HomeTeam", "home", "Home"]),
+          pitcher: nullableStringField(game, ["HomePitcher", "homePitcher"]),
+          score: nullableStringField(game, ["HomeScore", "homeScore"]),
+        },
+        datetime: stringField(game, ["GameDateTime", "dateTime", "EventDate", "DateTime"]),
+        status: stringField(game, ["GameStatus", "status", "Status"], "SCHEDULED"),
+        tv: nullableStringField(game, ["TV", "tv"]),
+        rot: nullableStringField(game, ["RotNum", "rot", "Rotation"]),
+        notes: nullableStringField(game, ["Notes", "notes"]),
+      }));
+    case "lines":
+      return list.map((line) => {
+        const wagerType = stringField(line, ["WagerType", "type", "LineType"], "SPREAD");
+        return {
+          id: stringField(line, ["LineID", "id", "WagerNumber", "LineNum"]),
+          gameId: stringField(line, ["GameID", "gameId"]),
+          period: stringField(line, ["Period", "period", "PeriodDescription"], "FG"),
+          type: wagerType,
+          side: nullableStringField(line, ["Side", "side"]) ?? (wagerType.includes("Over") ? "OVER" : wagerType.includes("Under") ? "UNDER" : null),
+          line: numberField(line, ["Line", "Points", "line", "Spread"]),
+          odds: numberField(line, ["Odds", "odds", "Odd"]),
+          overOdds: nullableStringField(line, ["OverOdds", "over"]),
+          underOdds: nullableStringField(line, ["UnderOdds", "under"]),
+          moneyline: nullableStringField(line, ["MoneyLine", "moneyline"]),
+          vig: numberField(line, ["Vig", "vig"], 110),
+          maxRisk: nullableStringField(line, ["MaxRisk", "maxRisk"]),
+          status: stringField(line, ["Status", "status"], "OPEN"),
+          lastUpdate: stringField(line, ["LastUpdate", "updatedAt"], String(Date.now())),
+        };
+      });
+    case "periods":
+      return list.map((period) => ({
+        id: stringField(period, ["PeriodID", "id", "Period"]),
+        code: stringField(period, ["Period", "code", "PeriodCode"]),
+        description: stringField(period, ["PeriodDescription", "description", "Name"]),
+        sport: stringField(period, ["Sport", "sport"]),
+        sortOrder: numberField(period, ["SortOrder", "sort"]),
+      }));
+    case "gametypes":
+      return list.map((gameType) => ({
+        id: stringField(gameType, ["GameTypeID", "id", "Type"]),
+        code: stringField(gameType, ["GameType", "code", "Type"]),
+        name: stringField(gameType, ["Description", "name", "GameTypeDescription"]),
+        sport: stringField(gameType, ["Sport", "sport"]),
+      }));
+  }
+}
+
+function cleanString(value: unknown, fallback = ""): string {
+  if (value === null || value === undefined || value === "") return fallback;
+  return String(value).trim();
+}
+
+function rowString(row: TaxonomyRecord, keys: string[], fallback = ""): string {
+  for (const key of keys) {
+    const value = row[key];
+    if (value !== null && value !== undefined && value !== "") return String(value).trim();
+  }
+  return fallback;
+}
+
+function rowNumber(row: TaxonomyRecord, keys: string[], fallback = 0): number {
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
+  }
+  return fallback;
+}
+
+function recordsFromCandidate(candidate: unknown): TaxonomyRecord[] {
+  if (Array.isArray(candidate)) return candidate.filter(isTaxonomyRecord);
+  const record = asTaxonomyRecord(candidate);
+  if (!record) return [];
+
+  for (const key of ["LIST", "GENERAL", "ARRAY", "rows", "agents", "performance", "data", "result", "RESULT"]) {
+    const nested = record[key];
+    if (Array.isArray(nested)) return nested.filter(isTaxonomyRecord);
+    if (isTaxonomyRecord(nested)) {
+      const nestedRows = recordsFromCandidate(nested);
+      if (nestedRows.length > 0) return nestedRows;
+    }
+  }
+  return [];
+}
+
+function buckeyeRows(raw: unknown): TaxonomyRecord[] {
+  const root = asTaxonomyRecord(raw);
+  const info = asTaxonomyRecord(root?.INFO);
+  const candidates = [
+    info?.LIST,
+    info?.ARRAY,
+    root?.LIST,
+    root?.GENERAL,
+    root?.data,
+    root?.rows,
+    root?.agents,
+    root?.performance,
+    root?.result,
+    root?.RESULT,
+    Array.isArray(raw) ? raw : null,
+  ];
+
+  for (const candidate of candidates) {
+    const rows = recordsFromCandidate(candidate);
+    if (rows.length > 0) return rows;
+  }
+  return [];
+}
+
+function normalizeAgentList(raw: unknown): AgentSummary[] {
+  return buckeyeRows(raw)
+    .map((agent) => {
+      const id = rowString(agent, ["AgentID", "agentID", "CustomerID", "customerID", "id", "Login", "login"]);
+      const name = rowString(agent, ["AgentName", "name", "Username", "Login", "login"], id);
+      return {
+        id,
+        name,
+        level: rowNumber(agent, ["Level", "level"], 1),
+        parent: rowString(agent, ["ParentID", "parent", "ParentAgentID", "MasterAgentID", "masterAgentID"]),
+        totalBets: rowNumber(agent, ["TotalBets", "bets", "wagercount", "WagerCount", "wager_count"]),
+        totalWagered: rowNumber(agent, ["TotalWagered", "wagered", "volume", "Volume", "TotalVolume", "LastWeek"]),
+        netProfit: rowNumber(agent, ["NetProfit", "profit", "net", "Net", "Settle", "Balance"]),
+        commission: rowNumber(agent, ["Commission", "comm", "PerHeadRate", "HeadCountRateM"]),
+        activeCount: rowNumber(agent, ["ActivePlayers", "activeCount", "PlayerCount", "playerCount"]),
+        lastActive: rowString(agent, ["LastActive", "lastActivity", "LastWagerAt", "last_wager_at"]),
+      };
+    })
+    .filter((agent) => agent.id || agent.name);
+}
+
+function summarizePerformanceRows(rows: TaxonomyRecord[]): Omit<PerformanceBucket, "date" | "startDate" | "endDate"> {
+  const customers = new Set<string>();
+  const totals = rows.reduce<Omit<PerformanceBucket, "date" | "startDate" | "endDate">>(
+    (acc, row) => {
+      const customer = rowString(row, ["CustomerID", "customerID", "Login", "login", "player", "Player"]);
+      if (customer) customers.add(customer);
+      const win = rowNumber(row, ["WinAmount", "win", "amountwon", "AmountWon", "amountWon"]);
+      const loss = rowNumber(row, ["LossAmount", "loss", "amountlost", "AmountLost", "amountLost"]);
+      const net = rowNumber(row, ["NetProfit", "net", "Net"], win - loss);
+      acc.bets += rowNumber(row, ["Bets", "bets", "wagercount", "WagerCount", "wagerCount"], 0);
+      acc.wager += rowNumber(row, ["WagerAmount", "wager", "TotalWagered", "volume", "Volume", "Risk", "AmountWagered"], 0);
+      acc.win += win;
+      acc.loss += loss;
+      acc.net += net;
+      acc.commission += rowNumber(row, ["Commission", "comm", "Comm"], 0);
+      return acc;
+    },
+    { bets: 0, wager: 0, win: 0, loss: 0, net: 0, commission: 0, customers: 0 }
+  );
+  if (totals.bets === 0 && rows.length > 0) totals.bets = rows.length;
+  totals.customers = customers.size || rows.length;
+  return totals;
+}
+
+function normalizePerformance(raw: unknown, period: PerformancePeriod = "weekly"): PerformanceReport {
+  const rows = buckeyeRows(raw);
+  const data = rows.map((row) => {
+    const date = rowString(row, ["Date", "date", "Week", "week", "startDate", "StartDate"]);
+    const summary = summarizePerformanceRows([row]);
+    return {
+      date,
+      startDate: date,
+      endDate: rowString(row, ["EndDate", "endDate"], date),
+      ...summary,
+    };
+  });
+  const totals = summarizePerformanceRows(rows);
+  return { period, data, totals };
+}
+
+function parseLocalDate(value: string | undefined, fallback: Date): Date {
+  if (!value) return fallback;
+  const iso = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? fallback : parsed;
+}
+
+function isoDate(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function buildPerformanceBuckets(startValue: string | undefined, endValue: string | undefined, period: PerformancePeriod) {
+  const now = new Date();
+  const defaultEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const defaultStart = addDays(defaultEnd, period === "daily" ? -6 : -27);
+  const start = parseLocalDate(startValue, defaultStart);
+  const end = parseLocalDate(endValue, defaultEnd);
+  if (start.getTime() > end.getTime()) throw new Error("startDate must be before endDate");
+
+  const buckets: Array<{ date: string; startDate: string; endDate: string }> = [];
+  let cursor = new Date(start);
+  const step = period === "daily" ? 1 : 7;
+  while (cursor.getTime() <= end.getTime()) {
+    const bucketStart = new Date(cursor);
+    const bucketEnd = period === "daily" ? new Date(cursor) : addDays(cursor, 6);
+    if (bucketEnd.getTime() > end.getTime()) bucketEnd.setTime(end.getTime());
+    buckets.push({
+      date: period === "daily" ? isoDate(bucketStart) : `${isoDate(bucketStart)} - ${isoDate(bucketEnd)}`,
+      startDate: isoDate(bucketStart),
+      endDate: isoDate(bucketEnd),
+    });
+    cursor = addDays(bucketEnd, 1);
+  }
+  return buckets;
+}
+
+function performanceReportFromBuckets(period: PerformancePeriod, buckets: PerformanceBucket[]): PerformanceReport {
+  const totals = buckets.reduce(
+    (acc, row) => {
+      acc.bets += row.bets;
+      acc.wager += row.wager;
+      acc.win += row.win;
+      acc.loss += row.loss;
+      acc.net += row.net;
+      acc.commission += row.commission;
+      acc.customers += row.customers;
+      return acc;
+    },
+    { bets: 0, wager: 0, win: 0, loss: 0, net: 0, commission: 0, customers: 0 }
+  );
+  return { period, data: buckets, totals };
+}
+
+async function readBuckeyeJson(upstream: Response): Promise<unknown> {
+  const text = await upstream.text();
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return { raw: text };
+  }
+}
+
+function normalizeBettorDetails(raw: unknown, bettorID: string) {
+  const rows = buckeyeRows(raw);
+  const wagers = rows.map((row) => {
+    const wager = rowNumber(row, ["AmountWagered", "WagerAmount", "Risk", "risk", "volume", "Volume"]);
+    const win = rowNumber(row, ["ToWinAmount", "ToWin", "WinAmount", "amountwon", "AmountWon"]);
+    const loss = rowNumber(row, ["LossAmount", "amountlost", "AmountLost"]);
+    const net = rowNumber(row, ["NetProfit", "net", "Net"], win - loss);
+    return {
+      id: rowString(row, ["WagerNumber", "TicketNumber", "id", "DocumentNumber"]),
+      date: rowString(row, ["InsertDateTime", "Date", "date", "TransactionDateTime", "TimeStamp"]),
+      sport: rowString(row, ["Sport", "sport", "sportType"], "Unknown"),
+      type: rowString(row, ["WagerType", "type", "BetType"]),
+      description: rowString(row, ["ShortDesc", "Description", "description", "Details"]),
+      wager,
+      win,
+      loss,
+      net,
+      raw: row,
+    };
+  });
+  const bySport = new Map<string, { sport: string; bets: number; wager: number; net: number }>();
+  for (const wager of wagers) {
+    const sport = wager.sport || "Unknown";
+    const entry = bySport.get(sport) || { sport, bets: 0, wager: 0, net: 0 };
+    entry.bets += 1;
+    entry.wager += wager.wager;
+    entry.net += wager.net;
+    bySport.set(sport, entry);
+  }
+  return {
+    bettorID,
+    wagers,
+    totals: {
+      bets: wagers.length,
+      wager: wagers.reduce((sum, row) => sum + row.wager, 0),
+      net: wagers.reduce((sum, row) => sum + row.net, 0),
+    },
+    bySport: [...bySport.values()].sort((a, b) => b.wager - a.wager),
+  };
+}
+
 function field(value: unknown, fallback = ""): string {
   if (value === null || value === undefined || value === "") return fallback;
   return String(value);
@@ -432,6 +1054,15 @@ function apiKeyAuth(req: Request): Response | null {
   return null;
 }
 
+function adminApiKeyAuth(req: Request): Response | null {
+  const adminKey = process.env.ADMIN_API_KEY || Bun.env.ADMIN_API_KEY || process.env.PROXY_API_KEY || Bun.env.PROXY_API_KEY || "dev-key-123";
+  const key = req.headers.get("X-Admin-Key") || req.headers.get("X-API-Key");
+  if (key !== adminKey) {
+    return json({ error: "Invalid admin API key" }, 401);
+  }
+  return null;
+}
+
 function recordLatency(endpoint: string, durationMs: number, isError: boolean) {
   totalRequests++;
   if (isError) errorRequests++;
@@ -445,9 +1076,12 @@ function recordLatency(endpoint: string, durationMs: number, isError: boolean) {
 function requestFinished(ctx: { reqId: string; start: number }, endpoint: string, customerID: string | null, status: number, error?: unknown) {
   const duration = Math.round(performance.now() - ctx.start);
   const message = error instanceof Error ? error.message : error ? String(error) : null;
-  if (CONFIG.features.requestLogging) {
+  if (CONFIG.features.requestLogging && shouldLog()) {
     logRequestStmt.run({ $customerID: customerID || null, $req_id: ctx.reqId, $endpoint: endpoint, $status: status, $duration_ms: duration, $error: message || null });
     logger.info("Proxy request completed", { reqId: ctx.reqId, endpoint, customerID, status, durationMs: duration, error: message });
+  } else if (error || status >= 400) {
+    // Always log errors regardless of sampling
+    logRequestStmt.run({ $customerID: customerID || null, $req_id: ctx.reqId, $endpoint: endpoint, $status: status, $duration_ms: duration, $error: message || null });
   }
 }
 
@@ -476,14 +1110,17 @@ async function buckeyeFetch(url: string, options: RequestInit, retries = CONFIG.
 function checkRateLimit(key: string, limit = CONFIG.defaultRateLimit.limit, windowSec = CONFIG.defaultRateLimit.window) {
   if (!CONFIG.features.rateLimiting) return { allowed: true, remaining: limit, retryAfter: 0 };
   const now = Math.floor(Date.now() / 1000);
-  const windowStart = now - windowSec;
   const [customerID, endpoint] = key.includes("::") ? key.split("::", 2) : [key, ""];
+  const override = endpoint ? findRateLimitOverride(endpoint) : null;
+  const effectiveLimit = override ? override.limit : limit;
+  const effectiveWindow = override ? override.window : windowSec;
+  const windowStart = now - effectiveWindow;
   const row = endpoint
     ? countCustomerEndpointRequests.get({ $customerID: customerID, $endpoint: endpoint, $windowStart: windowStart }) as CountRow | null
     : countCustomerRequests.get({ $customerID: customerID, $windowStart: windowStart }) as CountRow | null;
   const count = row?.count || 0;
-  if (count >= limit) return { allowed: false, retryAfter: windowSec, remaining: 0 };
-  return { allowed: true, remaining: Math.max(0, limit - count - 1), retryAfter: 0 };
+  if (count >= effectiveLimit) return { allowed: false, retryAfter: effectiveWindow, remaining: 0 };
+  return { allowed: true, remaining: Math.max(0, effectiveLimit - count - 1), retryAfter: 0 };
 }
 
 function getRateLimitStatus(customerID: string) {
@@ -686,6 +1323,15 @@ function buildOpenApiSpec() {
     "/dashboard": { get: { summary: "Live dashboard HTML", responses: { "200": { description: "HTML dashboard" } } } },
     "/api/proxy/auth": { post: { summary: "Authenticate and store Buckeye token", security: [{ apiKey: [] }], responses: { "200": { description: "Authentication result" } } } },
     "/api/proxy/{endpoint}": { post: { summary: "Proxy a Buckeye endpoint", security: [{ apiKey: [] }], parameters: [{ name: "endpoint", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "Buckeye response" }, "429": { description: "Rate limited" }, "503": { description: "Shutting down or dependency unavailable" } } } },
+    "/api/proxy/taxonomy/{level}": {
+      post: {
+        summary: "Fetch normalized Buckeye sportsbook taxonomy",
+        description: "Returns sports, leagues, schedules, lines, periods, or game types in canonical Zone 1 shapes.",
+        security: [{ apiKey: [] }],
+        parameters: [{ name: "level", in: "path", required: true, schema: { type: "string", enum: Object.keys(TAXONOMY_MAP) } }],
+        responses: { "200": { description: "Normalized taxonomy data" }, "400": { description: "Invalid level or missing Buckeye auth" }, "502": { description: "Buckeye fetch failed" } },
+      },
+    },
   };
 
   for (const endpoint of Object.values(all.proxy)) {
@@ -713,7 +1359,7 @@ function buildOpenApiSpec() {
 // ==========================================
 // 10. WEBSOCKET PUB/SUB + TICKER HISTORY + BATCHING
 // ==========================================
-type Sub = { ws: ServerWebSocket<WsData>; customerID: string; token: string; cf_clearance: string; interval?: Timer };
+type Sub = { ws: ServerWebSocket<WsData>; customerID: string; token: string; cf_clearance: string; interval?: Timer; batchInterval?: number };
 const sessions = new Map<ServerWebSocket<WsData>, { interval: Timer }>();
 const subscribers = new Map<string, Sub>();
 const TICKER_HISTORY_SIZE = 50;
@@ -754,19 +1400,38 @@ function enqueueTick(data: unknown) {
 }
 
 function startTicker(sub: Sub) {
+  const interval = sub.batchInterval || 5000;
   sub.interval = setInterval(async () => {
     try {
-      const res = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
-        method: "POST",
-        headers: browserHeaders(sub.token, `cf_clearance=${sub.cf_clearance}`),
-        body: toForm({ operation: "getBetTicker", RRO: "1" }),
-      }), { endpoint: "getBetTicker" });
-      const data = await res.json().catch(() => ({ error: "parse failed" }));
+      // Token expiry check (Enhancement 34)
+      if (CONFIG.features.tokenExpiryCheck && isTokenExpired(sub.customerID)) {
+        sub.ws.send(JSON.stringify({ type: "error", message: "Token expired, re-authenticate" }));
+        sub.ws.close(4001, "Token expired");
+        stopTicker(sub.ws.remoteAddress || "");
+        return;
+      }
+
+      // MemCache for hot ticker path (Enhancement 39)
+      const cacheKey = `ticker:${sub.customerID}:${sub.token.slice(0, 8)}`;
+      let data = getMemCache(cacheKey) as unknown;
+
+      if (!data) {
+        const res = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
+          method: "POST",
+          headers: browserHeaders(sub.token, `cf_clearance=${sub.cf_clearance}`),
+          body: toForm({ operation: "getBetTicker", RRO: "1" }),
+        }), { endpoint: "getBetTicker" });
+        data = await res.json().catch(() => ({ error: "parse failed" }));
+        // Normalize and cache for 2s (hot path)
+        data = normalizeResponse("Manager/getBetTicker", data);
+        setMemCache(cacheKey, data, CONFIG.memoryCacheTtlMs);
+      }
+
       enqueueTick(data);
     } catch (err: unknown) {
       sub.ws.send(JSON.stringify({ type: "error", message: err instanceof Error ? err.message : String(err) }));
     }
-  }, 5000);
+  }, interval);
 }
 
 function stopTicker(id: string) {
@@ -794,9 +1459,36 @@ const server = Bun.serve<WsData>({
       if (CONFIG.features.requestLogging) logger.info("WebSocket client connected", { remoteAddress: ws.remoteAddress });
     },
 
-    async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
-      const parsed = JSON.parse(message as string) as JsonObject;
+async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
+      let parsed: JsonObject;
+      try {
+        parsed = JSON.parse(message as string) as JsonObject;
+      } catch {
+        ws.send(JSON.stringify({ type: "error", message: "Invalid JSON" }));
+        return;
+      }
+
+      const msgType = parsed.type as string;
       const action = parsed.action as string;
+
+      // Ping/pong support
+      if (msgType === "ping") {
+        ws.send(JSON.stringify({ type: "pong", t: Date.now() }));
+        return;
+      }
+
+      // WS validation (Enhancement 43)
+      if (CONFIG.features.wsValidation) {
+        const validTypes = ["subscribe", "unsubscribe", "subscribe-persistent", "ping", "pong"];
+        if (!validTypes.includes(msgType) && !validTypes.includes(action)) {
+          ws.send(JSON.stringify({ type: "error", message: "Invalid message type" }));
+          return;
+        }
+        if ((msgType === "subscribe" || action === "subscribe") && (!parsed.customerID || !parsed.cf_clearance)) {
+          ws.send(JSON.stringify({ type: "error", message: "Missing customerID or cf_clearance" }));
+          return;
+        }
+      }
 
       if (action === "subscribe-persistent") {
         // Old-style subscribe (from proxy.ts)
@@ -811,22 +1503,8 @@ const server = Bun.serve<WsData>({
           return;
         }
         startTicker({ ws, customerID, token, cf_clearance });
-      } else if (action === "subscribe") {
+      } else if (msgType === "subscribe" || action === "subscribe") {
         // New-style subscribe (from enhanced)
-        if (CONFIG.features.requestLogging) {
-          ws.send(JSON.stringify({ type: "history", data: tickerHistory }));
-        }
-        const token = String(parsed.token || "");
-        const cf_clearance = String(parsed.cf_clearance || "");
-        const customerID = String(parsed.customerID || "");
-        const id = ws.remoteAddress || Math.random().toString(36).slice(2);
-        stopTicker(id);
-        const sub: Sub = { ws, customerID, token, cf_clearance };
-        subscribers.set(id, sub);
-        startTicker(sub);
-        ws.send(JSON.stringify({ type: "subscribed", id, message: "Live ticker active" }));
-      } else if (parsed.type === "subscribe") {
-        // Format from enhanced
         if (CONFIG.features.requestLogging) {
           ws.send(JSON.stringify({ type: "history", data: tickerHistory }));
         }
@@ -839,13 +1517,19 @@ const server = Bun.serve<WsData>({
         }
         const id = ws.remoteAddress || Math.random().toString(36).slice(2);
         stopTicker(id);
-        const sub: Sub = { ws, customerID, token, cf_clearance };
+
+        // Per-subscriber batch interval (Enhancement 30)
+        const batchMs = CONFIG.features.wsClientBatching && typeof parsed.batchMs === "number" && parsed.batchMs >= 100 && parsed.batchMs <= 5000
+          ? parsed.batchMs
+          : CONFIG.wsBatchIntervalMs;
+
+        const sub: Sub = { ws, customerID, token, cf_clearance, batchInterval: batchMs };
         subscribers.set(id, sub);
         startTicker(sub);
-        ws.send(JSON.stringify({ type: "subscribed", id, message: "Live ticker active" }));
+        ws.send(JSON.stringify({ type: "subscribed", id, message: `Live ticker active (batch: ${batchMs}ms)` }));
       }
 
-      if (parsed.type === "unsubscribe" || action === "unsubscribe") {
+      if (msgType === "unsubscribe" || action === "unsubscribe") {
         const id = ws.remoteAddress || Math.random().toString(36).slice(2);
         stopTicker(id);
         ws.send(JSON.stringify({ type: "unsubscribed" }));
@@ -882,11 +1566,11 @@ const server = Bun.serve<WsData>({
       }
 
       if (!authenticated && jwtEnabled) {
-        return new Response("Invalid WebSocket token", { status: 401 });
+        return new Response(JSON.stringify({ error: 'Invalid WebSocket token' }), { status: 401, headers: { 'Content-Type': 'application/json', ...cors } });
       }
 
       const ok = server.upgrade(req, { data: { url: req.url, reqId, customerID, authenticated } satisfies WsData });
-      return ok ? undefined : new Response("WS upgrade failed", { status: 400 });
+      return ok ? undefined : new Response(JSON.stringify({ error: 'WebSocket upgrade failed' }), { status: 400, headers: { 'Content-Type': 'application/json', ...cors } });
     }
 
     if (shuttingDown) return json({ error: "Server is shutting down" }, 503);
@@ -906,7 +1590,7 @@ const server = Bun.serve<WsData>({
         status: "running",
         timestamp: new Date().toISOString(),
         websocket: "/ws",
-        endpoints: ["/", "/features", "/metrics", "/ready", "/health", "/config", "/ws", "/openapi.json", "/dashboard", "/api/proxy/auth", "/api/proxy/:endpoint", "/api/proxy/tokens", "/api/proxy/logs", "/api/proxy/health", "/api/proxy/status", "/api/proxy/endpoints", "/api/proxy/renewToken"],
+        endpoints: ["/", "/features", "/metrics", "/ready", "/health", "/config", "/ws", "/openapi.json", "/dashboard", "/api/proxy/auth", "/api/proxy/:endpoint", "/api/proxy/taxonomy/:level", "/api/proxy/tokens", "/api/proxy/logs", "/api/proxy/health", "/api/proxy/status", "/api/proxy/endpoints", "/api/proxy/renewToken", "/api/proxy/agent/heatmap", "/admin/rate-limit"],
         subscribers: subscribers.size + sessions.size,
         features: { ...CONFIG.features },
         circuitBreaker: circuitBreaker.getStatus(),
@@ -927,6 +1611,14 @@ const server = Bun.serve<WsData>({
         rateLimit: { defaultPerMinute: CONFIG.defaultRateLimit.limit, window: CONFIG.defaultRateLimit.window },
         tokenRenewal: CONFIG.tokenRenewal,
         circuitBreaker: circuitBreaker.getStatus(),
+        tunables: {
+          wsBatchIntervalMs: CONFIG.wsBatchIntervalMs,
+          tokenCacheTtlMs: CONFIG.tokenCacheTtlMs,
+          memoryCacheTtlMs: CONFIG.memoryCacheTtlMs,
+          memCacheEntries: memCache.size,
+          inflightRequests: inflight.size,
+          tokenMemCacheEntries: tokenMemCache.size,
+        },
       });
     }
 
@@ -1113,6 +1805,7 @@ const server = Bun.serve<WsData>({
           $bearer_token: storedToken,
           $expires_at: expiresAt,
         });
+        invalidateTokenCache(customerID);
         scheduleTokenRenewal(customerID, expiresAt);
 
         const ok = upstream.ok || upstream.status === 302;
@@ -1125,8 +1818,86 @@ const server = Bun.serve<WsData>({
       }
     }
 
+    // ---- /API/PROXY/TAXONOMY/:LEVEL ----
+    if (path.startsWith("/api/proxy/taxonomy/") && req.method === "POST") {
+      activeRequests++;
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+
+      const rawLevel = path.replace("/api/proxy/taxonomy/", "");
+      if (!isTaxonomyLevel(rawLevel)) {
+        activeRequests--;
+        return json({ error: `Unknown taxonomy level: ${rawLevel}`, valid: Object.keys(TAXONOMY_MAP) }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      const taxonomy = TAXONOMY_MAP[rawLevel];
+      let customerID: string | null = null;
+      try {
+        const body = await readBody(req);
+        const { token, cf_clearance, customerID: bodyCustomerID, ...filters } = body;
+        customerID = bodyCustomerID ? String(bodyCustomerID) : null;
+
+        let finalToken = token ? String(token) : "";
+        let finalCf = cf_clearance ? String(cf_clearance) : "";
+        if (customerID && (!finalToken || !finalCf)) {
+          const stored = getCachedToken(customerID);
+          finalToken = stored?.bearer_token || "";
+          finalCf = stored?.cf_clearance || "";
+        }
+
+        if (!finalToken || !finalCf) {
+          requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, 400, "Missing token/cf_clearance");
+          activeRequests--;
+          return json({ error: "token/cf_clearance or customerID required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        const pHash = utilsHashPayload({ level: rawLevel, ...filters });
+        const memKey = `tax:${rawLevel}:${pHash}`;
+        const memCached = getMemCache(memKey);
+        if (memCached) {
+          requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, 200);
+          activeRequests--;
+          return json({ source: "mem_cache", level: rawLevel, shape: taxonomy.shape, data: memCached }, 200, { "X-Request-ID": ctx.reqId });
+        }
+
+        const cached = getCache.get({ $endpoint: taxonomy.endpoint, $payload_hash: pHash }) as CacheRow | null;
+        if (cached) {
+          const data = JSON.parse(cached.response_json) as unknown;
+          setMemCache(memKey, data, taxonomy.cacheTtl * 1000);
+          requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, 200);
+          activeRequests--;
+          return json({ source: "sqlite_cache", level: rawLevel, shape: taxonomy.shape, cached_at: cached.cached_at, data }, 200, { "X-Request-ID": ctx.reqId });
+        }
+
+        const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/${taxonomy.endpoint}`, {
+          method: "POST",
+          headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
+          body: toForm({ ...filters, operation: taxonomy.endpoint.split("/").pop() || rawLevel, RRO: "1" }),
+        }), { reqId: ctx.reqId, endpoint: taxonomy.endpoint });
+
+        const text = await upstream.text();
+        if (!upstream.ok) {
+          requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, upstream.status, text);
+          activeRequests--;
+          return json({ error: "Taxonomy fetch failed", level: rawLevel, status: upstream.status, details: text }, upstream.status, { "X-Request-ID": ctx.reqId });
+        }
+
+        const raw = JSON.parse(text) as unknown;
+        const data = normalizeTaxonomy(rawLevel, raw);
+        insertCache.run({ $endpoint: taxonomy.endpoint, $payload_hash: pHash, $response_json: JSON.stringify(data), $ttl_seconds: taxonomy.cacheTtl });
+        setMemCache(memKey, data, taxonomy.cacheTtl * 1000);
+        requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, upstream.status);
+        activeRequests--;
+        return json({ source: "live", level: rawLevel, shape: taxonomy.shape, data }, upstream.status, { "X-Request-ID": ctx.reqId });
+      } catch (err: unknown) {
+        requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, 500, err);
+        activeRequests--;
+        return json({ error: "Taxonomy fetch failed", level: rawLevel, details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
+      }
+    }
+
     // ---- /API/PROXY/:ENDPOINT ----
-    if (path.startsWith("/api/proxy/") && path !== "/api/proxy/auth" && path !== "/api/proxy/tokens" && path !== "/api/proxy/logs" && path !== "/api/proxy/health" && path !== "/api/proxy/status" && path !== "/api/proxy/endpoints" && path !== "/api/proxy/renewToken" && req.method === "POST") {
+    if (path.startsWith("/api/proxy/") && path !== "/api/proxy/auth" && path !== "/api/proxy/tokens" && path !== "/api/proxy/logs" && path !== "/api/proxy/health" && path !== "/api/proxy/status" && path !== "/api/proxy/endpoints" && path !== "/api/proxy/renewToken" && !path.startsWith("/api/proxy/agent/") && req.method === "POST") {
       activeRequests++;
       const authErr = apiKeyAuth(req);
       if (authErr) { activeRequests--; return authErr; }
@@ -1169,7 +1940,7 @@ const server = Bun.serve<WsData>({
         let finalCf = bodyCf ? String(bodyCf) : "";
 
         if (!finalToken && customerID) {
-          const stored = getLatestTokenWrite.get({ $customerID: customerID }) as TokenRow | null;
+          const stored = getCachedToken(customerID);
           if (stored) {
             finalToken = stored.bearer_token || "";
             finalCf = stored.cf_clearance || "";
@@ -1201,20 +1972,44 @@ const server = Bun.serve<WsData>({
         }
 
         const fetchLive = async () => {
-          const upstream = await fetchWithFallback(CONFIG.baseUrl, endpoint, enrichedPayload, finalToken, finalCf, ctx.reqId);
-          const text = await upstream.text();
-          if (!upstream.ok) throw new Error(`Upstream ${upstream.status}: ${text}`);
-          try { return JSON.parse(text) as unknown; } catch { return { raw: text }; }
+          const tokenPrefix = finalToken.slice(0, 8);
+          const dedupeKey = `${endpoint}::${hashPayloadImpl({ endpoint, ...enrichedPayload })}::${tokenPrefix}`;
+          return dedupeRequest(dedupeKey, async () => {
+            const upstream = await fetchWithFallback(CONFIG.baseUrl, endpoint, enrichedPayload, finalToken, finalCf, ctx.reqId);
+            const text = await upstream.text();
+            if (!upstream.ok) throw new Error(`Upstream ${upstream.status}: ${text}`);
+            try { return JSON.parse(text) as unknown; } catch { return { raw: text }; }
+          });
         };
 
         if (useCache) {
           const result = await getCacheWithSWR(endpoint, enrichedPayload, fetchLive, ctx.reqId);
+          const normalizedData = normalizeResponse(endpoint, result.data);
           requestFinished(ctx, endpoint, customerID, 200);
           activeRequests--;
-          return respond(json({ source: result.source, stale: Boolean(result.stale), data: result.data }, 200, { "X-Request-ID": ctx.reqId }));
+          return respond(json({ source: result.source, stale: Boolean(result.stale), data: normalizedData }, 200, { "X-Request-ID": ctx.reqId }));
         }
 
-        const data = await fetchLive();
+        // After SWR cache check, check memCache
+        if (CONFIG.features.memoryCache) {
+          const memKey = memCacheKey(endpoint, enrichedPayload);
+          const cached = getMemCache(memKey);
+          if (cached) {
+            requestFinished(ctx, endpoint, customerID, 200);
+            activeRequests--;
+            return respond(json({ source: "mem_cache", data: normalizeResponse(endpoint, cached) }, 200, { "X-Request-ID": ctx.reqId }));
+          }
+        }
+
+        const rawData = await fetchLive();
+        const data = normalizeResponse(endpoint, rawData);
+
+        // Store live response in memCache
+        if (CONFIG.features.memoryCache) {
+          const memKey = memCacheKey(endpoint, enrichedPayload);
+          setMemCache(memKey, rawData, CONFIG.memoryCacheTtlMs);
+        }
+
         requestFinished(ctx, endpoint, customerID, 200);
         activeRequests--;
         return respond(json({ source: "live", data }, 200, { "X-Request-ID": ctx.reqId }, acceptEncoding));
@@ -1333,9 +2128,130 @@ const server = Bun.serve<WsData>({
       return json({
         proxy: proxyRoutes,
         buckeye: buckeyeRoutes,
+        taxonomy: Object.fromEntries(Object.entries(TAXONOMY_MAP).map(([level, cfg]) => [
+          `/api/proxy/taxonomy/${level}`,
+          `POST - ${cfg.endpoint} -> ${cfg.shape}, cache ${cfg.cacheTtl}s`,
+        ])),
         counts: ENDPOINT_COUNTS,
         test_summary: `${TEST_SUMMARY.passed}/${TEST_SUMMARY.total} passed`,
       });
+    }
+
+    // ---- /API/PROXY/AGENT/HEATMAP ----
+    if (path === "/api/proxy/agent/heatmap" && req.method === "POST") {
+      activeRequests++;
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const body = await readBody(req);
+      const agentID = String(body.agentID || body.customerID || "");
+      const days = Math.min(Math.max(parseInt(String(body.days || "30"), 10) || 30, 1), 90);
+
+      if (!agentID) {
+        activeRequests--;
+        return json({ error: "agentID or customerID required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      let finalToken = body.token ? String(body.token) : "";
+      let finalCf = body.cf_clearance ? String(body.cf_clearance) : "";
+
+      if (!finalToken && agentID) {
+        const stored = getCachedToken(agentID);
+        if (stored) {
+          finalToken = stored.bearer_token || "";
+          finalCf = stored.cf_clearance || "";
+        }
+      }
+
+      try {
+        // Fetch web logs (timestamps with IP, device) for activity heatmap
+        const webLogParams = new URLSearchParams({
+          agentID: agentID,
+          customerID: agentID,
+          start: normalizeWebLogDate(new Date(Date.now() - days * 86400000).toISOString()),
+          end: normalizeWebLogDate(new Date().toISOString()),
+          type: "A",
+          actions: "ALL",
+          operation: "getWebLog",
+          RRO: "1",
+          agentOwner: agentID,
+          agentSite: "1",
+        });
+
+        const webLogRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/qubic/api/Manager/getWebLog`, {
+          method: "POST",
+          headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
+          body: webLogParams.toString(),
+        }), { reqId: ctx.reqId, endpoint: "getWebLog" });
+
+        const webLogData = await webLogRes.json().catch(() => null);
+
+        // Also fetch recent wagers for volume heatmap
+        const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
+          method: "POST",
+          headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
+          body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
+        }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
+
+        const wagerData = await wagerRes.json().catch(() => null);
+        const wagerList = Array.isArray(wagerData?.LIST) ? wagerData.LIST : Array.isArray(wagerData?.data?.LIST) ? wagerData.data.LIST : [];
+
+        // Parse web log entries for timestamps
+        const logEntries = parseWebLogEntries(webLogData);
+
+        // Build 7x24 matrices
+        const accessHeatmap = buildHeatmapFromEntries(logEntries, days, "access_datetime");
+        const wagerHeatmap = buildHeatmapFromWagers(wagerList, days);
+
+        requestFinished(ctx, "agent/heatmap", agentID, 200);
+        activeRequests--;
+        return json({
+          agentID,
+          days,
+          access: accessHeatmap,
+          wagers: wagerHeatmap,
+          totalAccessLogEntries: logEntries.length,
+          totalWagers: wagerList.length,
+          fetchedAt: new Date().toISOString(),
+        }, 200, { "X-Request-ID": ctx.reqId });
+      } catch (err: unknown) {
+        requestFinished(ctx, "agent/heatmap", agentID, 500, err);
+        activeRequests--;
+        return json({ error: "Heatmap fetch failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
+      }
+    }
+
+    // ---- /ADMIN/RATE-LIMIT ----
+    if (path === "/admin/rate-limit" && CONFIG.features.adminApi) {
+      const authErr = adminApiKeyAuth(req);
+      if (authErr) return authErr;
+
+      if (req.method === "GET") {
+        const all = getAllRateLimitOverridesStmt.all() as Array<{ endpoint: string; limit: number; window: number; updated_at: number }>;
+        return json({ overrides: all });
+      }
+
+      if (req.method === "POST") {
+        const body = await readBody(req);
+        const endpoint = String(body.endpoint || "");
+        const limit = Number(body.limit);
+        const window = Number(body.window);
+        if (!endpoint || !Number.isFinite(limit) || limit <= 0 || !Number.isFinite(window) || window <= 0) {
+          return json({ error: "endpoint, limit, and window are required" }, 400);
+        }
+        setRateLimitOverrideStmt.run({ $endpoint: endpoint, $limit: limit, $window: window });
+        rateLimitOverrides.set(endpoint, { limit, window });
+        return json({ success: true, endpoint, limit, window });
+      }
+
+      if (req.method === "DELETE") {
+        const endpoint = url.searchParams.get("endpoint");
+        if (!endpoint) return json({ error: "endpoint query param required" }, 400);
+        db.prepare(`DELETE FROM rate_limit_overrides WHERE endpoint = $endpoint`).run({ $endpoint: endpoint });
+        rateLimitOverrides.delete(endpoint);
+        return json({ success: true, deleted: endpoint });
+      }
+
+      return json({ error: "Method not allowed" }, 405);
     }
 
     // ---- /API/PROXY/RENEWTOKEN ----
@@ -1382,6 +2298,7 @@ const server = Bun.serve<WsData>({
             $bearer_token: newToken,
             $expires_at: expiresAt,
           });
+          invalidateTokenCache(customerKey || "BILLY666");
           scheduleTokenRenewal(customerKey || "BILLY666", expiresAt);
           activeRequests--;
           return json({ success: true, token: newToken });
@@ -1440,6 +2357,12 @@ async function shutdown(signal: string) {
   if (tickBatchTimer) clearTimeout(tickBatchTimer);
   if (configWatcher) { configWatcher.close(); configWatcher = null; }
 
+  // Clear caches
+  memCache.clear();
+  tokenMemCache.clear();
+  inflight.clear();
+  rateLimitOverrides.clear();
+
   insertToken.finalize();
   getLatestToken.finalize();
   insertCache.finalize();
@@ -1471,7 +2394,8 @@ if (!Bun.env.PROXY_PRODUCTION) {
   });
 }
 
-// Start token renewal for existing tokens
+// Load rate limit overrides and start token renewal
+loadRateLimitOverrides();
 scheduleExistingTokenRenewals();
 
 logger.info(`Enhanced Proxy running at http://localhost:${CONFIG.port}`);
