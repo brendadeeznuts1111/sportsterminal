@@ -13,6 +13,7 @@
     "backfill:hierarchy": "bun run scripts/backfill-hierarchy.ts"
   },
   "dependencies": {
+    "fast-geoip": "^1.1.88",
     "jose": "^6.2.3",
     "zod": "^4.4.3"
   },

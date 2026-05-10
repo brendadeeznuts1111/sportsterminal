@@ -550,6 +550,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  wsClient.on('access_log.new', (msg) => {
+    const payload = msg.payload || {};
+    if (payload.count > 0) {
+      showToast(`${payload.count} new access log${payload.count === 1 ? '' : 's'} from ${payload.agentId || 'agent'}`, 'info');
+      // Refresh the access log monitor if on performance page
+      if (currentSection === 'performance') {
+        loadAccessLogsForPerformance(false);
+      }
+    }
+  });
+
   wsClient.on('weeklyFigure.new', (msg) => {
     if (currentSection === 'performance') {
       performanceState.weeklyFigures.unshift(msg.payload);
@@ -1770,18 +1781,24 @@ function renderAlerts() {
   // Generate alerts from real data
   const alertWagers = buckeyeWagers.filter(w => w.TicketWriter === 'ALERT' || w.AmountWagered >= 10000);
 
-  container.innerHTML = alertWagers.slice(0, 20).map(w => {
+  const flagged = new Set(JSON.parse(localStorage.getItem('flaggedAlerts') || '[]'));
+  container.innerHTML = alertWagers.slice(0, 20).map((w, idx) => {
     const severity = w.AmountWagered >= 50000 ? 'critical' : w.AmountWagered >= 10000 ? 'warning' : 'info';
     const severityClass = severity === 'critical' ? 'alert-critical' : severity === 'warning' ? 'alert-warning' : 'alert-info';
+    const id = `alert-${w.WagerNumber || idx}`;
+    const isFlagged = flagged.has(id);
 
-    return `<div class="flex items-center justify-between p-3 rounded-lg ${severityClass}">
-      <div>
-        <div class="text-xs font-bold">${w.AgentLogin} → ${w.Login}</div>
+    return `<div class="flex items-center justify-between p-3 rounded-lg ${severityClass}" id="${id}">
+      <div class="flex-1 min-w-0">
+        <div class="text-xs font-bold">${w.AgentLogin} → ${w.Login} ${isFlagged ? '<span class="ml-1 px-1 rounded text-[10px]" style="background:var(--yellow);color:#000;">FLAGGED</span>' : ''}</div>
         <div class="text-xs mt-0.5" style="color:var(--text-dim);">${w.ShortDesc.substring(0, 60)}...</div>
       </div>
-      <div class="text-right">
+      <div class="text-right ml-3 shrink-0">
         <div class="text-xs font-mono font-bold">$${w.AmountWagered.toLocaleString()}</div>
-        <div class="text-xs" style="color:var(--text-dim);">${w.TicketWriter}</div>
+        <div class="flex gap-1 mt-1 justify-end">
+          <button class="text-[10px] px-1.5 py-0.5 rounded" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onclick="toggleAlertFlag('${id}')">${isFlagged ? 'Unflag' : 'Flag'}</button>
+          <button class="text-[10px] px-1.5 py-0.5 rounded" style="background:var(--panel);border:1px solid var(--border);color:var(--text-dim);" onclick="dismissAlert('${id}')">Dismiss</button>
+        </div>
       </div>
     </div>`;
   }).join('');
@@ -1792,6 +1809,25 @@ function renderAlerts() {
     badge.textContent = alertWagers.length;
     badge.classList.remove('hidden');
   }
+}
+
+function toggleAlertFlag(id) {
+  const flagged = new Set(JSON.parse(localStorage.getItem('flaggedAlerts') || '[]'));
+  if (flagged.has(id)) flagged.delete(id);
+  else flagged.add(id);
+  localStorage.setItem('flaggedAlerts', JSON.stringify(Array.from(flagged)));
+  renderAlerts();
+}
+
+function dismissAlert(id) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.style.opacity = '0.4';
+    el.style.pointerEvents = 'none';
+  }
+  const dismissed = new Set(JSON.parse(localStorage.getItem('dismissedAlerts') || '[]'));
+  dismissed.add(id);
+  localStorage.setItem('dismissedAlerts', JSON.stringify(Array.from(dismissed)));
 }
 
 function toggleAlertsToast() {
@@ -7310,15 +7346,18 @@ function renderPlayerProfileAccess(profile) {
     </div>
     <div class="rounded-lg border overflow-auto" style="border-color:var(--border);">
       <table class="profile-table">
-        <thead><tr><th>Time</th><th>Login</th><th>IP</th><th>Flag</th><th>Operation</th><th>Data</th></tr></thead>
-        <tbody>${logs.map(log => `<tr class="${log.isNewIp ? 'new-ip-row' : ''}">
+        <thead><tr><th>Time</th><th>Login</th><th>IP</th><th>Flag</th><th>Geo</th><th>Operation</th><th>Data</th></tr></thead>
+        <tbody>${logs.map(log => {
+          const geoLabel = log.geo ? [log.geo.city, log.geo.region, log.geo.country].filter(Boolean).join(', ') : '';
+          return `<tr class="${log.isNewIp ? 'new-ip-row' : ''}">
           <td style="color:var(--text-dim);">${formatShortDateTime(log.access_datetime || log.AccessDateTime)}</td>
           <td class="font-mono">${escapeHtml(log.login_id || log.LoginID || log.customer_id || '')}</td>
           <td class="font-mono">${escapeHtml(log.ip_address || log.IPAddress || '')}</td>
           <td>${log.isNewIp ? '<span class="new-ip-pill px-2 py-0.5 rounded text-xs">New IP</span>' : '<span style="color:var(--text-dim);">Known</span>'}</td>
+          <td style="color:var(--text-dim);font-size:11px;">${escapeHtml(geoLabel) || '-'}</td>
           <td>${escapeHtml(log.operation || log.log_type || log.Operation || '-')}</td>
           <td>${escapeHtml(log.data || log.Data || '-')}</td>
-        </tr>`).join('') || '<tr><td colspan="6" class="text-center" style="color:var(--text-dim);">No access logs found. Click Fetch Live to load from Buckeye.</td></tr>'}</tbody>
+        </tr>`}).join('') || '<tr><td colspan="7" class="text-center" style="color:var(--text-dim);">No access logs found. Click Fetch Live to load from Buckeye.</td></tr>'}</tbody>
       </table>
     </div>${virtual.moreHtml}`;
 
@@ -7388,6 +7427,7 @@ async function loadPlayerProfileAccessLogs() {
         operation: row.Operation,
         data: row.Data,
         isNewIp: Boolean(novel[key]),
+        geo: row.geo,
       };
     });
     playerProfileState.accessLogLive = rows;
@@ -7398,6 +7438,22 @@ async function loadPlayerProfileAccessLogs() {
   } finally {
     if (btn) { btn.textContent = 'Fetch Live'; btn.disabled = false; }
   }
+}
+
+function exportGlobalIpTrackerCsv() {
+  const rows = window._globalIpTrackerRows || [];
+  if (!rows.length) return;
+  const header = 'Time,Login,IP,Geo,Operation,Data\n';
+  const csv = rows.map(r => {
+    const geoLabel = r.geo ? [r.geo.city, r.geo.region, r.geo.country].filter(Boolean).join(' ') : '';
+    return `${r.access_datetime || ''},${r.login_id || ''},${r.ip_address || ''},${geoLabel},${(r.operation || '').replace(/,/g, ' ')},${(r.data || '').replace(/,/g, ' ')}`;
+  }).join('\n');
+  const blob = new Blob([header + csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `ip-tracker-${new Date().toISOString().split('T')[0]}.csv`;
+  a.click();
+  showToast('IP Tracker results exported to CSV', 'success');
 }
 
 async function loadGlobalIpTracker() {
@@ -7442,18 +7498,25 @@ async function loadGlobalIpTracker() {
       access_datetime: row.AccessDateTime,
       operation: row.Operation,
       data: row.Data,
+      geo: row.geo,
     }));
 
     const tbody = document.getElementById('globalIpTrackerRows');
     if (tbody) {
-      tbody.innerHTML = rows.map(log => `<tr>
+      tbody.innerHTML = rows.map(log => {
+        const geoLabel = log.geo ? [log.geo.city, log.geo.region, log.geo.country].filter(Boolean).join(', ') : '';
+        return `<tr>
         <td class="px-3 py-2" style="color:var(--text-dim);">${formatShortDateTime(log.access_datetime)}</td>
         <td class="px-3 py-2 font-mono">${escapeHtml(log.login_id)}</td>
         <td class="px-3 py-2 font-mono">${escapeHtml(log.ip_address)}</td>
+        <td class="px-3 py-2" style="color:var(--text-dim);">${escapeHtml(geoLabel) || '-'}</td>
         <td class="px-3 py-2">${escapeHtml(log.operation || '-')}</td>
         <td class="px-3 py-2">${escapeHtml(log.data || '-')}</td>
-      </tr>`).join('') || '<tr><td colspan="5" class="px-3 py-6 text-center" style="color:var(--text-dim);">No accounts found for this IP.</td></tr>';
+      </tr>`}).join('') || '<tr><td colspan="6" class="px-3 py-6 text-center" style="color:var(--text-dim);">No accounts found for this IP.</td></tr>';
     }
+    const exportBtn = document.getElementById('globalIpExportBtn');
+    if (exportBtn) exportBtn.classList.toggle('hidden', rows.length === 0);
+    window._globalIpTrackerRows = rows;
   } catch (err) {
     console.error('[IP Tracker] Search failed:', err);
     alert('Failed to search IP: ' + (err instanceof Error ? err.message : String(err)));
@@ -8526,6 +8589,7 @@ Object.assign(window, {
   renderPlayerProfile,
   renderPlayerProfileAccess,
   loadGlobalIpTracker,
+  exportGlobalIpTrackerCsv,
   renderPlayerProfileOverview,
   renderPlayerProfilePerformance,
   renderPlayerProfileStatus,

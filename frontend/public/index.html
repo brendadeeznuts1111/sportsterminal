@@ -1260,12 +1260,13 @@
             <input id="globalIpEnd" type="date" class="text-xs px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">
           </div>
           <button id="globalIpFetchBtn" class="px-3 py-1.5 rounded text-xs font-medium" style="background:var(--accent);color:#fff;" onclick="loadGlobalIpTracker()">Investigate</button>
+          <button id="globalIpExportBtn" class="px-3 py-1.5 rounded text-xs font-medium hidden" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onclick="exportGlobalIpTrackerCsv()">Export CSV</button>
         </div>
       </div>
       <div class="rounded-lg border overflow-auto" style="border-color:var(--border);">
         <table class="w-full text-xs">
-          <thead><tr style="background:var(--bg);"><th class="text-left px-3 py-2">Time</th><th class="text-left px-3 py-2">Login</th><th class="text-left px-3 py-2">IP</th><th class="text-left px-3 py-2">Operation</th><th class="text-left px-3 py-2">Data</th></tr></thead>
-          <tbody id="globalIpTrackerRows"><tr><td colspan="5" class="px-3 py-6 text-center" style="color:var(--text-dim);">Enter an IP and click Investigate to search across all accounts.</td></tr></tbody>
+          <thead><tr style="background:var(--bg);"><th class="text-left px-3 py-2">Time</th><th class="text-left px-3 py-2">Login</th><th class="text-left px-3 py-2">IP</th><th class="text-left px-3 py-2">Geo</th><th class="text-left px-3 py-2">Operation</th><th class="text-left px-3 py-2">Data</th></tr></thead>
+          <tbody id="globalIpTrackerRows"><tr><td colspan="6" class="px-3 py-6 text-center" style="color:var(--text-dim);">Enter an IP and click Investigate to search across all accounts.</td></tr></tbody>
         </table>
       </div>
     </div>

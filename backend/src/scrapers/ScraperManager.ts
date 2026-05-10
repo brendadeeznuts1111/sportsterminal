@@ -28,6 +28,7 @@ import type { BunSecretVault } from '../services/BunSecretVault';
 import { PerformanceCache } from '../services/PerformanceCache';
 import { RawApiLogger } from '../services/RawApiLogger';
 import { createManagedInterval, type ManagedIntervalTask } from '../services/Scheduler';
+import { enrichIpGeo } from '../services/GeoIpService';
 import {
   getPlayer360SourcePolicy,
   nextRefreshAt,
@@ -902,6 +903,24 @@ export class BuckeyeScraperManager {
 
     const resolvedAgentId = instance.credentials.agentId;
     const rows = await instance.api.getWebLog(options);
+
+    // Geo-IP enrichment
+    const geoPromises = rows.map(async (row) => {
+      if (row.IPAddress) {
+        const geo = await enrichIpGeo(row.IPAddress);
+        if (geo) {
+          row.geo = {
+            country: geo.country,
+            region: geo.region,
+            city: geo.city,
+            timezone: geo.timezone,
+            lat: geo.ll[0],
+            lon: geo.ll[1],
+          };
+        }
+      }
+    });
+    await Promise.all(geoPromises);
 
     // Novelty check: is this the first time we've seen (login_id, ip_address)?
     const novel: Record<string, boolean> = {};
@@ -2728,6 +2747,24 @@ export class BuckeyeScraperManager {
       actions: 'ALL',
     });
 
+    // Geo-IP enrichment
+    const geoPromises = rows.map(async (row) => {
+      if (row.IPAddress) {
+        const geo = await enrichIpGeo(row.IPAddress);
+        if (geo) {
+          row.geo = {
+            country: geo.country,
+            region: geo.region,
+            city: geo.city,
+            timezone: geo.timezone,
+            lat: geo.ll[0],
+            lon: geo.ll[1],
+          };
+        }
+      }
+    });
+    await Promise.all(geoPromises);
+
     // Log raw web log response
     await this.rawApiLogger.log({
       endpoint: 'getWebLog',
@@ -2739,6 +2776,13 @@ export class BuckeyeScraperManager {
     const inserted = await this.patternService.persistAccessLogs(agentId, rows, 'A');
     const patterns = await this.patternService.analyzeAccessLogs(agentId);
     const persisted = await this.patternService.persistPatterns(patterns);
+
+    if (inserted > 0) {
+      this.broadcast({
+        type: 'access_log.new',
+        payload: { agentId, count: inserted, timestamp: new Date().toISOString() },
+      });
+    }
 
     const newestAccess = rows
       .map((row) => Date.parse(row.AccessDateTime || ''))

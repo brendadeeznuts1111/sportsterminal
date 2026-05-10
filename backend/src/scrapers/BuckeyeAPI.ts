@@ -294,6 +294,14 @@ export interface BuckeyeWebLogRow {
   AccessDateTime: string;
   Operation: string;
   Data: string;
+  geo?: {
+    country: string;
+    region: string;
+    city: string;
+    timezone: string;
+    lat: number;
+    lon: number;
+  };
   raw: Record<string, unknown>;
 }
 
