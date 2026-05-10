@@ -1,2 +1,90 @@
-[install.security]
-scanner = "@bun-security-scanner/osv"
+# bunfig.toml — Sports Terminal v3.0
+# Root: /C:/Users/bobby/sportsterminal/bunfig.toml
+
+# ==========================================
+# RUNTIME
+# ==========================================
+[run]
+# Hot reload only in dev; disabled for `bun run proxy:start`
+watch = false
+
+# Preload before every script: env validation + WAL + performance hooks
+preload = ["./scripts/preload.ts"]
+
+# Bun.js flags
+smol = false
+
+# ==========================================
+# ENVIRONMENT (Development defaults)
+# ==========================================
+[env]
+DEMO_MODE = "false"
+ENABLE_METRICS = "true"
+ENABLE_REQUEST_LOGGING = "true"
+ENABLE_AUTO_RETRY = "true"
+ENABLE_RATE_LIMITING = "false"
+ENABLE_WS_BATCHING = "true"
+ENABLE_TOKEN_MEM_CACHE = "true"
+ENABLE_MEMORY_CACHE = "true"
+ENABLE_RESPONSE_NORMALIZE = "true"
+ENABLE_REQUEST_DEDUPE = "true"
+ENABLE_IDEMPOTENCY = "false"
+PROXY_API_KEY = "dev-key-123"
+PROXY_INTERNAL_URL = "http://localhost:3001"
+BACKEND_PORT = "3000"
+VITE_BACKEND_URL = "http://localhost:3000"
+VITE_WS_URL = "ws://localhost:3000"
+
+# ==========================================
+# PACKAGE MANAGER
+# ==========================================
+[install]
+registry = "https://registry.npmjs.org"
+cache = ".bun/install/cache"
+lockfile = "bun.lockb"
+exact = true
+peer = true
+production = false
+
+# ==========================================
+# WORKSPACE (Monorepo)
+# ==========================================
+[workspace]
+packages = [
+  ".",
+  "frontend",
+  "backend",
+  "proxy",
+  "shared",
+]
+
+# ==========================================
+# TEST RUNNER
+# ==========================================
+[test]
+root = "./"
+preload = ["./scripts/preload.ts"]
+coverage = false
+coverageThreshold = 0.8
+
+# ==========================================
+# BUNDLER
+# ==========================================
+[build]
+target = "browser"
+minify = true
+sourcemap = "external"
+splitting = true
+
+# ==========================================
+# SERVER DEFAULTS
+# ==========================================
+[serve]
+port = 3000
+hostname = "0.0.0.0"
+
+# ==========================================
+# DEBUG
+# ==========================================
+[debug]
+showQueries = false

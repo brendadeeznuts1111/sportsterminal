@@ -87,6 +87,47 @@ describe('requireAuth middleware', () => {
     expect(result).toBeNull();
   });
 
+  test('allows static frontend routes without token', async () => {
+    const rootReq = new Request('http://localhost/');
+    const rootResult = await requireAuth(rootReq, '/');
+    expect(rootResult).toBeNull();
+
+    const assetReq = new Request('http://localhost/js/app.js?v=5.32.11');
+    const assetResult = await requireAuth(assetReq, '/js/app.js');
+    expect(assetResult).toBeNull();
+  });
+
+  test('allows read-only hierarchy and downline routes without token', async () => {
+    const hierarchyReq = new Request('http://localhost/api/agents/hierarchy/tree');
+    const hierarchyResult = await requireAuth(hierarchyReq, '/api/agents/hierarchy/tree');
+    expect(hierarchyResult).toBeNull();
+
+    const downlineReq = new Request('http://localhost/api/agents/downline');
+    const downlineResult = await requireAuth(downlineReq, '/api/agents/downline');
+    expect(downlineResult).toBeNull();
+  });
+
+  test('allows read-only wager and player archive routes without token', async () => {
+    const wagersReq = new Request('http://localhost/api/wagers?limit=50');
+    const wagersResult = await requireAuth(wagersReq, '/api/wagers');
+    expect(wagersResult).toBeNull();
+
+    const liveReq = new Request('http://localhost/api/wagers/live');
+    const liveResult = await requireAuth(liveReq, '/api/wagers/live');
+    expect(liveResult).toBeNull();
+
+    const profileReq = new Request('http://localhost/api/players/A17566/profile');
+    const profileResult = await requireAuth(profileReq, '/api/players/A17566/profile');
+    expect(profileResult).toBeNull();
+  });
+
+  test('still protects player mutations without token', async () => {
+    const req = new Request('http://localhost/api/players/A17566/notes', { method: 'POST' });
+    const result = await requireAuth(req, '/api/players/A17566/notes');
+    expect(result instanceof Response).toBe(true);
+    expect((result as Response).status).toBe(401);
+  });
+
   test('allows public v1 compatibility paths without token', async () => {
     const req = new Request('http://localhost/api/v1/players/search?q=A17566');
     const result = await requireAuth(req, '/api/v1/players/search');

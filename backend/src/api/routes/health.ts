@@ -5,6 +5,8 @@ import { corsHeaders, handleAsync } from '../helpers';
 import { logRequest, logWarn } from '../../utils/logger';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 import type { Database } from '../../database';
+import { getEnhancedProxyReadiness, type EnhancedProxyReadinessResult } from '../../services/EnhancedProxyHealth';
+import { getProxyInternalBase } from '../../services/ProxyClient';
 
 interface HealthIssue {
   severity: 'warning' | 'critical';
@@ -17,7 +19,9 @@ interface HealthIssue {
   action: string;
 }
 
-type AuthBucket = HealthIssue & { sourceKeys: Set<string> };
+type AuthBucket = HealthIssue & { agentId: string; sourceKeys: Set<string> };
+type SystemHealthStatus = 'ok' | 'warning' | 'degraded' | 'critical';
+type PatternRiskStatus = 'ok' | 'warning' | 'critical';
 
 interface HealthSqlRow {
   [key: string]: unknown;
@@ -40,6 +44,15 @@ interface DataFlowSummary {
   patterns: FlowSummary;
   exposureInputs: FlowSummary;
   crossReferences: FlowSummary;
+}
+
+interface PatternRiskRollup {
+  status: PatternRiskStatus;
+  criticalByType: Record<string, number>;
+  warningByType: Record<string, number>;
+  expiresAt: string | null;
+  totalCritical: number;
+  totalWarning: number;
 }
 
 export function registerHealthRoutes(
@@ -79,6 +92,12 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
   const db = scraperManager.getDatabase();
   const metrics = scraperManager.getMetrics();
   const issues: HealthIssue[] = [];
+  const activeAgentIds = new Set(
+    (metrics.agents || [])
+      .filter((agent) => agent.authenticated !== false)
+      .map((agent) => String(agent.agentId || '').trim())
+      .filter(Boolean)
+  );
 
   for (const agent of metrics.agents || []) {
     if (Number(agent.errorCount || 0) > 0) {
@@ -159,6 +178,7 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
     if (isBuckeyeAuthFailure(row.last_error)) {
       const key = String(row.agent_id || 'unknown-agent');
       const bucket = authBuckets.get(key) || {
+        agentId: key,
         severity: 'warning',
         category: 'player360',
         title: `Player 360 probes paused by Buckeye auth for ${key}`,
@@ -187,10 +207,12 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
     });
   }
   for (const bucket of authBuckets.values()) {
-    const { sourceKeys, ...issue } = bucket;
+    const { agentId, sourceKeys, ...issue } = bucket;
     const sortedSourceKeys = [...sourceKeys].sort();
     issue.detail = `${issue.count} source refresh error${issue.count === 1 ? '' : 's'} were caused by an expired or missing Buckeye session across ${sortedSourceKeys.join(', ')}.`;
-    if (issue.count >= 20) issue.severity = 'critical';
+    if (issue.count >= 20 && activeAgentIds.has(agentId)) {
+      issue.severity = 'critical';
+    }
     issues.push(issue);
   }
 
@@ -201,14 +223,18 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
        ORDER BY error_count DESC, last_seen DESC
        LIMIT 8`, []);
   for (const row of offlineBooks) {
+    const lastSeen = stringOrNull(row.last_seen);
+    const stale = isOlderThanHours(lastSeen, 12);
     issues.push({
-      severity: row.status === 'offline' ? 'critical' : 'warning',
+      severity: row.status === 'offline' && !stale ? 'critical' : 'warning',
       category: 'odds',
-      title: `${row.book} book is ${row.status}`,
-      detail: String(row.last_error || `${row.book} last reported ${row.status}.`),
+      title: stale ? `${row.book} book health is stale (${row.status})` : `${row.book} book is ${row.status}`,
+      detail: stale
+        ? `${row.book} last reported ${row.status} more than 12 hours ago: ${row.last_error || 'no current error detail'}.`
+        : String(row.last_error || `${row.book} last reported ${row.status}.`),
       source: 'book_health',
       count: Number(row.error_count || 0),
-      lastSeen: stringOrNull(row.last_seen),
+      lastSeen,
       action: 'Check odds provider credentials/connectivity and the Trading Floor book health chips.',
     });
   }
@@ -244,24 +270,60 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
               SUM(CASE WHEN last_error IS NOT NULL THEN 1 ELSE 0 END) AS errors,
               MAX(updated_at) AS last_seen
        FROM player_source_status`, []);
-  const dataFlows = await buildDataFlowSummary(db);
+  const [dataFlows, enhancedProxyReadiness, patternRisk] = await Promise.all([
+    buildDataFlowSummary(db),
+    getEnhancedProxyReadiness(),
+    getPatternRiskRollup(db),
+  ]);
 
   addDataFlowIssues(issues, dataFlows, Number(metrics.activeAgents || 0));
+  addEnhancedProxyIssue(issues, enhancedProxyReadiness);
+
+  const staleOddsBooks = await getStaleOddsBooks(db);
 
   issues.sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || Number(b.count || 0) - Number(a.count || 0));
   const critical = issues.filter((issue) => issue.severity === 'critical').length;
   const warning = issues.filter((issue) => issue.severity === 'warning').length;
-  const operationalIssues = issues.filter((issue) => issue.category !== 'patterns');
+  const operationalIssues = issues.filter((issue) => issue.category !== 'patterns' && issue.category !== 'proxy');
   const operationalCritical = operationalIssues.filter((issue) => issue.severity === 'critical').length;
   const operationalWarning = operationalIssues.filter((issue) => issue.severity === 'warning').length;
   const riskIssues = issues.filter((issue) => issue.category === 'patterns');
   const riskCritical = riskIssues.filter((issue) => issue.severity === 'critical').length;
   const riskWarning = riskIssues.filter((issue) => issue.severity === 'warning').length;
+  let operationalStatus: SystemHealthStatus = operationalCritical > 0 ? 'critical' : operationalWarning > 0 ? 'warning' : 'ok';
+  if (enhancedProxyReadiness.status === 'critical') {
+    operationalStatus = 'critical';
+  } else if (enhancedProxyReadiness.status === 'degraded' && operationalStatus === 'ok') {
+    operationalStatus = 'degraded';
+  }
+  const status: SystemHealthStatus = operationalStatus === 'critical' || patternRisk.status === 'critical'
+    ? 'critical'
+    : operationalStatus === 'warning' || operationalStatus === 'degraded' || patternRisk.status === 'warning'
+      ? 'warning'
+      : 'ok';
 
   return {
-    status: critical > 0 ? 'critical' : warning > 0 ? 'warning' : 'ok',
-    operationalStatus: operationalCritical > 0 ? 'critical' : operationalWarning > 0 ? 'warning' : 'ok',
-    riskStatus: riskCritical > 0 ? 'critical' : riskWarning > 0 ? 'warning' : 'ok',
+    status,
+    operationalStatus,
+    patternRiskStatus: patternRisk.status,
+    criticalPatternRiskByType: patternRisk.criticalByType,
+    warningPatternRiskByType: patternRisk.warningByType,
+    patternRiskExpiresAt: patternRisk.expiresAt,
+    enhancedProxyHealth: enhancedProxyReadiness.status,
+    // Compatibility aliases for the first status page integration.
+    riskStatus: patternRisk.status,
+    riskBreakdown: patternRisk.criticalByType,
+    riskWarningBreakdown: patternRisk.warningByType,
+    riskStatusExpiresAt: patternRisk.expiresAt,
+    proxyHealth: enhancedProxyReadiness.status,
+    proxy: {
+      status: enhancedProxyReadiness.status,
+      ready: enhancedProxyReadiness.ready,
+      url: getProxyInternalBase(),
+      statusCode: enhancedProxyReadiness.statusCode,
+      checkedAt: enhancedProxyReadiness.checkedAt,
+      details: enhancedProxyReadiness.details,
+    },
     generatedAt: new Date().toISOString(),
     summary: {
       activeAgents: metrics.activeAgents || 0,
@@ -278,6 +340,11 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
       operationalWarning,
       riskCritical,
       riskWarning,
+      patternRiskCritical1h: patternRisk.totalCritical,
+      patternRiskWarning1h: patternRisk.totalWarning,
+      riskCritical1h: patternRisk.totalCritical,
+      riskWarning1h: patternRisk.totalWarning,
+      staleOddsBooks: staleOddsBooks.length,
     },
     dataFlows,
     issues: issues.slice(0, 25),
@@ -288,7 +355,122 @@ async function buildSystemStatus(scraperManager: BuckeyeScraperManager): Promise
     playerSources: {
       lastSeen: playerSourceSummary?.last_seen || null,
     },
+    details: {
+      staleOddsBooks,
+      enhancedProxy: {
+        status: enhancedProxyReadiness.status,
+        ready: enhancedProxyReadiness.ready,
+        statusCode: enhancedProxyReadiness.statusCode,
+        checkedAt: enhancedProxyReadiness.checkedAt,
+        details: enhancedProxyReadiness.details,
+      },
+      proxy: enhancedProxyReadiness.status,
+      proxyReady: enhancedProxyReadiness.ready,
+      proxyStatusCode: enhancedProxyReadiness.statusCode,
+      proxyCheckedAt: enhancedProxyReadiness.checkedAt,
+      proxyDetails: enhancedProxyReadiness.details,
+      lastRiskRefresh: new Date().toISOString(),
+    },
   };
+}
+
+export async function getCriticalPatternRiskByType(db: Database): Promise<Record<string, number>> {
+  const rows = await safeAll(db,
+    `SELECT type AS pattern_type, COUNT(*) AS count
+       FROM detected_patterns
+       WHERE detected_at > datetime('now', '-1 hour') AND severity = 'critical'
+       GROUP BY type`,
+    []);
+  return Object.fromEntries(rows.map((row) => [String(row.pattern_type || 'unknown'), Number(row.count || 0)]));
+}
+
+export async function getPatternRiskRollup(db: Database): Promise<PatternRiskRollup> {
+  const criticalRows = await safeAll(db,
+    `SELECT type AS pattern_type, COUNT(*) AS count, MAX(detected_at) AS last_seen
+       FROM detected_patterns
+       WHERE detected_at > datetime('now', '-1 hour') AND severity = 'critical'
+       GROUP BY type`,
+    []);
+  const warningRows = await safeAll(db,
+    `SELECT type AS pattern_type, COUNT(*) AS count, MAX(detected_at) AS last_seen
+       FROM detected_patterns
+       WHERE detected_at > datetime('now', '-1 hour') AND severity = 'warning'
+       GROUP BY type`,
+    []);
+  const criticalByType = Object.fromEntries(criticalRows.map((row) => [String(row.pattern_type || 'unknown'), Number(row.count || 0)]));
+  const warningByType = Object.fromEntries(warningRows.map((row) => [String(row.pattern_type || 'unknown'), Number(row.count || 0)]));
+  const totalCritical = Object.values(criticalByType).reduce((sum, count) => sum + count, 0);
+  const totalWarning = Object.values(warningByType).reduce((sum, count) => sum + count, 0);
+  const status: PatternRiskStatus = totalCritical > 0 ? 'critical' : totalWarning > 0 ? 'warning' : 'ok';
+  const latestSeen = [...criticalRows, ...warningRows]
+    .map((row) => stringOrNull(row.last_seen))
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1) || null;
+
+  return {
+    status,
+    criticalByType,
+    warningByType,
+    expiresAt: status === 'ok' ? null : riskExpiry(latestSeen),
+    totalCritical,
+    totalWarning,
+  };
+}
+
+export function getRiskBreakdown(db: Database): Promise<Record<string, number>> {
+  return getCriticalPatternRiskByType(db);
+}
+
+export async function getRiskStatusAndBreakdown(db: Database): Promise<{
+  status: PatternRiskStatus;
+  breakdown: Record<string, number>;
+  warningBreakdown: Record<string, number>;
+  expiresAt: string | null;
+  totalCritical: number;
+  totalWarning: number;
+}> {
+  const rollup = await getPatternRiskRollup(db);
+  return {
+    status: rollup.status,
+    breakdown: rollup.criticalByType,
+    warningBreakdown: rollup.warningByType,
+    expiresAt: rollup.expiresAt,
+    totalCritical: rollup.totalCritical,
+    totalWarning: rollup.totalWarning,
+  };
+}
+
+function addEnhancedProxyIssue(issues: HealthIssue[], enhancedProxyReadiness: EnhancedProxyReadinessResult): void {
+  if (enhancedProxyReadiness.status === 'ok') return;
+  issues.push({
+    severity: enhancedProxyReadiness.status === 'critical' ? 'critical' : 'warning',
+    category: 'proxy',
+    title: `Enhanced proxy is ${enhancedProxyReadiness.status}`,
+    detail: enhancedProxyReadiness.statusCode
+      ? `Internal proxy /ready returned HTTP ${enhancedProxyReadiness.statusCode}.`
+      : 'Internal proxy /ready could not be reached within the health timeout.',
+    source: 'EnhancedProxyReadiness',
+    count: 1,
+    lastSeen: enhancedProxyReadiness.checkedAt,
+    action: 'Start the enhanced proxy with bun run proxy:dev or check PROXY_INTERNAL_URL and PROXY_API_KEY.',
+  });
+}
+
+async function getStaleOddsBooks(db: Database): Promise<HealthSqlRow[]> {
+  return safeAll(db,
+    `SELECT book AS book_name, status, last_seen AS last_updated_at, last_error
+       FROM book_health
+       WHERE last_seen IS NOT NULL AND last_seen < datetime('now', '-12 hours')
+       ORDER BY last_seen ASC
+       LIMIT 16`,
+    []);
+}
+
+function riskExpiry(latestSeen: string | null): string {
+  const latestMs = latestSeen ? new Date(latestSeen).getTime() : NaN;
+  const base = Number.isFinite(latestMs) ? latestMs : Date.now();
+  return new Date(base + 60 * 60 * 1000).toISOString();
 }
 
 async function safeAll<T extends HealthSqlRow = HealthSqlRow>(
@@ -516,4 +698,11 @@ function dataFlowIssue(
 
 function stringOrNull(value: unknown): string | null {
   return value ? String(value) : null;
+}
+
+function isOlderThanHours(value: string | null, hours: number): boolean {
+  if (!value) return false;
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return false;
+  return Date.now() - timestamp > hours * 60 * 60 * 1000;
 }

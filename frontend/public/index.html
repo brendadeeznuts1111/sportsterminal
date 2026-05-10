@@ -6,11 +6,11 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>Sports Terminal v5.32 — Buckeye PPH Integration</title>
+<title>Sports Terminal v5.41 — Buckeye PPH Integration</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/css/terminal.css?v=5.32.10">
+<link rel="stylesheet" href="/css/terminal.css?v=5.41.0">
 <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 </head>
 <body class="flex flex-col h-screen">
@@ -65,10 +65,15 @@
         <svg class="w-4 h-4 icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
         <span>Trading Floor</span>
       </button>
-      <button class="sidebar-item w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all" data-section="patterns" onclick="switchSection('patterns', this)">
+<button class="sidebar-item w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all" data-section="patterns" onclick="switchSection('patterns', this)">
         <svg class="w-4 h-4 icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
         <span>Patterns</span>
         <span id="patternBadge" class="ml-auto text-xs px-1.5 py-0.5 rounded-full hidden" style="background:var(--red);color:#fff;">0</span>
+      </button>
+      <button class="sidebar-item w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all" data-section="live" onclick="switchSection('live', this)">
+        <svg class="w-4 h-4 icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+        <span>Live</span>
+        <span id="liveCount" class="ml-auto text-xs px-1.5 py-0.5 rounded-full hidden" style="background:var(--green);color:#fff;">0</span>
       </button>
       </div>
       </div>
@@ -271,6 +276,7 @@
       </div>
       <!-- Matrix Grid -->
       <div class="flex-1 overflow-auto p-2" id="oddsMatrixWrapper">
+        <div id="zone1TaxonomyPanel" class="mb-2"></div>
         <div id="oddsGrid" class="matrix-desktop rounded-lg overflow-hidden border" style="background:var(--panel);border-color:var(--border);"></div>
         <div id="oddsGridMobile" class="matrix-mobile p-2 space-y-2"></div>
       </div>
@@ -440,6 +446,23 @@
     </div>
 
     <!-- SECTION: Patterns -->
+    <div id="liveSection" class="section-content flex-1 overflow-hidden flex flex-col hidden">
+      <div class="flex items-center justify-between p-4 border-b" style="border-color:var(--border);">
+        <h2 class="text-lg font-bold">Live Betting Center</h2>
+        <div class="flex items-center gap-3">
+          <select id="liveSportFilter" class="text-xs px-2 py-1 rounded border" style="background:var(--bg);border-color:var(--border);color:var(--text);">
+            <option value="">All Sports</option>
+          </select>
+          <button onclick="refreshLive()" class="px-3 py-1 text-xs rounded font-medium" style="background:var(--accent);color:#fff;">Refresh</button>
+        </div>
+      </div>
+      <div class="flex-1 overflow-y-auto p-4">
+        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <div id="liveScoresGrid" class="col-span-1 md:col-span-2 xl:col-span-2 space-y-3"></div>
+          <div id="liveLinesPanel" class="col-span-1 space-y-3"></div>
+        </div>
+      </div>
+    </div>
     <div id="patternsSection" class="section-content flex-1 overflow-y-auto p-4 hidden">
       <div class="flex items-center justify-between mb-4">
         <div>
@@ -507,6 +530,47 @@
         <button class="pattern-category-tab px-2.5 py-1 rounded text-xs font-semibold" data-category="ip" onclick="setPatternCategory('ip')">IP</button>
         <button class="pattern-category-tab px-2.5 py-1 rounded text-xs font-semibold" data-category="live" onclick="setPatternCategory('live')">Live</button>
         <button class="pattern-category-tab px-2.5 py-1 rounded text-xs font-semibold" data-category="feed" onclick="setPatternCategory('feed')">Feed</button>
+      </div>
+      <div id="syndicateIntelPanel" class="mb-4 rounded-lg border p-3" style="background:var(--panel);border-color:var(--border);">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div>
+            <div class="text-sm font-semibold">Syndicate Intelligence</div>
+            <div id="syndicateIntelStatus" class="text-xs mt-1" style="color:var(--text-dim);">Scan same-selection clusters from the enhanced proxy.</div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <input id="syndicateAgentInput" class="text-xs px-2 py-1.5 rounded outline-none w-28" placeholder="Agent" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">
+            <select id="syndicateLookbackInput" class="text-xs px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">
+              <option value="6">6h</option>
+              <option value="24" selected>24h</option>
+              <option value="72">72h</option>
+              <option value="168">7d</option>
+            </select>
+            <input id="syndicateMinBettorsInput" type="number" min="2" max="20" value="2" class="text-xs px-2 py-1.5 rounded outline-none w-20" title="Minimum bettors" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">
+            <input id="syndicateMinStakeInput" type="number" min="0" step="500" value="1000" class="text-xs px-2 py-1.5 rounded outline-none w-24" title="Minimum stake in dollars" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">
+            <button id="syndicateScanBtn" class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--accent);color:#fff;" onclick="loadSyndicateIntel(true)">Scan</button>
+          </div>
+        </div>
+        <div id="syndicateIntelContent" class="grid grid-cols-1 lg:grid-cols-3 gap-3"></div>
+      </div>
+      <div id="integrityCasePanel" class="mb-4 rounded-lg border p-3" style="background:var(--panel);border-color:var(--border);">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div>
+            <div class="text-sm font-semibold">Integrity Case Queue</div>
+            <div id="integrityCaseStatus" class="text-xs mt-1" style="color:var(--text-dim);">Review, escalate, and close syndicate evidence cases.</div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <select id="integrityCaseFilter" class="text-xs px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" onchange="loadIntegrityCases(true)">
+              <option value="open" selected>Open</option>
+              <option value="reviewing">Reviewing</option>
+              <option value="escalated">Escalated</option>
+              <option value="closed">Closed</option>
+              <option value="false_positive">False Positive</option>
+              <option value="">All</option>
+            </select>
+            <button id="integrityCaseRefreshBtn" class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--border);color:var(--text);" onclick="loadIntegrityCases(true)">Refresh</button>
+          </div>
+        </div>
+        <div id="integrityCaseContent" class="grid grid-cols-1 lg:grid-cols-3 gap-3"></div>
       </div>
       <div id="patternCatalogPanel" class="mb-4 rounded-lg border p-3" style="background:var(--panel);border-color:var(--border);">
         <div class="text-xs" style="color:var(--text-dim);">Loading detector catalog...</div>
@@ -718,7 +782,10 @@
           <h2 class="text-lg font-bold">System Status</h2>
           <p class="text-xs mt-1" style="color:var(--text-dim);">Backend health, vaulted Buckeye ingestion, odds books, patterns, action queues, and bug/risk tracking.</p>
         </div>
-        <button class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--accent);color:#fff;" onclick="loadStatusPage(true)">Refresh</button>
+        <div class="flex items-center gap-3">
+          <div id="statusHealthRollup" class="flex items-center gap-2 text-xs"></div>
+          <button class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--accent);color:#fff;" onclick="loadStatusPage(true)">Refresh</button>
+        </div>
       </div>
       <div id="statusSummaryGrid" class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4"></div>
       <div id="statusDataFlowStrip" class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-2 mb-4"></div>
@@ -1080,6 +1147,89 @@
       <div id="agentCanvasContainer" style="display:none;height:600px;border-radius:8px;border:1px solid var(--border);overflow:hidden;position:relative;">
         <canvas id="agentCanvas" style="width:100%;height:100%;display:block;background:var(--bg);"></canvas>
       </div>
+      <div id="zone2PerformancePanel" class="mt-4 rounded-lg border p-3" style="background:var(--panel);border-color:var(--border);">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div>
+            <div class="flex items-center gap-2">
+              <h3 class="text-sm font-semibold">Zone 2 PPH Downline</h3>
+              <button id="zone2PerformanceTab" class="px-2 py-1 rounded text-[11px] font-semibold" style="background:var(--accent);color:#fff;" onclick="setZone2PanelTab('performance')">Performance</button>
+              <button id="zone2BillingTab" class="px-2 py-1 rounded text-[11px] font-semibold" style="background:var(--bg);border:1px solid var(--border);color:var(--text-dim);" onclick="setZone2PanelTab('billing')">Billing</button>
+            </div>
+            <div id="zone2PerformanceStatus" class="text-xs mt-1" style="color:var(--text-dim);">Select an agent, then load weekly or daily figures.</div>
+          </div>
+          <div id="zone2PerformanceControls" class="flex flex-wrap items-center gap-2">
+            <select id="zone2PerformanceView" class="text-xs px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">
+              <option value="weekly">Weekly</option>
+              <option value="daily">Daily</option>
+            </select>
+            <input id="zone2StartDate" type="date" class="text-xs px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">
+            <input id="zone2EndDate" type="date" class="text-xs px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">
+            <button class="px-3 py-1.5 rounded text-xs font-medium" style="background:var(--accent);color:#fff;" onclick="loadZone2AgentPerformance(true)">Load</button>
+          </div>
+          <div id="zone2BillingControls" class="hidden flex-wrap items-center gap-2">
+            <span class="text-[11px] uppercase tracking-wider" style="color:var(--text-dim);">Week</span>
+            <select id="zone2BillingWeek" class="text-xs px-2 py-1.5 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" onchange="loadZone2Billing(true)">
+              <option value="0">Current</option>
+              <option value="1">Last Week</option>
+              <option value="2">2 Weeks Ago</option>
+              <option value="3">3 Weeks Ago</option>
+            </select>
+            <button class="px-3 py-1.5 rounded text-xs font-medium" style="background:var(--accent);color:#fff;" onclick="loadZone2Billing(true)">Load Billing</button>
+          </div>
+        </div>
+        <div id="zone2PerformanceContent">
+          <div class="grid grid-cols-2 xl:grid-cols-4 gap-2 mb-3">
+            <div class="rounded p-2" style="background:var(--bg);border:1px solid var(--border);">
+              <div class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);">Bets</div>
+              <div id="zone2PerfBets" class="text-lg font-bold">0</div>
+            </div>
+            <div class="rounded p-2" style="background:var(--bg);border:1px solid var(--border);">
+              <div class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);">Wagered</div>
+              <div id="zone2PerfWager" class="text-lg font-bold">$0</div>
+            </div>
+            <div class="rounded p-2" style="background:var(--bg);border:1px solid var(--border);">
+              <div class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);">Net P/L</div>
+              <div id="zone2PerfNet" class="text-lg font-bold">$0</div>
+            </div>
+            <div class="rounded p-2" style="background:var(--bg);border:1px solid var(--border);">
+              <div class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);">Commission</div>
+              <div id="zone2PerfCommission" class="text-lg font-bold">$0</div>
+            </div>
+          </div>
+          <div class="max-h-[320px] overflow-auto rounded border" style="border-color:var(--border);">
+            <table class="w-full text-xs">
+              <thead><tr style="background:var(--bg);"><th class="text-left px-3 py-2">Period</th><th class="text-right px-3 py-2">Bets</th><th class="text-right px-3 py-2">Wagered</th><th class="text-right px-3 py-2">Win</th><th class="text-right px-3 py-2">Loss</th><th class="text-right px-3 py-2">Net</th><th class="text-right px-3 py-2">Commission</th></tr></thead>
+              <tbody id="zone2PerformanceRows"><tr><td colspan="7" class="px-3 py-6 text-center" style="color:var(--text-dim);">No performance report loaded.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="zone2BillingContent" class="hidden">
+          <div class="grid grid-cols-2 xl:grid-cols-4 gap-2 mb-3">
+            <div class="rounded p-2" style="background:var(--bg);border:1px solid var(--border);">
+              <div class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);">Gross</div>
+              <div id="zone2BillingGross" class="text-lg font-bold">$0</div>
+            </div>
+            <div class="rounded p-2" style="background:var(--bg);border:1px solid var(--border);">
+              <div class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);">Net</div>
+              <div id="zone2BillingNet" class="text-lg font-bold">$0</div>
+            </div>
+            <div class="rounded p-2" style="background:var(--bg);border:1px solid var(--border);">
+              <div class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);">Wagers</div>
+              <div id="zone2BillingWagers" class="text-lg font-bold">0</div>
+            </div>
+            <div class="rounded p-2" style="background:var(--bg);border:1px solid var(--border);">
+              <div class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);">Active Players</div>
+              <div id="zone2BillingActive" class="text-lg font-bold">0</div>
+            </div>
+          </div>
+          <div class="max-h-[320px] overflow-auto rounded border" style="border-color:var(--border);">
+            <table class="w-full text-xs">
+              <thead><tr style="background:var(--bg);"><th class="text-left px-3 py-2">Agent</th><th class="text-right px-3 py-2">Wagers</th><th class="text-right px-3 py-2">Wins</th><th class="text-right px-3 py-2">Losses</th><th class="text-right px-3 py-2">Pending</th><th class="text-right px-3 py-2">Gross</th><th class="text-right px-3 py-2">Net</th><th class="text-right px-3 py-2">Hold</th><th class="text-right px-3 py-2">Avg Bet</th><th class="text-right px-3 py-2">Active</th></tr></thead>
+              <tbody id="zone2BillingRows"><tr><td colspan="10" class="px-3 py-6 text-center" style="color:var(--text-dim);">Load billing figures from the proxy.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- SECTION: Player Search -->
@@ -1387,6 +1537,7 @@
   <div class="tooltip-content" id="globalTooltipContent"></div>
 </div>
 
-<script type="module" src="/js/app.js?v=5.32.10"></script>
+<script type="module" src="/js/app.js?v=5.32.11"></script>
+<script type="module" src="/js/live.js?v=5.32.12"></script>
 </body>
 </html>

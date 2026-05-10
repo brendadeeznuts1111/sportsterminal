@@ -30,10 +30,12 @@ import { evaluateWager, Alert, type EnrichedWager } from '../risk/AlertEngine';
 import { WebhookService } from '../services/WebhookService';
 import { PatternService } from '../patterns/PatternService';
 import { ActionQueue, type ActionResult } from '../actions/ActionQueue';
-import { backfillAgentsAndPlayers } from '../services/HierarchyBackfillService';
+import { backfillAgentsAndPlayers, upsertLiveAgentHierarchy } from '../services/HierarchyBackfillService';
+import { clearAgentHierarchyTreeCache } from '../api/routes/agentHierarchyTree';
 import type { BunSecretVault } from '../services/BunSecretVault';
 import { PerformanceCache } from '../services/PerformanceCache';
 import { RawApiLogger } from '../services/RawApiLogger';
+import { extractBuckeyeCookies, type EnhancedProxyCredentials } from '../services/ProxyClient';
 import { createManagedInterval, type ManagedIntervalTask } from '../services/Scheduler';
 import { enrichIpGeo } from '../services/GeoIpService';
 import {
@@ -70,6 +72,30 @@ interface Player360Candidate {
 }
 
 type SqlRow = Record<string, unknown>;
+
+const WAGER_LIST_COLUMNS = `
+  wager_number,
+  agent_id,
+  customer_id,
+  login,
+  wager_type,
+  amount_wagered,
+  to_win_amount,
+  volume_amount,
+  insert_datetime,
+  ticket_writer,
+  short_desc,
+  vip,
+  agent_login,
+  sport,
+  scraped_at,
+  parsed_game,
+  parsed_market,
+  parsed_side,
+  parsed_price,
+  parsed_period,
+  matched_event_id
+`;
 
 interface CountRow {
   count: number;
@@ -291,6 +317,8 @@ export class BuckeyeScraperManager {
   private secretVault?: BunSecretVault;
   private performanceCache?: PerformanceCache;
   private rawApiLogger: RawApiLogger;
+  private hierarchyRefreshTask?: ManagedIntervalTask;
+  private readonly hierarchyRefreshIntervalMs: number;
 
   private debugMode: boolean;
 
@@ -314,6 +342,7 @@ export class BuckeyeScraperManager {
     this.player360MaxPlayersPerPoll = readPositiveIntEnv('PLAYER360_MAX_PLAYERS_PER_POLL', this.player360MaxPlayersPerPoll);
     this.player360ColdBackfillPerPoll = readPositiveIntEnv('PLAYER360_COLD_BACKFILL_PER_POLL', this.player360ColdBackfillPerPoll);
     this.customerSnapshotTtlMs = readPositiveIntEnv('CUSTOMER_SNAPSHOT_TTL_MS', this.customerSnapshotTtlMs);
+    this.hierarchyRefreshIntervalMs = readPositiveIntEnv('HIERARCHY_REFRESH_INTERVAL_MS', 5 * 60 * 1000);
     this.webhookService = new WebhookService(db);
     this.patternService = new PatternService(db, broadcast);
     this.rawApiLogger = new RawApiLogger(db, true);
@@ -368,6 +397,7 @@ export class BuckeyeScraperManager {
     this.startPerformancePolling(agentId, instance);
     this.startDailyArchiveRefresh(agentId, instance);
     this.startPlayer360Polling(agentId, instance);
+    this.startHierarchyBackgroundRefresh();
     console.log(`[Manager] Started polling for ${agentId} every ${this.pollIntervalMs}ms`);
 
   }
@@ -418,6 +448,7 @@ export class BuckeyeScraperManager {
     this.startPerformancePolling(agentId, instance);
     this.startDailyArchiveRefresh(agentId, instance);
     this.startPlayer360Polling(agentId, instance);
+    this.startHierarchyBackgroundRefresh();
     console.log(`[Manager] Resumed session for ${agentId}`);
 
     return true;
@@ -456,6 +487,10 @@ export class BuckeyeScraperManager {
     this.actionQueue.clearAgent(agentId);
     this.agents.delete(agentId);
     console.log(`[Manager] Stopped polling for ${agentId}`);
+
+    if (this.agents.size === 0) {
+      this.stopHierarchyBackgroundRefresh();
+    }
   }
 
   /**
@@ -467,6 +502,47 @@ export class BuckeyeScraperManager {
 
   async forceAccessLogRefresh(agentId: string): Promise<{ fetched: number; inserted: number; patterns: number }> {
     return this.refreshAccessLogs(agentId);
+  }
+
+  private startHierarchyBackgroundRefresh(): void {
+    if (this.hierarchyRefreshTask?.isRunning()) return;
+    this.hierarchyRefreshTask?.stop();
+    this.hierarchyRefreshTask = createManagedInterval(
+      'buckeye.hierarchy.background',
+      this.hierarchyRefreshIntervalMs,
+      () => this.refreshHierarchyInBackground(),
+      {
+        initialDelayMs: this.hierarchyRefreshIntervalMs,
+        onError: (err) => console.warn('[Manager] Hierarchy background refresh failed:', err instanceof Error ? err.message : err),
+      }
+    );
+    console.log(`[Manager] Hierarchy background refresh started (every ${Math.round(this.hierarchyRefreshIntervalMs / 1000)}s)`);
+  }
+
+  private stopHierarchyBackgroundRefresh(): void {
+    this.hierarchyRefreshTask?.stop();
+    this.hierarchyRefreshTask = undefined;
+    console.log('[Manager] Hierarchy background refresh stopped');
+  }
+
+  private async refreshHierarchyInBackground(): Promise<void> {
+    const instance = Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
+    if (!instance) {
+      console.warn('[Manager] Hierarchy background refresh skipped — no authenticated agents');
+      return;
+    }
+    try {
+      const hierarchy = await instance.api.getAgentHierarchy();
+      if (!Array.isArray(hierarchy?.GENERAL) || hierarchy.GENERAL.length === 0) {
+        console.warn('[Manager] Hierarchy background refresh returned empty GENERAL array');
+        return;
+      }
+      const result = await upsertLiveAgentHierarchy(this.db, hierarchy, 'background_refresh');
+      clearAgentHierarchyTreeCache();
+      console.log(`[Manager] Hierarchy background refresh complete: ${result.agents} agents, ${result.players} players, ${result.linkedPlayers} linked`);
+    } catch (err) {
+      console.error('[Manager] Hierarchy background refresh failed:', err instanceof Error ? err.message : err);
+    }
   }
 
   requestPlayer360Refresh(playerId: string, reason: string = 'profile_open'): void {
@@ -624,7 +700,7 @@ export class BuckeyeScraperManager {
    */
   async getWagers(limit: number = 200, offset: number = 0): Promise<SqlRow[]> {
     return this.db.all(
-      'SELECT * FROM wagers ORDER BY insert_datetime DESC LIMIT ? OFFSET ?',
+      `SELECT ${WAGER_LIST_COLUMNS} FROM wagers ORDER BY insert_datetime DESC LIMIT ? OFFSET ?`,
       [limit, offset]
     );
   }
@@ -634,7 +710,7 @@ export class BuckeyeScraperManager {
    */
   async getAlertWagers(): Promise<SqlRow[]> {
     return this.db.all(
-      "SELECT * FROM wagers WHERE ticket_writer = 'ALERT' ORDER BY insert_datetime DESC LIMIT 200"
+      `SELECT ${WAGER_LIST_COLUMNS} FROM wagers WHERE ticket_writer = 'ALERT' ORDER BY insert_datetime DESC LIMIT 200`
     );
   }
 
@@ -643,7 +719,7 @@ export class BuckeyeScraperManager {
    */
   async getLiveWagers(): Promise<SqlRow[]> {
     return this.db.all(
-      "SELECT * FROM wagers WHERE ticket_writer = 'GSLIVE' ORDER BY insert_datetime DESC LIMIT 200"
+      `SELECT ${WAGER_LIST_COLUMNS} FROM wagers WHERE ticket_writer = 'GSLIVE' ORDER BY insert_datetime DESC LIMIT 200`
     );
   }
 
@@ -1591,6 +1667,26 @@ export class BuckeyeScraperManager {
       if (direct) return direct;
     }
     return Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
+  }
+
+  async getEnhancedProxyCredentials(agentId?: string): Promise<EnhancedProxyCredentials | null> {
+    const instance = this.resolveAgentInstance(agentId);
+    if (instance?.api.isAuthenticated()) {
+      const cookieParts = extractBuckeyeCookies(instance.api.getCookie() || instance.credentials.cfCookie);
+      return {
+        agentID: instance.credentials.agentId,
+        token: instance.api.getToken() || instance.credentials.token,
+        ...cookieParts,
+      };
+    }
+
+    const secrets = await this.secretVault?.getBuckeyeSecrets(agentId);
+    if (!secrets) return null;
+    return {
+      agentID: secrets.agentId,
+      token: secrets.token,
+      ...extractBuckeyeCookies(secrets.cfCookie),
+    };
   }
 
   private async initializeLiveAgentTree(agentId: string, instance: AgentInstance): Promise<void> {

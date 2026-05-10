@@ -42,6 +42,7 @@ Product-context notes from Buckeye's public `manual-agent.pdf` and `FAQ.pdf` are
 | Player account | `getTeaserProfile` | POST | `/cloud/api/Manager/getTeaserProfile` | Mapped Player 360 probe; fields are not trusted until payload shape is confirmed |
 | Config | `getConfigWebReports` | POST | `/cloud/api/Manager/getConfigWebReports` | Report config context |
 | Config | `getConfigWebReportsPending` | POST | `/cloud/api/Manager/getConfigWebReportsPending` | Pending report config |
+| Config | `updateReportConfigPending` | POST | `/cloud/api/Manager/updateReportConfigPending` | Pending report column toggles: `agent`, `customerID`, `password`, `name`, `timeAccepted`, `timeScheduled`, `type`, `print`, `delete`, `custTotal` as `on`/`off` |
 | Config | `getAuthorizations` | POST | `/cloud/api/Manager/getAuthorizations` | Feature/permission context |
 | Messages | `getMessage` | POST | `/cloud/api/Manager/getMessage` | Manager message context |
 | Messages | `getNewEmailsCount` | POST | `/cloud/api/Manager/getNewEmailsCount` | Notification count |
@@ -358,7 +359,10 @@ Important fields:
 | `sport` | Sport value from `getSportsType`, often padded |
 | `subsport` | League/subsport, such as `NBA` |
 | `period` | `-1` all, `0` game, `1` first half, `2` second half, quarters `3`-`6` |
-| `wagerType` | `S`, `P`, `T`, `I`, `C`, `A`, or blank |
+| `wagerType` | `S`, `P`, `I`, `T`, `G`, `A`, `C`, `N`, or blank |
+| pending `week` | `730` all, `0` today, `3` three days, `7` seven days, `14` fourteen days |
+| pending `amount` | blank all amounts, or threshold values such as `100`, `500`, `1000`, `5000`, `10000` |
+| pending report config | `agent=on`, `customerID=on`, `password=off`, `name=on`, `timeAccepted=on`, `timeScheduled=on`, `type=on`, `print=on`, `delete=off`, `custTotal=off`; here `customerID` is a column toggle, not the player filter |
 | `betType` | `S` spread, `M` money line, `L` total, `E` team total, or blank |
 | `tipo` | Activity filter. `-1` all action, `0` sports, `4` live betting, other values for casino/racebook/poker/etc. |
 | `debug` | Debug flag, observed `0` |
@@ -517,7 +521,7 @@ agentOwner=<manager>
 agentSite=1
 ```
 
-This operation is tracked in `/api/v1/players/:id/intelligence-map` as `teaser_profile` with `refreshPolicy=on_open`, `ttlSeconds=86400`, and `scaleClass=heavy`. It is not yet promoted into rendered account fields or persisted profile columns until a real payload shape is confirmed.
+This operation is tracked in `/api/players/:id/intelligence-map` as `teaser_profile` with `refreshPolicy=on_open`, `ttlSeconds=86400`, and `scaleClass=heavy`. It is not yet promoted into rendered account fields or persisted profile columns until a real payload shape is confirmed.
 
 ### `getSportsType`
 

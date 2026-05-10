@@ -3,38 +3,26 @@ import { randomUUID } from "node:crypto";
 
 export type JsonObject = Record<string, unknown>;
 
+type GlobalLogger = {
+  log?: (level: "debug" | "info" | "warn" | "error", source: string, message: string, meta?: JsonObject) => void;
+};
+
 interface CircuitBreakerState {
   state: "CLOSED" | "OPEN" | "HALF_OPEN";
   failures: number;
   nextAttempt: number;
 }
 
-export const logger = {
-  info: (message: string, meta: JsonObject = {}) => {
+function writeStructuredLog(level: "info" | "warn" | "error", message: string, meta: JsonObject = {}) {
+  const globalLogger = (globalThis as typeof globalThis & { __LOGGER?: GlobalLogger }).__LOGGER;
+  if (typeof globalLogger?.log === "function") {
+    globalLogger.log(level, "proxy", message, meta);
+    return;
+  }
+
+  if (level === "error") {
     const entry = {
-      level: "info",
-      timestamp: new Date().toISOString(),
-      reqId: (meta.reqId as string) || "global",
-      service: "buckeye-proxy",
-      ...meta,
-      msg: message,
-    };
-    console.log(JSON.stringify(entry));
-  },
-  warn: (message: string, meta: JsonObject = {}) => {
-    const entry = {
-      level: "warn",
-      timestamp: new Date().toISOString(),
-      reqId: (meta.reqId as string) || "global",
-      service: "buckeye-proxy",
-      ...meta,
-      msg: message,
-    };
-    console.log(JSON.stringify(entry));
-  },
-  error: (message: string, meta: JsonObject = {}) => {
-    const entry = {
-      level: "error",
+      level,
       timestamp: new Date().toISOString(),
       reqId: (meta.reqId as string) || "global",
       service: "buckeye-proxy",
@@ -42,6 +30,29 @@ export const logger = {
       msg: message,
     };
     console.error(JSON.stringify(entry));
+    return;
+  }
+
+  const entry = {
+    level,
+    timestamp: new Date().toISOString(),
+    reqId: (meta.reqId as string) || "global",
+    service: "buckeye-proxy",
+    ...meta,
+    msg: message,
+  };
+  console.log(JSON.stringify(entry));
+}
+
+export const logger = {
+  info: (message: string, meta: JsonObject = {}) => {
+    writeStructuredLog("info", message, meta);
+  },
+  warn: (message: string, meta: JsonObject = {}) => {
+    writeStructuredLog("warn", message, meta);
+  },
+  error: (message: string, meta: JsonObject = {}) => {
+    writeStructuredLog("error", message, meta);
   },
 };
 

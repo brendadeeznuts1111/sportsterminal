@@ -140,6 +140,17 @@ describe('API route registration', () => {
       ['GET', '/api/buckeye/sports-types'],
       ['GET', '/api/buckeye/manager-snapshot'],
       ['POST', '/api/connect'],
+      ['GET', '/api/proxy/status'],
+      ['GET', '/api/proxy/endpoints'],
+      ['GET', '/api/proxy/logs'],
+      ['GET', '/api/proxy/tokens'],
+      ['POST', '/api/proxy/renewToken'],
+      ['POST', '/api/proxy/agentDownline'],
+      ['POST', '/api/proxy/pending'],
+      ['POST', '/api/proxy/taxonomy/sports'],
+      ['POST', '/api/proxy/Manager/getBetTicker'],
+      ['POST', '/api/proxy/System/renewToken'],
+      ['POST', '/api/proxy/Log/write'],
       ['GET', '/api/performance/status'],
       ['GET', '/api/betting/velocity'],
       ['GET', '/api/betting/live-vs-pre'],
@@ -290,5 +301,62 @@ describe('API route registration', () => {
 
     expect(firstBody[0].marker).toBe('first');
     expect(secondBody[0].marker).toBe('second');
+  });
+
+  it('bridges enhanced proxy aliases to the internal proxy service', async () => {
+    const originalFetch = globalThis.fetch;
+    const originalProxyUrl = Bun.env.PROXY_INTERNAL_URL;
+    const originalProxyKey = Bun.env.PROXY_API_KEY;
+    let capturedUrl = '';
+    let capturedInit: RequestInit | undefined;
+
+    Bun.env.PROXY_INTERNAL_URL = 'http://internal-proxy.test';
+    Bun.env.PROXY_API_KEY = 'bridge-key';
+    globalThis.fetch = (async (url, init) => {
+      capturedUrl = String(url);
+      capturedInit = init;
+      return Response.json({ source: 'live', alias: 'agentDownline', data: { agents: [] } });
+    }) as typeof fetch;
+
+    try {
+      const deps = minimalDeps({
+        scraperManager: {
+          getEnhancedProxyCredentials: async () => ({
+            agentID: 'BILLY666',
+            token: 'buckeye-token',
+            cf_clearance: 'cf-token',
+          }),
+        },
+      });
+      const request = new Request('http://localhost/api/proxy/agentDownline', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ agentID: 'BILLY666' }),
+      });
+
+      const response = await routeRequest(new URL('http://localhost/api/proxy/agentDownline'), request, deps);
+      const body = await response?.json() as { source: string; alias: string };
+      const forwardedBody = JSON.parse(String(capturedInit?.body)) as Record<string, unknown>;
+
+      expect(response?.status).toBe(200);
+      expect(body.alias).toBe('agentDownline');
+      expect(capturedUrl).toBe('http://internal-proxy.test/api/proxy/agentDownline');
+      expect((capturedInit?.headers as Record<string, string>)['X-API-Key']).toBe('bridge-key');
+      expect(forwardedBody.token).toBe('buckeye-token');
+      expect(forwardedBody.cf_clearance).toBe('cf-token');
+      expect(forwardedBody.agentID).toBe('BILLY666');
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalProxyUrl === undefined) {
+        delete Bun.env.PROXY_INTERNAL_URL;
+      } else {
+        Bun.env.PROXY_INTERNAL_URL = originalProxyUrl;
+      }
+      if (originalProxyKey === undefined) {
+        delete Bun.env.PROXY_API_KEY;
+      } else {
+        Bun.env.PROXY_API_KEY = originalProxyKey;
+      }
+    }
   });
 });

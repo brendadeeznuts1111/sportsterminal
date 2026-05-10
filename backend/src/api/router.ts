@@ -411,6 +411,14 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
   router.post('/api/proxy/renewToken', async (url, request) => {
     return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
   });
+  // Enhanced proxy aliases bridged from backend port 3000 to the internal
+  // standalone proxy on port 3001.
+  router.post('/api/proxy/taxonomy/:level', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
+  router.post('/api/proxy/:alias', async (url, request) => {
+    return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
+  });
   // Manager operations (POST only)
   router.post('/api/proxy/Manager/:operation', async (url, request) => {
     return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);

@@ -11,6 +11,11 @@ let positions = [];
 let alerts = [];
 let buckeyeFilter = 'all';
 let buckeyeWagers = [];
+let pendingWagers = [];
+let pendingWagerExpanded = new Set();
+let pendingWagerLoading = false;
+let pendingWagerLastError = '';
+let pendingWagerLastFetchAt = null;
 let vipOnly = false;
 let autoScroll = true;
 let incomingBets = [];
@@ -130,6 +135,22 @@ let patternCategory = 'all';
 let patternFilterChoices = { agents: [], sports: [] };
 let lastPatternRequestKey = '';
 let patternsLoading = false;
+let syndicateIntelState = {
+  loading: false,
+  error: '',
+  result: null,
+  params: { lookbackHours: 24, minBettors: 2, minStake: 1000 },
+  lastScanAt: null,
+};
+let integrityCaseState = {
+  loading: false,
+  saving: false,
+  error: '',
+  cases: [],
+  stats: null,
+  status: 'open',
+  lastLoadedAt: null,
+};
 let performanceState = {
   velocity: [],
   liveVsPre: null,
@@ -282,13 +303,17 @@ function indexMovements(movements) {
 
 // Wager type mapping
 const WAGER_TYPES = {
-  'L': { label: 'Line', color: '#8b5cf6' },
-  'M': { label: 'Straight', color: '#3b82f6' },
-  'S': { label: 'Spread', color: '#06b6d4' },
+  'S': { label: 'Straight', color: '#3b82f6' },
   'P': { label: 'Parlay', color: '#f59e0b' },
-  'E': { label: 'Exotic', color: '#ec4899' },
+  'I': { label: 'If Bet', color: '#a855f7' },
   'T': { label: 'Teaser', color: '#10b981' },
-  'C': { label: 'Custom', color: '#6366f1' },
+  'G': { label: 'Racebook', color: '#92400e' },
+  'A': { label: 'Manual Play', color: '#64748b' },
+  'C': { label: 'Contest', color: '#6366f1' },
+  'N': { label: 'Live/Props', color: '#ef4444' },
+  'L': { label: 'Line/Total', color: '#8b5cf6' },
+  'M': { label: 'Moneyline', color: '#22c55e' },
+  'E': { label: 'Exotic', color: '#ec4899' },
   'PROP': { label: 'Prop', color: '#d946ef' },
 };
 
@@ -619,6 +644,14 @@ document.addEventListener('DOMContentLoaded', () => {
     updatePatternBadge();
   });
 
+  wsClient.on('live_flash', (msg) => {
+    const ev = msg.payload || msg.event || msg;
+    if (!ev || !ev.id) return;
+    if (typeof window.handleLiveFlash === 'function') {
+      window.handleLiveFlash(ev);
+    }
+  });
+
   wsClient.on('betAction', (msg) => {
     const result = msg.payload || {};
     if (result.success) {
@@ -640,6 +673,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadPersistedWagers(true);
   }, 10000); // Keep UI cards synced with backend ingestion even if browser WS is offline
 
+  loadZone1Taxonomy();
   loadOddsData();
   renderPositions();
   updateSortHeaders();
@@ -998,6 +1032,9 @@ function computeAgentExposureLocal() {
 
 // ==================== SECTION SWITCHING ====================
 function switchSection(section, btn) {
+  if (currentSection === 'live' && section !== 'live' && typeof stopLivePolling === 'function') {
+    stopLivePolling();
+  }
   if ((currentSection === 'agentNetwork' || currentSection === 'agentTree') && section !== 'agentNetwork' && section !== 'agentTree') {
     stopAgentCanvas();
   }
@@ -1013,6 +1050,7 @@ function switchSection(section, btn) {
 
   switch (section) {
     case 'floor':
+      loadZone1Taxonomy();
       if (isCacheFresh('odds')) renderOddsMatrix();
       else loadOddsData();
       break;
@@ -1023,15 +1061,25 @@ function switchSection(section, btn) {
     case 'buckeye':
       renderBuckeyeWagers();
       break;
+    case 'live':
+      if (typeof loadLiveSection === 'function') loadLiveSection();
+      if (typeof startLivePolling === 'function') startLivePolling();
+      break;
     case 'positions':
       renderPositions();
       fetchExposureData();
       break;
     case 'agentNetwork':
+      initializeZone2PerformanceDates();
+      renderZone2Performance();
+      renderZone2Billing();
       setAgentNetworkMode('table');
       refreshAgentDownline();
       break;
     case 'agentTree':
+      initializeZone2PerformanceDates();
+      renderZone2Performance();
+      renderZone2Billing();
       setAgentNetworkMode('tree');
       refreshAgentDownline();
       break;
@@ -1071,6 +1119,7 @@ function switchSection(section, btn) {
 function renderBuckeyeWagers() {
   const tbody = document.getElementById('buckeyeWagerTable');
   if (!tbody) return;
+  ensurePendingWagersPanel();
   updateWagerFilterCounts();
 
   let filtered = [...buckeyeWagers];
@@ -1206,6 +1255,249 @@ function renderBuckeyeWagers() {
   if (totalFiltered === 0) {
     tbody.innerHTML = '<tr><td colspan="11" class="px-3 py-8 text-center text-sm" style="color:var(--text-dim);">No wagers match current filters</td></tr>';
   }
+
+  renderPendingWagers();
+  if (!pendingWagerLoading && !pendingWagers.length && !pendingWagerLastError) {
+    loadPendingWagers(false);
+  }
+}
+
+function ensurePendingWagersPanel() {
+  if (document.getElementById('pendingWagersPanel')) return;
+  const table = document.getElementById('buckeyeWagerTable');
+  const tickerCard = table?.closest('.rounded-lg.border.overflow-hidden') || table?.closest('.rounded-lg');
+  if (!tickerCard) return;
+
+  const panel = document.createElement('div');
+  panel.id = 'pendingWagersPanel';
+  panel.className = 'rounded-lg border overflow-hidden mt-4';
+  panel.style.background = 'var(--panel)';
+  panel.style.borderColor = 'var(--border)';
+  panel.innerHTML = `
+    <div class="flex flex-wrap items-center justify-between gap-3 p-3 border-b" style="border-color:var(--border);">
+      <div>
+        <div class="text-sm font-semibold">Pending Wagers</div>
+        <div id="pendingWagersMeta" class="text-xs mt-1" style="color:var(--text-dim);">Grouped by ticket and wager number. Parlays expand into legs.</div>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <input id="pendingWagersDate" type="date" class="text-xs px-2 py-1 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">
+        <select id="pendingWagersType" class="text-xs px-2 py-1 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">
+          <option value="">All Types</option>
+          <option value="S">Straight</option>
+          <option value="P">Parlay</option>
+          <option value="I">If Bets</option>
+          <option value="T">Teaser</option>
+          <option value="G">Racebook</option>
+          <option value="A">Manual Plays</option>
+          <option value="C">Contest</option>
+          <option value="N">Live/Props</option>
+        </select>
+        <select id="pendingWagersTime" class="text-xs px-2 py-1 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">
+          <option value="730">All</option>
+          <option value="0" selected>Today</option>
+          <option value="3">3 Days</option>
+          <option value="7">7 days</option>
+          <option value="14">14 days</option>
+        </select>
+        <select id="pendingWagersAmount" class="text-xs px-2 py-1 rounded outline-none" style="background:var(--bg);border:1px solid var(--border);color:var(--text);">
+          <option value="">All Amounts</option>
+          <option value="100">$100+</option>
+          <option value="500">$500+</option>
+          <option value="1000">$1,000+</option>
+          <option value="5000">$5,000+</option>
+          <option value="10000">$10,000+</option>
+        </select>
+        <button id="pendingWagersRefresh" type="button" class="px-3 py-1 rounded text-xs font-medium" style="background:var(--accent);color:#fff;">Refresh</button>
+      </div>
+    </div>
+    <div id="pendingWagersStats" class="grid grid-cols-2 md:grid-cols-6 gap-2 p-3 border-b text-xs" style="border-color:var(--border);"></div>
+    <div id="pendingWagersList" class="text-xs"></div>
+  `;
+  tickerCard.insertAdjacentElement('afterend', panel);
+
+  const dateInput = panel.querySelector('#pendingWagersDate');
+  if (dateInput && !dateInput.value) dateInput.value = new Date().toISOString().split('T')[0];
+  panel.querySelector('#pendingWagersRefresh')?.addEventListener('click', () => loadPendingWagers(true));
+  panel.querySelector('#pendingWagersDate')?.addEventListener('change', () => loadPendingWagers(true));
+  panel.querySelector('#pendingWagersType')?.addEventListener('change', () => loadPendingWagers(true));
+  panel.querySelector('#pendingWagersTime')?.addEventListener('change', () => loadPendingWagers(true));
+  panel.querySelector('#pendingWagersAmount')?.addEventListener('change', () => loadPendingWagers(true));
+  panel.querySelector('#pendingWagersList')?.addEventListener('click', (event) => {
+    const target = event.target.closest('[data-pending-toggle]');
+    if (!target) return;
+    const key = target.dataset.pendingToggle;
+    if (pendingWagerExpanded.has(key)) pendingWagerExpanded.delete(key);
+    else pendingWagerExpanded.add(key);
+    renderPendingWagers();
+  });
+}
+
+async function loadPendingWagers(force = false) {
+  ensurePendingWagersPanel();
+  if (pendingWagerLoading) return;
+  if (!force && pendingWagerLastFetchAt && Date.now() - pendingWagerLastFetchAt < 30000) return;
+
+  const proxy = getZone2ProxyCredentials();
+  const agentID = localStorage.getItem('agentId') || 'BILLY666';
+  const date = document.getElementById('pendingWagersDate')?.value || new Date().toISOString().split('T')[0];
+  const wagerType = document.getElementById('pendingWagersType')?.value || '';
+  const week = document.getElementById('pendingWagersTime')?.value || '0';
+  const amount = document.getElementById('pendingWagersAmount')?.value || '';
+
+  if (!proxy.token || !proxy.cf) {
+    pendingWagerLastError = 'Set buckeye_token and cf_clearance in localStorage to load enhanced proxy pending wagers.';
+    renderPendingWagers();
+    return;
+  }
+
+  pendingWagerLoading = true;
+  pendingWagerLastError = '';
+  renderPendingWagers();
+
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    const proxyApiKey = localStorage.getItem('proxyApiKey');
+    if (proxyApiKey) headers['X-API-Key'] = proxyApiKey;
+    const res = await fetch(`${proxy.baseUrl}/api/proxy/pending`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        token: proxy.token,
+        cf_clearance: proxy.cf,
+        __cf_bm: localStorage.getItem('__cf_bm') || '',
+        agentID,
+        path: '/qubic/api/Manager/getPending',
+        RRO: '1',
+        date,
+        wagerType,
+        amount,
+        sort: '1',
+        typeSort: '2',
+        week,
+        customerID: '0',
+        agentOwner: agentID,
+        agentSite: '1',
+      }),
+    });
+    const payload = await res.json();
+    if (!res.ok || payload.error) throw new Error(payload.error || `Proxy ${res.status}`);
+    pendingWagers = payload.data?.wagers || payload.wagers || [];
+    pendingWagerLastFetchAt = Date.now();
+  } catch (err) {
+    pendingWagerLastError = err?.message || 'Pending wagers unavailable';
+  } finally {
+    pendingWagerLoading = false;
+    renderPendingWagers();
+  }
+}
+
+function renderPendingWagers() {
+  const statsEl = document.getElementById('pendingWagersStats');
+  const listEl = document.getElementById('pendingWagersList');
+  const metaEl = document.getElementById('pendingWagersMeta');
+  if (!statsEl || !listEl) return;
+
+  const totalStake = pendingWagers.reduce((sum, row) => sum + Number(row.wager?.stake || 0), 0);
+  const totalToWin = pendingWagers.reduce((sum, row) => sum + Number(row.wager?.toWin || 0), 0);
+  const totalLegs = pendingWagers.reduce((sum, row) => sum + (row.legs?.length || 0), 0);
+  const parlays = pendingWagers.filter(row => row.wager?.typeName === 'PARLAY').length;
+  const singles = pendingWagers.filter(row => !['PARLAY', 'TEASER'].includes(row.wager?.typeName)).length;
+  const latest = pendingWagerLastFetchAt ? new Date(pendingWagerLastFetchAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : 'not loaded';
+
+  if (metaEl) {
+    metaEl.textContent = pendingWagerLastError || (pendingWagerLoading ? 'Loading pending wagers...' : `Last refresh ${latest}`);
+    metaEl.style.color = pendingWagerLastError ? 'var(--red)' : 'var(--text-dim)';
+  }
+
+  statsEl.innerHTML = [
+    pendingStat('Wagers', pendingWagers.length),
+    pendingStat('Legs', totalLegs),
+    pendingStat('Stake', money(totalStake)),
+    pendingStat('To Win', money(totalToWin), 'var(--green)'),
+    pendingStat('Parlays', parlays, 'var(--yellow)'),
+    pendingStat('Singles', singles, 'var(--cyan)'),
+  ].join('');
+
+  if (pendingWagerLoading && !pendingWagers.length) {
+    listEl.innerHTML = '<div class="p-6 text-center" style="color:var(--text-dim);">Loading pending wagers...</div>';
+    return;
+  }
+  if (pendingWagerLastError && !pendingWagers.length) {
+    listEl.innerHTML = `<div class="p-6 text-center" style="color:var(--red);">${escapeHtml(pendingWagerLastError)}</div>`;
+    return;
+  }
+  if (!pendingWagers.length) {
+    listEl.innerHTML = '<div class="p-6 text-center" style="color:var(--text-dim);">No pending wagers for the selected filters.</div>';
+    return;
+  }
+
+  listEl.innerHTML = pendingWagers.slice(0, 100).map(renderPendingWagerRow).join('');
+}
+
+function pendingStat(label, value, color = 'var(--text)') {
+  return `<div class="rounded p-2" style="background:var(--bg);border:1px solid var(--border);">
+    <div class="uppercase tracking-wider" style="color:var(--text-dim);">${escapeHtml(label)}</div>
+    <div class="font-mono font-bold mt-1" style="color:${color};">${escapeHtml(value)}</div>
+  </div>`;
+}
+
+function renderPendingWagerRow(row) {
+  const wager = row.wager || {};
+  const player = row.player || {};
+  const legs = row.legs || [];
+  const isParlay = wager.typeName === 'PARLAY';
+  const isTeaser = wager.typeName === 'TEASER';
+  const expanded = pendingWagerExpanded.has(row.key);
+  const accent = isParlay ? 'var(--yellow)' : isTeaser ? 'var(--cyan)' : 'var(--green)';
+  const firstLeg = legs[0] || {};
+  const description = isParlay
+    ? `${Number(wager.totalPicks || legs.length).toLocaleString()} legs ${wager.parlayName ? `· ${wager.parlayName}` : ''}`
+    : `${firstLeg.chosenTeam || 'Single leg'} · ${firstLeg.wagerTypeName || ''}`;
+
+  return `<div class="border-b" style="border-color:var(--border);">
+    <button type="button" data-pending-toggle="${escapeHtml(row.key)}" class="w-full text-left px-3 py-2 grid gap-3 items-center" style="grid-template-columns:70px minmax(120px,160px) 110px minmax(180px,1fr) 90px 90px 70px;border-left:3px solid ${accent};">
+      <span class="px-1.5 py-0.5 rounded text-[10px] font-bold text-center" style="background:${accent}22;color:${accent};">${escapeHtml(wager.typeName || 'PENDING')}</span>
+      <span><strong>${escapeHtml(player.name || player.login || player.id || 'Unknown')}</strong><small class="block" style="color:var(--text-dim);">${escapeHtml(player.login || player.id || '')} · ${escapeHtml(player.agent || '')}</small></span>
+      <span class="font-mono" style="color:var(--text-dim);">TKT ${escapeHtml(row.ticketNumber || '')}<small class="block">WGR ${escapeHtml(row.wagerNumber || '')}</small></span>
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(description)}</span>
+      <span class="font-mono text-right">${money(Number(wager.stake || 0))}</span>
+      <span class="font-mono text-right" style="color:var(--green);">${money(Number(wager.toWin || 0))}</span>
+      <span class="text-center" style="color:var(--text-dim);">${isParlay ? (expanded ? 'hide' : 'legs') : escapeHtml(wager.status || 'P')}</span>
+    </button>
+    ${(isParlay || isTeaser || expanded) && expanded ? renderPendingLegs(legs) : ''}
+    ${!isParlay && !isTeaser ? renderPendingLegs(legs.slice(0, 1), true) : ''}
+  </div>`;
+}
+
+function renderPendingLegs(legs, compact = false) {
+  if (!legs.length) return '';
+  return `<div style="background:var(--bg);">${legs.map(leg => {
+    const game = leg.game || {};
+    const away = game.away || {};
+    const home = game.home || {};
+    const line = formatPendingLegLine(leg);
+    const market = leg.wagerTypeName === 'TOTAL' && leg.side ? `${leg.side} TOTAL` : (leg.wagerTypeName || '');
+    const time = game.datetime ? new Date(game.datetime).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '-';
+    return `<div class="grid gap-3 items-center px-3 py-2 border-t" style="grid-template-columns:${compact ? 'minmax(150px,220px) minmax(180px,1fr) 90px 90px' : '32px minmax(150px,220px) minmax(180px,1fr) 90px 90px'};border-color:var(--border);">
+      ${compact ? '' : `<span class="font-mono" style="color:var(--text-dim);">${escapeHtml(leg.itemNumber || '')}</span>`}
+      <span><strong>${escapeHtml(leg.chosenTeam || '')}</strong><small class="block" style="color:var(--text-dim);">${escapeHtml(market)}${Number(leg.buyPoints || 0) > 0 ? ` · +${escapeHtml(leg.buyPoints)}pt` : ''}</small></span>
+      <span>${escapeHtml(away.shortName || away.team || '')} <span style="color:var(--text-dim);">@</span> ${escapeHtml(home.shortName || home.team || '')}<small class="block" style="color:var(--text-dim);">${escapeHtml(game.league || game.sport || '')}</small></span>
+      <span class="font-mono text-right">${escapeHtml(line)}</span>
+      <span class="font-mono text-right" style="color:var(--text-dim);">${escapeHtml(time)}</span>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function formatPendingLegLine(leg) {
+  const odds = Number(leg.odds || 0);
+  const price = odds ? ` (${odds > 0 ? '+' : ''}${odds})` : '';
+  if (leg.wagerTypeName === 'MONEYLINE') return `${odds > 0 ? '+' : ''}${odds}`;
+  if (leg.wagerTypeName === 'TOTAL') {
+    const side = leg.side === 'UNDER' ? 'U' : leg.side === 'OVER' ? 'O' : '';
+    return `${side} ${Number(leg.totalPoints || leg.line || 0)}${price}`;
+  }
+  const spread = Number(leg.spread || leg.line || 0);
+  return `${spread > 0 ? '+' : ''}${spread}${price}`;
 }
 
 function filterWagerType(btn, type) {
@@ -2009,6 +2301,7 @@ function renderPatterns() {
   syncPatternCategoryTabs();
   updatePatternSummaryCards();
   renderPatternCatalogPanel();
+  renderSyndicateIntel();
 
   if (!patternsData.length) {
     const filterNote = describePatternFilters();
@@ -2046,6 +2339,299 @@ function renderPatterns() {
       <td class="px-3 py-2 text-center text-xs" style="color:var(--text-dim);">${escapeHtml(time)}</td>
     </tr>`;
   }).join('');
+}
+
+async function loadSyndicateIntel(force = false) {
+  if (syndicateIntelState.loading && !force) return;
+  const proxy = getZone2ProxyCredentials();
+  const agentID = getSyndicateAgentId();
+  const lookbackHours = Number(document.getElementById('syndicateLookbackInput')?.value || syndicateIntelState.params.lookbackHours || 24);
+  const minBettors = Number(document.getElementById('syndicateMinBettorsInput')?.value || syndicateIntelState.params.minBettors || 2);
+  const minStake = Number(document.getElementById('syndicateMinStakeInput')?.value || syndicateIntelState.params.minStake || 1000);
+
+  if (!agentID) {
+    syndicateIntelState.error = 'Set an agent ID before scanning.';
+    renderSyndicateIntel();
+    return;
+  }
+  if (!proxy.token || !proxy.cf) {
+    syndicateIntelState.error = 'Set buckeye_token and cf_clearance to run enhanced proxy scans.';
+    renderSyndicateIntel();
+    return;
+  }
+
+  syndicateIntelState.loading = true;
+  syndicateIntelState.error = '';
+  syndicateIntelState.params = { lookbackHours, minBettors, minStake };
+  renderSyndicateIntel();
+
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    const proxyApiKey = localStorage.getItem('proxyApiKey');
+    if (proxyApiKey) headers['X-API-Key'] = proxyApiKey;
+    const res = await fetch(`${proxy.baseUrl}/api/proxy/analytics/syndicates`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        token: proxy.token,
+        cf_clearance: proxy.cf,
+        __cf_bm: proxy.cfBm,
+        agentID,
+        lookbackHours,
+        minBettors,
+        minStake,
+      }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || payload.error) throw new Error(payload.error || `Syndicate scan failed (${res.status})`);
+    syndicateIntelState.result = payload;
+    syndicateIntelState.lastScanAt = Date.now();
+    loadIntegrityCases(false);
+  } catch (err) {
+    syndicateIntelState.error = err?.message || 'Syndicate scan unavailable.';
+  } finally {
+    syndicateIntelState.loading = false;
+    renderSyndicateIntel();
+  }
+}
+
+function getSyndicateAgentId() {
+  return document.getElementById('syndicateAgentInput')?.value?.trim() || localStorage.getItem('agentId') || '';
+}
+
+function renderSyndicateIntel() {
+  const content = document.getElementById('syndicateIntelContent');
+  const status = document.getElementById('syndicateIntelStatus');
+  const button = document.getElementById('syndicateScanBtn');
+  if (!content) return;
+
+  const state = syndicateIntelState;
+  const result = state.result || {};
+  const details = result.syndicateDetails || result.syndicates || [];
+  const count = Array.isArray(details) ? details.length : Number(result.syndicates || 0);
+  const totalStake = Array.isArray(details) ? details.reduce((sum, item) => sum + Number(item.totalStake || 0), 0) : 0;
+  const maxScore = Array.isArray(details) ? details.reduce((max, item) => Math.max(max, Number(item.riskScore || item.confidence || 0)), 0) : 0;
+  const scanned = state.lastScanAt ? new Date(state.lastScanAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : 'not scanned';
+
+  if (status) {
+    status.textContent = state.error || (state.loading ? 'Scanning enhanced proxy analytics...' : `Last scan ${scanned}`);
+    status.style.color = state.error ? 'var(--red)' : 'var(--text-dim)';
+  }
+  if (button) {
+    button.disabled = state.loading;
+    button.textContent = state.loading ? 'Scanning...' : 'Scan';
+    button.style.opacity = state.loading ? '0.65' : '1';
+  }
+
+  const cards = [
+    syndicateIntelCard('Clusters', count, count > 0 ? 'var(--yellow)' : 'var(--text)'),
+    syndicateIntelCard('Stake', money(totalStake), totalStake > 0 ? 'var(--red)' : 'var(--text)'),
+    syndicateIntelCard('Max Score', `${maxScore || 0}%`, maxScore >= 80 ? 'var(--red)' : maxScore >= 60 ? 'var(--yellow)' : 'var(--green)'),
+  ].join('');
+
+  const list = Array.isArray(details) && details.length
+    ? details.slice(0, 6).map((item, index) => {
+      const score = Number(item.riskScore || item.confidence || 0);
+      const scoreColor = score >= 80 ? 'var(--red)' : score >= 60 ? 'var(--yellow)' : 'var(--green)';
+      const signals = Array.isArray(item.signals) ? item.signals : [];
+      return `<div class="rounded border p-2" style="background:var(--bg);border-color:var(--border);">
+        <div class="flex items-center justify-between gap-2">
+          <div class="text-xs font-semibold">Cluster ${index + 1}</div>
+          <div class="text-xs font-mono" style="color:${scoreColor};">${score || '—'}%</div>
+        </div>
+        <div class="text-[11px] mt-1" style="color:var(--text-dim);">${escapeHtml(item.pattern || '')} · ${escapeHtml(item.commonGame || '')}</div>
+        <div class="flex flex-wrap gap-1 mt-2">${(item.members || []).slice(0, 8).map(member => `<span class="px-1.5 py-0.5 rounded text-[10px]" style="background:rgba(245,158,11,0.14);color:var(--accent);">${escapeHtml(member)}</span>`).join('')}</div>
+        <div class="text-[10px] mt-2" style="color:var(--text-dim);">${signals.map(escapeHtml).join(' | ')}</div>
+        <button class="mt-2 px-2 py-1 rounded text-[10px] font-semibold" style="background:rgba(239,68,68,0.16);color:var(--red);border:1px solid rgba(239,68,68,0.24);" onclick="createIntegrityCaseFromSyndicate(${index})">Open Case</button>
+      </div>`;
+    }).join('')
+    : `<div class="rounded border p-3 text-xs lg:col-span-2" style="background:var(--bg);border-color:var(--border);color:var(--text-dim);">No syndicate clusters detected for the current threshold.</div>`;
+
+  content.innerHTML = `
+    <div class="grid grid-cols-3 gap-2">${cards}</div>
+    <div class="lg:col-span-2 grid grid-cols-1 xl:grid-cols-2 gap-2">${list}</div>
+  `;
+  renderIntegrityCases();
+}
+
+async function loadIntegrityCases(force = false) {
+  if (integrityCaseState.loading && !force) return;
+  const proxy = getZone2ProxyCredentials();
+  const agentID = getSyndicateAgentId();
+  const status = document.getElementById('integrityCaseFilter')?.value ?? integrityCaseState.status;
+  if (!agentID) {
+    integrityCaseState.error = 'Set an agent ID to load cases.';
+    renderIntegrityCases();
+    return;
+  }
+
+  integrityCaseState.loading = true;
+  integrityCaseState.error = '';
+  integrityCaseState.status = status;
+  renderIntegrityCases();
+
+  try {
+    const headers = {};
+    const proxyApiKey = localStorage.getItem('proxyApiKey');
+    if (proxyApiKey) headers['X-API-Key'] = proxyApiKey;
+    const params = new URLSearchParams({ agentID, limit: '50' });
+    if (status) params.set('status', status);
+    const statsParams = new URLSearchParams({ agentID, hours: String(syndicateIntelState.params.lookbackHours || 24) });
+    const [casesRes, statsRes] = await Promise.all([
+      fetch(`${proxy.baseUrl}/api/proxy/integrity/cases?${params}`, { headers }),
+      fetch(`${proxy.baseUrl}/api/proxy/analytics/syndicates/stats?${statsParams}`, { headers }),
+    ]);
+    const casesPayload = await casesRes.json().catch(() => ({}));
+    const statsPayload = await statsRes.json().catch(() => ({}));
+    if (!casesRes.ok || casesPayload.error) throw new Error(casesPayload.error || `Case load failed (${casesRes.status})`);
+    integrityCaseState.cases = Array.isArray(casesPayload.cases) ? casesPayload.cases : [];
+    integrityCaseState.stats = statsRes.ok && !statsPayload.error ? statsPayload : null;
+    integrityCaseState.lastLoadedAt = Date.now();
+  } catch (err) {
+    integrityCaseState.error = err?.message || 'Integrity cases unavailable.';
+  } finally {
+    integrityCaseState.loading = false;
+    renderIntegrityCases();
+  }
+}
+
+async function createIntegrityCaseFromSyndicate(index) {
+  const details = syndicateIntelState.result?.syndicateDetails || syndicateIntelState.result?.syndicates || [];
+  const item = Array.isArray(details) ? details[index] : null;
+  const agentID = getSyndicateAgentId();
+  if (!item || !agentID || integrityCaseState.saving) return;
+  integrityCaseState.saving = true;
+  integrityCaseState.error = '';
+  renderIntegrityCases();
+  try {
+    const proxy = getZone2ProxyCredentials();
+    const headers = { 'Content-Type': 'application/json' };
+    const proxyApiKey = localStorage.getItem('proxyApiKey');
+    if (proxyApiKey) headers['X-API-Key'] = proxyApiKey;
+    const score = Number(item.riskScore || item.confidence || 0);
+    const res = await fetch(`${proxy.baseUrl}/api/proxy/integrity/cases`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        agentID,
+        syndicateId: item.id,
+        status: 'open',
+        priority: score >= 80 ? 'critical' : score >= 60 ? 'high' : 'medium',
+        title: `Syndicate: ${item.pattern || item.commonGame || item.id}`,
+        summary: `${item.members?.length || 0} bettors, ${money(Number(item.totalStake || 0))} stake, ${score || 0}% risk score`,
+        evidence: item,
+      }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || payload.error) throw new Error(payload.error || `Case create failed (${res.status})`);
+    await loadIntegrityCases(true);
+  } catch (err) {
+    integrityCaseState.error = err?.message || 'Case create failed.';
+  } finally {
+    integrityCaseState.saving = false;
+    renderIntegrityCases();
+  }
+}
+
+async function updateIntegrityCaseStatus(caseId, status) {
+  if (!caseId || integrityCaseState.saving) return;
+  integrityCaseState.saving = true;
+  integrityCaseState.error = '';
+  renderIntegrityCases();
+  try {
+    const proxy = getZone2ProxyCredentials();
+    const headers = { 'Content-Type': 'application/json' };
+    const proxyApiKey = localStorage.getItem('proxyApiKey');
+    if (proxyApiKey) headers['X-API-Key'] = proxyApiKey;
+    const reviewer = localStorage.getItem('agentId') || 'operator';
+    const res = await fetch(`${proxy.baseUrl}/api/proxy/integrity/cases/${encodeURIComponent(caseId)}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ status, reviewer, appendNote: `Status changed to ${status}` }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || payload.error) throw new Error(payload.error || `Case update failed (${res.status})`);
+    await loadIntegrityCases(true);
+  } catch (err) {
+    integrityCaseState.error = err?.message || 'Case update failed.';
+  } finally {
+    integrityCaseState.saving = false;
+    renderIntegrityCases();
+  }
+}
+
+function renderIntegrityCases() {
+  const content = document.getElementById('integrityCaseContent');
+  const status = document.getElementById('integrityCaseStatus');
+  const button = document.getElementById('integrityCaseRefreshBtn');
+  if (!content) return;
+
+  const state = integrityCaseState;
+  const stats = state.stats || {};
+  const caseStats = stats.cases || {};
+  const openCount = Number(caseStats.open || 0);
+  const escalatedCount = Number(caseStats.escalated || 0);
+  const scanCount = Number(stats.syndicates?.count || 0);
+  const loaded = state.lastLoadedAt ? new Date(state.lastLoadedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : 'not loaded';
+
+  if (status) {
+    status.textContent = state.error || (state.loading ? 'Loading integrity cases...' : `Last loaded ${loaded}`);
+    status.style.color = state.error ? 'var(--red)' : 'var(--text-dim)';
+  }
+  if (button) {
+    button.disabled = state.loading || state.saving;
+    button.textContent = state.loading ? 'Loading...' : state.saving ? 'Saving...' : 'Refresh';
+    button.style.opacity = state.loading || state.saving ? '0.65' : '1';
+  }
+
+  const cards = [
+    syndicateIntelCard('Open Cases', openCount, openCount > 0 ? 'var(--yellow)' : 'var(--text)'),
+    syndicateIntelCard('Escalated', escalatedCount, escalatedCount > 0 ? 'var(--red)' : 'var(--text)'),
+    syndicateIntelCard('Scan Clusters', scanCount, scanCount > 0 ? 'var(--accent)' : 'var(--text)'),
+  ].join('');
+
+  const cases = state.cases.length
+    ? state.cases.slice(0, 8).map(row => integrityCaseRow(row)).join('')
+    : `<div class="rounded border p-3 text-xs lg:col-span-2" style="background:var(--bg);border-color:var(--border);color:var(--text-dim);">No integrity cases for the selected status.</div>`;
+
+  content.innerHTML = `
+    <div class="grid grid-cols-3 gap-2">${cards}</div>
+    <div class="lg:col-span-2 grid grid-cols-1 xl:grid-cols-2 gap-2">${cases}</div>
+  `;
+}
+
+function integrityCaseRow(row) {
+  const priorityColor = row.priority === 'critical' ? 'var(--red)' : row.priority === 'high' ? 'var(--yellow)' : 'var(--text-dim)';
+  const statusColor = row.status === 'escalated' ? 'var(--red)' : row.status === 'closed' ? 'var(--green)' : row.status === 'false_positive' ? 'var(--text-dim)' : 'var(--yellow)';
+  const buttons = [
+    ['reviewing', 'Review'],
+    ['escalated', 'Escalate'],
+    ['closed', 'Close'],
+    ['false_positive', 'False +'],
+  ].filter(([status]) => status !== row.status).map(([status, label]) =>
+    `<button class="px-2 py-1 rounded text-[10px]" style="background:var(--panel);border:1px solid var(--border);color:var(--text-dim);" onclick="updateIntegrityCaseStatus('${escapeHtml(row.id)}','${status}')">${label}</button>`
+  ).join('');
+  return `<div class="rounded border p-2" style="background:var(--bg);border-color:var(--border);">
+    <div class="flex items-start justify-between gap-2">
+      <div>
+        <div class="text-xs font-semibold">${escapeHtml(row.title || row.id)}</div>
+        <div class="text-[10px] mt-1" style="color:var(--text-dim);">${escapeHtml(row.summary || '')}</div>
+      </div>
+      <div class="text-[10px] font-bold uppercase" style="color:${priorityColor};">${escapeHtml(row.priority || '')}</div>
+    </div>
+    <div class="flex flex-wrap items-center gap-2 mt-2">
+      <span class="px-1.5 py-0.5 rounded text-[10px] uppercase" style="background:${statusColor}22;color:${statusColor};">${escapeHtml(row.status || '')}</span>
+      <span class="text-[10px]" style="color:var(--text-dim);">${escapeHtml(row.syndicateId || 'manual')}</span>
+    </div>
+    <div class="flex flex-wrap gap-1 mt-2">${buttons}</div>
+  </div>`;
+}
+
+function syndicateIntelCard(label, value, color) {
+  return `<div class="rounded p-2" style="background:var(--bg);border:1px solid var(--border);">
+    <div class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);">${escapeHtml(label)}</div>
+    <div class="text-lg font-bold font-mono" style="color:${color};">${escapeHtml(value)}</div>
+  </div>`;
 }
 
 function renderPatternCatalogPanel() {
@@ -2323,6 +2909,19 @@ let matrixState = {
   showConsensus: true,
   expandedGame: null,
 };
+let zone1TaxonomyState = {
+  sports: [],
+  leagues: [],
+  games: [],
+  lines: [],
+  selectedSport: '',
+  selectedLeague: '',
+  selectedGame: '',
+  loading: '',
+  error: '',
+  source: '',
+  lastLoadedAt: 0,
+};
 
 const DEFAULT_BOOK_ORDER = ['PIN','BOL','BOV','BUC','ACE','MET','DK','FD','MGM','CZR','PB','BR','BS','SBO','STK','NIT'];
 const ALL_SPORTS = ['all','NBA','NCAAB','MLB','NHL','NFL','Soccer'];
@@ -2371,6 +2970,250 @@ async function loadOddsData(force = false) {
     console.error('Failed to load odds:', err?.message || err, '| URL:', url);
     renderDemoOddsMatrix();
   }
+}
+
+async function loadZone1Taxonomy(force = false) {
+  const panel = document.getElementById('zone1TaxonomyPanel');
+  if (!panel) return;
+  if (!force && zone1TaxonomyState.sports.length && Date.now() - zone1TaxonomyState.lastLoadedAt < 300000) {
+    renderZone1Taxonomy();
+    return;
+  }
+  zone1TaxonomyState.loading = 'sports';
+  zone1TaxonomyState.error = '';
+  renderZone1Taxonomy();
+  try {
+    const payload = await fetchZone1Taxonomy('sports');
+    zone1TaxonomyState.sports = Array.isArray(payload.data) ? payload.data : [];
+    zone1TaxonomyState.source = payload.source || '';
+    zone1TaxonomyState.lastLoadedAt = Date.now();
+  } catch (err) {
+    zone1TaxonomyState.sports = ALL_SPORTS
+      .filter(sport => sport !== 'all')
+      .map(sport => ({ id: sport, code: sport, name: sport }));
+    zone1TaxonomyState.source = 'local';
+    zone1TaxonomyState.lastLoadedAt = Date.now();
+    zone1TaxonomyState.error = err?.message || 'Live taxonomy unavailable; showing local sports.';
+  } finally {
+    zone1TaxonomyState.loading = '';
+    renderZone1Taxonomy();
+  }
+}
+
+async function fetchZone1Taxonomy(level, params = {}) {
+  const proxy = getZone2ProxyCredentials();
+  if (!proxy.token || !proxy.cf) {
+    throw new Error('Add buckeye_token and cf_clearance in Settings/localStorage to load Buckeye taxonomy.');
+  }
+  const headers = { 'Content-Type': 'application/json' };
+  const proxyApiKey = localStorage.getItem('proxyApiKey');
+  if (proxyApiKey) headers['X-API-Key'] = proxyApiKey;
+  const agentID = localStorage.getItem('agentId') || params.customerID || '';
+  const res = await fetch(`${proxy.baseUrl}/api/proxy/taxonomy/${level}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      token: proxy.token,
+      cf_clearance: proxy.cf,
+      __cf_bm: proxy.cfBm,
+      customerID: agentID,
+      agentID,
+      ...params,
+    }),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok || payload.error) throw new Error(payload.error || `Taxonomy ${level} failed (${res.status})`);
+  return payload;
+}
+
+function renderZone1Taxonomy() {
+  const panel = document.getElementById('zone1TaxonomyPanel');
+  if (!panel) return;
+  const state = zone1TaxonomyState;
+  const selectedSport = state.sports.find(s => zone1TaxonomyKey(s) === state.selectedSport);
+  const selectedLeague = state.leagues.find(l => zone1TaxonomyKey(l) === state.selectedLeague);
+  const selectedGame = state.games.find(g => zone1TaxonomyKey(g) === state.selectedGame);
+  const status = state.error
+    ? `<span style="color:var(--red);">${escapeHtml(state.error)}</span>`
+    : state.loading
+      ? `Loading ${escapeHtml(state.loading)}...`
+      : state.lastLoadedAt
+        ? `${state.source || 'taxonomy'} · ${new Date(state.lastLoadedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`
+        : 'Ready';
+
+  panel.innerHTML = `
+    <div class="rounded-lg border overflow-hidden" style="background:var(--panel);border-color:var(--border);">
+      <div class="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b" style="border-color:var(--border);">
+        <div>
+          <div class="text-xs font-bold uppercase tracking-wider" style="color:var(--accent);">Zone 1 Taxonomy</div>
+          <div class="text-[11px]" style="color:var(--text-dim);">${status}</div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2 text-[11px]" style="color:var(--text-dim);">
+          <span>${state.sports.length} sports</span>
+          <span>${state.leagues.length} leagues</span>
+          <span>${state.games.length} games</span>
+          <span>${state.lines.length} lines</span>
+          <button type="button" class="px-2 py-1 rounded" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" onclick="loadZone1Taxonomy(true)">Refresh</button>
+        </div>
+      </div>
+      <div class="grid gap-2 p-3" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));">
+        ${zone1TaxonomyColumn('Sports', state.sports, state.selectedSport, 'selectZone1Sport', 'No sports loaded')}
+        ${zone1TaxonomyColumn(selectedSport ? `Leagues · ${selectedSport.code || selectedSport.name || state.selectedSport}` : 'Leagues', state.leagues, state.selectedLeague, 'selectZone1League', selectedSport ? 'No leagues returned' : 'Pick a sport')}
+        ${zone1TaxonomyColumn(selectedLeague ? `Games · ${selectedLeague.code || selectedLeague.name || state.selectedLeague}` : 'Games', state.games, state.selectedGame, 'selectZone1Game', selectedLeague ? 'No games returned' : 'Pick a league')}
+        ${zone1LinesColumn(selectedGame)}
+      </div>
+    </div>
+  `;
+}
+
+function zone1TaxonomyColumn(title, rows, selectedKey, action, emptyText) {
+  const body = rows.length
+    ? rows.slice(0, 30).map(row => {
+      const key = zone1TaxonomyKey(row);
+      const label = zone1TaxonomyLabel(row);
+      const sub = zone1TaxonomySubLabel(row);
+      const active = key === selectedKey;
+      return `<button type="button" class="w-full text-left px-2 py-1.5 rounded mb-1" style="background:${active ? 'rgba(245,158,11,0.14)' : 'var(--bg)'};border:1px solid ${active ? 'var(--accent)' : 'var(--border)'};color:var(--text);" onclick="${action}('${escapeJs(key)}')">
+        <span class="block text-xs font-semibold">${escapeHtml(label)}</span>
+        ${sub ? `<span class="block text-[10px]" style="color:var(--text-dim);">${escapeHtml(sub)}</span>` : ''}
+      </button>`;
+    }).join('')
+    : `<div class="px-2 py-4 text-center text-xs" style="color:var(--text-dim);">${escapeHtml(emptyText)}</div>`;
+  return `<div>
+    <div class="text-[10px] uppercase tracking-wider mb-2" style="color:var(--text-dim);">${escapeHtml(title)}</div>
+    <div style="max-height:220px;overflow:auto;">${body}</div>
+  </div>`;
+}
+
+function zone1LinesColumn(game) {
+  const lines = zone1TaxonomyState.lines || [];
+  const title = game ? `Lines · ${zone1GameLabel(game)}` : 'Lines';
+  if (!game) {
+    return `<div><div class="text-[10px] uppercase tracking-wider mb-2" style="color:var(--text-dim);">${title}</div><div class="px-2 py-4 text-center text-xs" style="color:var(--text-dim);">Pick a game</div></div>`;
+  }
+  const body = lines.length
+    ? lines.slice(0, 40).map(line => {
+      const type = line.type || line.wagerTypeName || 'LINE';
+      const side = line.side ? `${line.side} ` : '';
+      const price = Number(line.odds || line.moneyline || 0);
+      const priceText = price ? `${price > 0 ? '+' : ''}${price}` : '—';
+      const value = line.line ?? line.points ?? line.spread ?? line.moneyline ?? '—';
+      return `<div class="grid gap-2 px-2 py-1.5 border-b text-xs" style="grid-template-columns:72px 1fr 56px;border-color:var(--border);">
+        <span style="color:var(--accent);">${escapeHtml(type)}</span>
+        <span>${escapeHtml(side)}${escapeHtml(value)}</span>
+        <span class="font-mono text-right">${escapeHtml(priceText)}</span>
+      </div>`;
+    }).join('')
+    : `<div class="px-2 py-4 text-center text-xs" style="color:var(--text-dim);">No lines returned</div>`;
+  return `<div>
+    <div class="text-[10px] uppercase tracking-wider mb-2" style="color:var(--text-dim);">${escapeHtml(title)}</div>
+    <div style="max-height:220px;overflow:auto;background:var(--bg);border:1px solid var(--border);border-radius:6px;">${body}</div>
+  </div>`;
+}
+
+function zone1TaxonomyKey(row) {
+  return String(row?.code || row?.id || row?.name || '').trim();
+}
+
+function zone1TaxonomyLabel(row) {
+  if (!row) return '';
+  if (row.away || row.home) return zone1GameLabel(row);
+  return String(row.name || row.code || row.id || '').trim();
+}
+
+function zone1TaxonomySubLabel(row) {
+  if (!row) return '';
+  if (row.away || row.home) {
+    const status = row.status ? `${row.status} · ` : '';
+    return `${status}${row.datetime ? formatShortDateTime(row.datetime) : ''}`;
+  }
+  return [row.code, row.region, row.season, row.sport].filter(Boolean).join(' · ');
+}
+
+function zone1GameLabel(game) {
+  const away = game?.away?.team || game?.away || 'Away';
+  const home = game?.home?.team || game?.home || 'Home';
+  return `${away} @ ${home}`;
+}
+
+async function selectZone1Sport(sportKey) {
+  zone1TaxonomyState.selectedSport = sportKey;
+  zone1TaxonomyState.selectedLeague = '';
+  zone1TaxonomyState.selectedGame = '';
+  zone1TaxonomyState.leagues = [];
+  zone1TaxonomyState.games = [];
+  zone1TaxonomyState.lines = [];
+  zone1TaxonomyState.error = '';
+  syncZone1SportFilter(sportKey);
+  zone1TaxonomyState.loading = 'leagues';
+  renderZone1Taxonomy();
+  try {
+    const payload = await fetchZone1Taxonomy('leagues', { sport: sportKey });
+    zone1TaxonomyState.leagues = Array.isArray(payload.data) ? payload.data : [];
+  } catch (err) {
+    zone1TaxonomyState.error = err?.message || 'Unable to load leagues.';
+  } finally {
+    zone1TaxonomyState.loading = '';
+    renderZone1Taxonomy();
+  }
+}
+
+async function selectZone1League(leagueKey) {
+  zone1TaxonomyState.selectedLeague = leagueKey;
+  zone1TaxonomyState.selectedGame = '';
+  zone1TaxonomyState.games = [];
+  zone1TaxonomyState.lines = [];
+  zone1TaxonomyState.error = '';
+  zone1TaxonomyState.loading = 'schedule';
+  renderZone1Taxonomy();
+  try {
+    const payload = await fetchZone1Taxonomy('schedule', { sport: zone1TaxonomyState.selectedSport, league: leagueKey });
+    zone1TaxonomyState.games = Array.isArray(payload.data) ? payload.data : [];
+  } catch (err) {
+    zone1TaxonomyState.error = err?.message || 'Unable to load schedule.';
+  } finally {
+    zone1TaxonomyState.loading = '';
+    renderZone1Taxonomy();
+  }
+}
+
+async function selectZone1Game(gameKey) {
+  zone1TaxonomyState.selectedGame = gameKey;
+  zone1TaxonomyState.lines = [];
+  zone1TaxonomyState.error = '';
+  zone1TaxonomyState.loading = 'lines';
+  renderZone1Taxonomy();
+  try {
+    const payload = await fetchZone1Taxonomy('lines', {
+      sport: zone1TaxonomyState.selectedSport,
+      league: zone1TaxonomyState.selectedLeague,
+      gameId: gameKey,
+    });
+    zone1TaxonomyState.lines = Array.isArray(payload.data) ? payload.data : [];
+    const game = zone1TaxonomyState.games.find(g => zone1TaxonomyKey(g) === gameKey);
+    if (game) {
+      window.dispatchEvent(new CustomEvent('buckeye:focus', { detail: { game, source: 'taxonomy' } }));
+    }
+  } catch (err) {
+    zone1TaxonomyState.error = err?.message || 'Unable to load lines.';
+  } finally {
+    zone1TaxonomyState.loading = '';
+    renderZone1Taxonomy();
+  }
+}
+
+function syncZone1SportFilter(sportKey) {
+  const normalized = ALL_SPORTS.includes(sportKey) ? sportKey : ALL_SPORTS.find(s => s.toLowerCase() === String(sportKey).toLowerCase());
+  if (!normalized) return;
+  matrixState.sport = normalized;
+  document.querySelectorAll('.sport-tab').forEach(btn => {
+    const isActive = btn.dataset.sport === normalized;
+    btn.classList.toggle('active', isActive);
+    btn.style.background = isActive ? 'var(--accent)' : 'var(--panel)';
+    btn.style.color = isActive ? '#fff' : 'var(--text-dim)';
+    btn.style.border = isActive ? 'none' : '1px solid var(--border)';
+  });
+  loadOddsData(true);
 }
 
 function renderDemoOddsMatrix() {
@@ -3706,9 +4549,11 @@ async function loadStatusPage(force = false) {
   const dataFlowEl = document.getElementById('statusDataFlowStrip');
   const issuesEl = document.getElementById('statusIssuesList');
   const issuesSummaryEl = document.getElementById('statusIssuesSummary');
+  const rollupEl = document.getElementById('statusHealthRollup');
   if (!summary || !agentsEl || !booksEl || !countersEl || !queueEl || !issuesEl) return;
 
   summary.innerHTML = statusLoadingCards();
+  if (rollupEl) rollupEl.innerHTML = renderSystemStatusBadge('warning', 'Checking');
   if (dataFlowEl) dataFlowEl.innerHTML = statusLoadingRow('Checking data flows...');
   issuesEl.innerHTML = statusLoadingRow('Checking recent failures...');
   if (issuesSummaryEl) issuesSummaryEl.textContent = 'Checking...';
@@ -3745,6 +4590,10 @@ async function loadStatusPage(force = false) {
     const systemIssues = system?.issues || [];
     const criticalIssues = Number(system?.summary?.critical || 0);
     const warningIssues = Number(system?.summary?.warning || 0);
+    const enhancedProxyHealth = system?.enhancedProxyHealth || system?.proxyHealth || 'unknown';
+    const patternRiskStatus = system?.patternRiskStatus || system?.riskStatus || 'unknown';
+    const criticalPatternRiskByType = system?.criticalPatternRiskByType || system?.riskBreakdown || {};
+    const patternRiskExpiresAt = system?.patternRiskExpiresAt || system?.riskStatusExpiresAt || null;
     const player360Poll = player360?.freshness?.watermarks?.player360;
     const player360PollValue = player360Poll?.value || {};
     const coldBackfillLabel = player360PollValue.coldBackfillPlayers != null
@@ -3757,8 +4606,21 @@ async function loadStatusPage(force = false) {
       statusCard('Books', `${onlineBooks}/${Array.isArray(books) ? books.length : 0}`, 'online', onlineBooks > 0 ? 'var(--green)' : 'var(--yellow)'),
       statusCard('Patterns', String(patterns.total || 0), `${criticalPatterns} critical`, criticalPatterns > 0 ? 'var(--red)' : 'var(--green)'),
       statusCard('Player 360', player360 ? 'Mapped' : 'Issue', player360 ? `${player360.coverage?.missingSourceCount || 0} missing/probe gaps` : `${player360Id} unavailable`, player360 ? 'var(--green)' : 'var(--red)'),
+      statusCard('Proxy', enhancedProxyHealth.toUpperCase(), `${system?.details?.enhancedProxy?.ready || system?.details?.proxyReady ? 'ready' : 'readiness gated'}`, enhancedProxyHealth === 'ok' ? 'var(--green)' : enhancedProxyHealth === 'critical' ? 'var(--red)' : 'var(--yellow)'),
       statusCard('System Issues', String(systemIssues.length), `${criticalIssues} critical / ${warningIssues} warning`, criticalIssues > 0 ? 'var(--red)' : warningIssues > 0 ? 'var(--yellow)' : 'var(--green)'),
     ].join('');
+
+    if (rollupEl) {
+      rollupEl.innerHTML = [
+        renderSystemStatusBadge(system?.status || (statusOk ? 'ok' : 'critical'), 'Overall', {
+          details: system ? `${system.operationalStatus || 'ok'} ops / ${patternRiskStatus} pattern risk` : 'System rollup unavailable',
+          criticalPatternRiskByType,
+        }),
+        renderSystemStatusBadge(system?.operationalStatus || (statusOk ? 'ok' : 'critical'), 'Ops', {
+          details: `Enhanced proxy: ${enhancedProxyHealth}`,
+        }),
+      ].join('');
+    }
 
     if (dataFlowEl) {
       dataFlowEl.innerHTML = renderStatusDataFlowStrip(system?.dataFlows || {});
@@ -3788,6 +4650,10 @@ async function loadStatusPage(force = false) {
       ...(system ? [
         statusKeyValue('Raw API failures 24h', `${system.summary?.rawApiFailures24h || 0}/${system.summary?.rawApiCalls24h || 0}`),
         statusKeyValue('Player source errors', `${system.summary?.playerSourceErrors || 0}/${system.summary?.playerSourcesTracked || 0}`),
+        statusKeyValue('Enhanced proxy', enhancedProxyHealth),
+        statusKeyValue('Pattern risk', patternRiskStatus),
+        statusKeyValue('Pattern risk auto-expiry', patternRiskExpiresAt ? formatShortDateTime(patternRiskExpiresAt) : 'none'),
+        statusKeyValue('Stale odds books', system.summary?.staleOddsBooks || 0),
       ] : []),
       statusKeyValue('WebSocket', wsClient?.isConnected ? 'connected' : 'offline'),
       ...(player360 ? [
@@ -3822,6 +4688,7 @@ async function loadStatusPage(force = false) {
     updateStatusBadge(statusOk, activeAgents, criticalPatterns);
   } catch (error) {
     summary.innerHTML = statusCard('Backend', 'Offline', error instanceof Error ? error.message : 'Status unavailable', 'var(--red)');
+    if (rollupEl) rollupEl.innerHTML = renderSystemStatusBadge('critical', 'Offline');
     if (dataFlowEl) dataFlowEl.innerHTML = '';
     issuesEl.innerHTML = '<div style="color:var(--red);">Could not load system issues.</div>';
     if (issuesSummaryEl) issuesSummaryEl.textContent = 'Unavailable';
@@ -3853,6 +4720,33 @@ function statusCard(label, value, subtext, color) {
     <div class="text-xl font-bold mt-1" style="color:${color};">${escapeHtml(value)}</div>
     <div class="text-xs mt-1" style="color:var(--text-dim);">${escapeHtml(subtext || '')}</div>
   </div>`;
+}
+
+function renderSystemStatusBadge(status, title = 'Status', options = {}) {
+  const normalized = normalizeStatusLevel(status);
+  const config = {
+    ok: { label: 'Operational', color: 'var(--green)' },
+    warning: { label: 'Degraded', color: 'var(--yellow)' },
+    degraded: { label: 'Degraded', color: 'var(--yellow)' },
+    critical: { label: 'Critical', color: 'var(--red)' },
+  }[normalized];
+  const criticalPatternRiskByType = options.criticalPatternRiskByType || options.riskBreakdown || {};
+  const riskTotal = Object.values(criticalPatternRiskByType).reduce((sum, count) => sum + Number(count || 0), 0);
+  const detailTitle = options.details || title;
+  const riskTitle = Object.keys(criticalPatternRiskByType).length ? JSON.stringify(criticalPatternRiskByType, null, 2) : '';
+  return `<span class="inline-flex items-center gap-2" title="${escapeHtml(detailTitle)}">
+    <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full font-semibold" style="background:${config.color}22;color:${config.color};">
+      <span class="w-1.5 h-1.5 rounded-full" style="background:${config.color};"></span>
+      ${escapeHtml(title)}: ${escapeHtml(config.label)}
+    </span>
+    ${riskTotal > 0 ? `<span class="font-mono" style="color:var(--red);" title="${escapeHtml(riskTitle)}">${riskTotal} active risks</span>` : ''}
+  </span>`;
+}
+
+function normalizeStatusLevel(status) {
+  const value = String(status || '').toLowerCase();
+  if (value === 'ok' || value === 'warning' || value === 'degraded' || value === 'critical') return value;
+  return 'warning';
 }
 
 function renderStatusDataFlowStrip(dataFlows) {
@@ -4981,6 +5875,25 @@ let agentPatternSortEnabled = false;
 let previousSection = 'floor';
 let agentDownlineRequestId = 0;
 let agentTreeStatusMessage = 'No agent hierarchy loaded yet. Refresh after connecting or use Downline data.';
+let zone2PerformanceState = {
+  selectedAgent: '',
+  view: 'weekly',
+  start: '',
+  end: '',
+  rows: [],
+  totals: { bets: 0, wager: 0, win: 0, loss: 0, net: 0, commission: 0 },
+  source: '',
+  loading: false,
+};
+let zone2PanelTab = 'performance';
+let zone2BillingState = {
+  week: '0',
+  figures: [],
+  totals: { gross: 0, net: 0, wagers: 0, wins: 0, losses: 0, pending: 0, playersActive: 0 },
+  period: '',
+  source: '',
+  loading: false,
+};
 
 function setAgentTreeLoading(isLoading, message = 'Loading agent hierarchy...') {
   agentTreeStatusMessage = message;
@@ -5342,7 +6255,10 @@ function renderAgentTree(nodes, parentElement, depth = 0, budget) {
       <td class="px-3 py-2 text-center" data-agent-field="alerts">${alertBadge || '—'}</td>
       <td class="px-3 py-2 text-center" data-agent-field="patterns">${patternBadge}</td>
       <td class="px-3 py-2 text-center">
-        <button type="button" class="px-2 py-1 rounded text-xs" style="background:var(--accent);color:#fff;" data-action="filter-agent" data-agent="${agentAttr}">Wagers</button>
+        <div class="flex items-center justify-center gap-1">
+          <button type="button" class="px-2 py-1 rounded text-xs" style="background:var(--accent);color:#fff;" data-action="load-agent-performance" data-agent="${agentAttr}">Perf</button>
+          <button type="button" class="px-2 py-1 rounded text-xs" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" data-action="filter-agent" data-agent="${agentAttr}">Wagers</button>
+        </div>
       </td>
     `;
     tbody.appendChild(row);
@@ -5414,6 +6330,8 @@ function handleAgentDownlineClick(event) {
 
   if (actionTarget.dataset.action === 'toggle-agent') {
     toggleAgentExpand(actionTarget.dataset.agent);
+  } else if (actionTarget.dataset.action === 'load-agent-performance') {
+    selectZone2AgentPerformance(actionTarget.dataset.agent);
   } else if (actionTarget.dataset.action === 'filter-agent') {
     filterTickerByAgent(actionTarget.dataset.agent);
   } else if (actionTarget.dataset.action === 'filter-agent-patterns') {
@@ -5433,6 +6351,425 @@ function openPatternsForAgent(agent) {
   patternCategory = 'all';
   sectionCache.patterns.at = 0;
   loadPatterns(true);
+}
+
+function setZone2PanelTab(tab) {
+  zone2PanelTab = tab === 'billing' ? 'billing' : 'performance';
+  const isBilling = zone2PanelTab === 'billing';
+  const performanceContent = document.getElementById('zone2PerformanceContent');
+  const billingContent = document.getElementById('zone2BillingContent');
+  const performanceControls = document.getElementById('zone2PerformanceControls');
+  const billingControls = document.getElementById('zone2BillingControls');
+  const performanceTab = document.getElementById('zone2PerformanceTab');
+  const billingTab = document.getElementById('zone2BillingTab');
+
+  performanceContent?.classList.toggle('hidden', isBilling);
+  billingContent?.classList.toggle('hidden', !isBilling);
+  performanceControls?.classList.toggle('hidden', isBilling);
+  billingControls?.classList.toggle('hidden', !isBilling);
+  billingControls?.classList.toggle('flex', isBilling);
+
+  if (performanceTab) {
+    performanceTab.style.background = isBilling ? 'var(--bg)' : 'var(--accent)';
+    performanceTab.style.border = isBilling ? '1px solid var(--border)' : 'none';
+    performanceTab.style.color = isBilling ? 'var(--text-dim)' : '#fff';
+  }
+  if (billingTab) {
+    billingTab.style.background = isBilling ? 'var(--accent)' : 'var(--bg)';
+    billingTab.style.border = isBilling ? 'none' : '1px solid var(--border)';
+    billingTab.style.color = isBilling ? '#fff' : 'var(--text-dim)';
+  }
+
+  if (isBilling) {
+    const weekEl = document.getElementById('zone2BillingWeek');
+    if (weekEl) weekEl.value = zone2BillingState.week || '0';
+    renderZone2Billing();
+    if (!zone2BillingState.loading && zone2BillingState.figures.length === 0) loadZone2Billing(false);
+  } else {
+    renderZone2Performance();
+  }
+}
+
+function initializeZone2PerformanceDates() {
+  const end = new Date();
+  const start = new Date(Date.now() - 27 * 86400000);
+  if (!zone2PerformanceState.end) zone2PerformanceState.end = end.toISOString().split('T')[0];
+  if (!zone2PerformanceState.start) zone2PerformanceState.start = start.toISOString().split('T')[0];
+  const startEl = document.getElementById('zone2StartDate');
+  const endEl = document.getElementById('zone2EndDate');
+  const viewEl = document.getElementById('zone2PerformanceView');
+  if (startEl && !startEl.value) startEl.value = zone2PerformanceState.start;
+  if (endEl && !endEl.value) endEl.value = zone2PerformanceState.end;
+  if (viewEl) viewEl.value = zone2PerformanceState.view || 'weekly';
+}
+
+function selectZone2AgentPerformance(agent) {
+  if (!agent) return;
+  zone2PerformanceState.selectedAgent = agent;
+  initializeZone2PerformanceDates();
+  setText('zone2PerformanceStatus', `Loading ${agent} performance...`);
+  loadZone2AgentPerformance(true);
+}
+
+function getZone2InputState() {
+  initializeZone2PerformanceDates();
+  const view = document.getElementById('zone2PerformanceView')?.value || zone2PerformanceState.view || 'weekly';
+  const start = document.getElementById('zone2StartDate')?.value || zone2PerformanceState.start;
+  const end = document.getElementById('zone2EndDate')?.value || zone2PerformanceState.end;
+  zone2PerformanceState.view = view;
+  zone2PerformanceState.start = start;
+  zone2PerformanceState.end = end;
+  return { view, start, end };
+}
+
+function getZone2ProxyCredentials() {
+  return {
+    token: localStorage.getItem('buckeye_token') || localStorage.getItem('buckeyeToken') || '',
+    cf: localStorage.getItem('cf_clearance') || '',
+    cfBm: localStorage.getItem('__cf_bm') || '',
+    baseUrl: localStorage.getItem('proxyBaseUrl') || 'http://localhost:3001',
+  };
+}
+
+async function loadZone2AgentPerformance(force = false) {
+  const agent = zone2PerformanceState.selectedAgent;
+  const { view, start, end } = getZone2InputState();
+  if (!agent) {
+    showToast('Select an agent from the downline first.', 'info');
+    renderZone2Performance();
+    return;
+  }
+  if (zone2PerformanceState.loading && !force) return;
+
+  zone2PerformanceState.loading = true;
+  renderZone2Performance();
+  try {
+    const report = await fetchZone2AgentPerformance(agent, start, end, view);
+    zone2PerformanceState.rows = report.data || [];
+    zone2PerformanceState.totals = report.totals || zone2TotalsFromRows(report.data || []);
+    zone2PerformanceState.source = report.source || 'performance';
+    setText('zone2PerformanceStatus', `${agent} ${view} report loaded from ${zone2PerformanceState.source}.`);
+  } catch (err) {
+    zone2PerformanceState.rows = [];
+    zone2PerformanceState.totals = zone2TotalsFromRows([]);
+    zone2PerformanceState.source = '';
+    setText('zone2PerformanceStatus', err instanceof Error ? err.message : 'Unable to load performance.');
+  } finally {
+    zone2PerformanceState.loading = false;
+    renderZone2Performance();
+  }
+}
+
+async function fetchZone2AgentPerformance(agent, start, end, view) {
+  const proxy = getZone2ProxyCredentials();
+  if (proxy.token && proxy.cf) {
+    try {
+      const res = await fetch(`${proxy.baseUrl}/api/proxy/agent/performance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: proxy.token,
+          cf_clearance: proxy.cf,
+          __cf_bm: proxy.cfBm,
+          agentID: agent,
+          startDate: start,
+          endDate: end,
+          view,
+        }),
+      });
+      if (!res.ok) throw new Error(`proxy ${res.status}`);
+      const payload = await res.json();
+      return { ...normalizeZone2Report(payload, view, start, end), source: 'proxy-enhanced' };
+    } catch (err) {
+      console.warn('[Zone2] Proxy performance unavailable, falling back to backend:', err?.message || err);
+    }
+  }
+
+  try {
+    const masterAgent = localStorage.getItem('agentId') || agent;
+    const url = new URL(`${getApiBaseUrl()}/api/buckeye/agent-performance`);
+    url.searchParams.set('agentId', masterAgent);
+    url.searchParams.set('reportAgentId', agent);
+    url.searchParams.set('start', start);
+    url.searchParams.set('end', end);
+    url.searchParams.set('type', 'CP');
+    const res = await fetch(url.toString());
+    if (!res.ok) throw new Error(`backend live ${res.status}`);
+    const payload = await res.json();
+    const normalized = normalizeZone2Report(payload, view, start, end);
+    if ((normalized.data || []).length > 0) return { ...normalized, source: 'backend Buckeye session' };
+  } catch (err) {
+    console.warn('[Zone2] Backend live performance unavailable, using archive:', err?.message || err);
+  }
+
+  const archiveRes = await fetch(`${getApiBaseUrl()}/api/performance/details?agent=${encodeURIComponent(agent)}&weeks=12`);
+  if (!archiveRes.ok) throw new Error(`Archived performance request failed: ${archiveRes.status}`);
+  const archivePayload = await archiveRes.json();
+  return { ...normalizeZone2ArchiveReport(archivePayload, view, start, end), source: 'local archive' };
+}
+
+function normalizeZone2Report(payload, view, start, end) {
+  if (Array.isArray(payload?.data)) {
+    return {
+      period: payload.period || view,
+      data: payload.data.map(zone2NormalizeRow),
+      totals: zone2NormalizeTotals(payload.totals),
+    };
+  }
+  const totals = payload?.parsed?.totals || payload?.totals || {};
+  const row = {
+    date: `${start} - ${end}`,
+    bets: Number(totals.wagerCount || totals.bets || 0),
+    wager: Number(totals.volume || totals.wager || totals.risk || 0),
+    win: Number(totals.amountWon || totals.win || 0),
+    loss: Number(totals.amountLost || totals.loss || 0),
+    net: Number(totals.net || 0),
+    commission: Number(totals.commission || 0),
+  };
+  return { period: view, data: row.bets || row.wager || row.net ? [row] : [], totals: zone2TotalsFromRows([row]) };
+}
+
+function normalizeZone2ArchiveReport(payload, view, start, end) {
+  const trend = Array.isArray(payload?.weeklyTrend) ? payload.weeklyTrend : [];
+  const rows = trend.map(row => ({
+    date: row.week_start_date || row.week || `${start} - ${end}`,
+    bets: Number(row.row_count || row.wager_count || 0),
+    wager: Number(row.handle || row.volume || 0),
+    win: Number(row.amount_won || 0),
+    loss: Number(row.amount_lost || 0),
+    net: Number(row.win_loss || row.net || 0),
+    commission: Number(row.commission || 0),
+  }));
+  return { period: view, data: rows, totals: zone2TotalsFromRows(rows) };
+}
+
+function zone2NormalizeRow(row) {
+  return {
+    date: row.date || row.startDate || '-',
+    bets: Number(row.bets || row.wagerCount || 0),
+    wager: Number(row.wager || row.volume || row.risk || 0),
+    win: Number(row.win || row.amountWon || 0),
+    loss: Number(row.loss || row.amountLost || 0),
+    net: Number(row.net || row.netProfit || 0),
+    commission: Number(row.commission || 0),
+  };
+}
+
+function zone2NormalizeTotals(totals) {
+  if (!totals) return zone2TotalsFromRows([]);
+  return {
+    bets: Number(totals.bets || totals.wagerCount || 0),
+    wager: Number(totals.wager || totals.volume || totals.risk || 0),
+    win: Number(totals.win || totals.amountWon || 0),
+    loss: Number(totals.loss || totals.amountLost || 0),
+    net: Number(totals.net || totals.netProfit || 0),
+    commission: Number(totals.commission || 0),
+  };
+}
+
+function zone2TotalsFromRows(rows) {
+  return (rows || []).reduce((acc, row) => {
+    acc.bets += Number(row.bets || 0);
+    acc.wager += Number(row.wager || 0);
+    acc.win += Number(row.win || 0);
+    acc.loss += Number(row.loss || 0);
+    acc.net += Number(row.net || 0);
+    acc.commission += Number(row.commission || 0);
+    return acc;
+  }, { bets: 0, wager: 0, win: 0, loss: 0, net: 0, commission: 0 });
+}
+
+function getZone2BillingAgent() {
+  return localStorage.getItem('agentId')
+    || localStorage.getItem('customerID')
+    || localStorage.getItem('buckeye_customer_id')
+    || zone2PerformanceState.selectedAgent
+    || agentTreeFlat?.[0]?.agent
+    || '';
+}
+
+async function loadZone2Billing(force = false) {
+  const weekEl = document.getElementById('zone2BillingWeek');
+  const week = weekEl?.value || zone2BillingState.week || '0';
+  zone2BillingState.week = week;
+  if (zone2BillingState.loading && !force) return;
+
+  const agentID = getZone2BillingAgent();
+  if (!agentID) {
+    setText('zone2PerformanceStatus', 'Connect or select a master agent before loading billing.');
+    renderZone2Billing();
+    return;
+  }
+
+  const proxy = getZone2ProxyCredentials();
+  if (!proxy.token || !proxy.cf) {
+    setText('zone2PerformanceStatus', 'Buckeye token and cf_clearance are required for live billing.');
+    renderZone2Billing();
+    return;
+  }
+
+  zone2BillingState.loading = true;
+  renderZone2Billing();
+  try {
+    const res = await fetch(`${proxy.baseUrl}/api/proxy/agentBilling`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token: proxy.token,
+        cf_clearance: proxy.cf,
+        __cf_bm: proxy.cfBm,
+        agentID,
+        week,
+      }),
+    });
+    if (!res.ok) throw new Error(`Billing proxy failed: ${res.status}`);
+    const payload = await res.json();
+    const report = normalizeZone2Billing(payload);
+    zone2BillingState.figures = report.figures;
+    zone2BillingState.totals = report.totals;
+    zone2BillingState.period = report.period;
+    zone2BillingState.source = payload.endpoint || 'getAgentBilling';
+    setText('zone2PerformanceStatus', `${agentID} billing loaded from ${zone2BillingState.source}.`);
+  } catch (err) {
+    zone2BillingState.figures = [];
+    zone2BillingState.totals = zone2BillingTotals([]);
+    zone2BillingState.period = '';
+    zone2BillingState.source = '';
+    setText('zone2PerformanceStatus', err instanceof Error ? err.message : 'Unable to load billing.');
+  } finally {
+    zone2BillingState.loading = false;
+    renderZone2Billing();
+  }
+}
+
+function normalizeZone2Billing(payload) {
+  const data = payload?.data || payload || {};
+  const rawFigures = Array.isArray(data.figures) ? data.figures
+    : Array.isArray(data.agents) ? data.agents
+      : Array.isArray(data.LIST) ? data.LIST
+        : Array.isArray(data.data) ? data.data
+          : [];
+  const figures = rawFigures.map(zone2NormalizeBillingFigure).filter(fig => fig.agent || fig.name);
+  return {
+    period: data.period || data.week || '',
+    figures,
+    totals: zone2BillingTotals(figures),
+  };
+}
+
+function zone2NormalizeBillingFigure(row) {
+  return {
+    agent: row.agent || row.Agent || row.AgentID || '',
+    name: row.name || row.Name || row.agentName || row.AgentName || row.agent || row.Agent || '',
+    gross: Number(row.gross ?? row.Gross ?? 0),
+    net: Number(row.net ?? row.Net ?? 0),
+    hold: Number(row.hold ?? row.HoldPercent ?? row.Hold ?? 0),
+    commission: Number(row.commission ?? row.Commission ?? 0),
+    wagers: Number(row.wagers ?? row.Wagers ?? row.wagerCount ?? 0),
+    wins: Number(row.wins ?? row.Wins ?? 0),
+    losses: Number(row.losses ?? row.Losses ?? 0),
+    pending: Number(row.pending ?? row.Pending ?? 0),
+    cancelled: Number(row.cancelled ?? row.Cancelled ?? 0),
+    refunded: Number(row.refunded ?? row.Refunded ?? 0),
+    totalRisk: Number(row.totalRisk ?? row.TotalRisk ?? 0),
+    totalWin: Number(row.totalWin ?? row.TotalWin ?? 0),
+    avgBet: Number(row.avgBet ?? row.AverageBet ?? 0),
+    openBets: Number(row.openBets ?? row.OpenBets ?? 0),
+    playersActive: Number(row.playersActive ?? row.PlayersActive ?? 0),
+    newPlayers: Number(row.newPlayers ?? row.NewPlayers ?? 0),
+  };
+}
+
+function zone2BillingTotals(figures) {
+  return (figures || []).reduce((acc, fig) => {
+    acc.gross += Number(fig.gross || 0);
+    acc.net += Number(fig.net || 0);
+    acc.wagers += Number(fig.wagers || 0);
+    acc.wins += Number(fig.wins || 0);
+    acc.losses += Number(fig.losses || 0);
+    acc.pending += Number(fig.pending || 0);
+    acc.playersActive += Number(fig.playersActive || 0);
+    return acc;
+  }, { gross: 0, net: 0, wagers: 0, wins: 0, losses: 0, pending: 0, playersActive: 0 });
+}
+
+function renderZone2Billing() {
+  const tbody = document.getElementById('zone2BillingRows');
+  if (!tbody) return;
+  const totals = zone2BillingState.totals || zone2BillingTotals([]);
+  setText('zone2BillingGross', formatCompactDollars(totals.gross || 0));
+  setText('zone2BillingNet', formatCompactDollars(totals.net || 0));
+  setText('zone2BillingWagers', Number(totals.wagers || 0).toLocaleString());
+  setText('zone2BillingActive', Number(totals.playersActive || 0).toLocaleString());
+  const grossEl = document.getElementById('zone2BillingGross');
+  const netEl = document.getElementById('zone2BillingNet');
+  if (grossEl) grossEl.style.color = Number(totals.gross || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+  if (netEl) netEl.style.color = Number(totals.net || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+
+  if (zone2BillingState.loading) {
+    tbody.innerHTML = '<tr><td colspan="10" class="px-3 py-6 text-center" style="color:var(--text-dim);">Loading billing figures...</td></tr>';
+    return;
+  }
+  const figures = zone2BillingState.figures || [];
+  if (!figures.length) {
+    tbody.innerHTML = '<tr><td colspan="10" class="px-3 py-6 text-center" style="color:var(--text-dim);">No billing figures loaded.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = figures.map(fig => {
+    const gross = Number(fig.gross || 0);
+    const net = Number(fig.net || 0);
+    return `<tr class="border-b" style="border-color:var(--border);">
+      <td class="px-3 py-2"><div class="font-semibold">${escapeHtml(fig.name || fig.agent || '-')}</div><div class="text-[10px]" style="color:var(--text-dim);">${escapeHtml(fig.agent || '')}</div></td>
+      <td class="px-3 py-2 text-right">${Number(fig.wagers || 0).toLocaleString()}</td>
+      <td class="px-3 py-2 text-right" style="color:var(--green);">${Number(fig.wins || 0).toLocaleString()}</td>
+      <td class="px-3 py-2 text-right" style="color:var(--red);">${Number(fig.losses || 0).toLocaleString()}</td>
+      <td class="px-3 py-2 text-right" style="color:var(--yellow);">${Number(fig.pending || 0).toLocaleString()}</td>
+      <td class="px-3 py-2 text-right" style="color:${gross >= 0 ? 'var(--green)' : 'var(--red)'};">${money(gross)}</td>
+      <td class="px-3 py-2 text-right font-semibold" style="color:${net >= 0 ? 'var(--green)' : 'var(--red)'};">${money(net)}</td>
+      <td class="px-3 py-2 text-right">${Number(fig.hold || 0).toFixed(2)}%</td>
+      <td class="px-3 py-2 text-right">${money(fig.avgBet || 0)}</td>
+      <td class="px-3 py-2 text-right">${Number(fig.playersActive || 0).toLocaleString()}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderZone2Performance() {
+  const tbody = document.getElementById('zone2PerformanceRows');
+  if (!tbody) return;
+  initializeZone2PerformanceDates();
+  const totals = zone2PerformanceState.totals || zone2TotalsFromRows([]);
+  setText('zone2PerfBets', Number(totals.bets || 0).toLocaleString());
+  setText('zone2PerfWager', formatCompactDollars(totals.wager || 0));
+  setText('zone2PerfNet', formatCompactDollars(totals.net || 0));
+  setText('zone2PerfCommission', formatCompactDollars(totals.commission || 0));
+  const netEl = document.getElementById('zone2PerfNet');
+  if (netEl) netEl.style.color = Number(totals.net || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+
+  if (zone2PerformanceState.loading) {
+    tbody.innerHTML = '<tr><td colspan="7" class="px-3 py-6 text-center" style="color:var(--text-dim);">Loading performance...</td></tr>';
+    return;
+  }
+  const rows = zone2PerformanceState.rows || [];
+  if (!zone2PerformanceState.selectedAgent) {
+    tbody.innerHTML = '<tr><td colspan="7" class="px-3 py-6 text-center" style="color:var(--text-dim);">Select an agent from the downline.</td></tr>';
+    return;
+  }
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="px-3 py-6 text-center" style="color:var(--text-dim);">No performance rows for the selected range.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(row => {
+    const net = Number(row.net || 0);
+    return `<tr class="border-b" style="border-color:var(--border);">
+      <td class="px-3 py-2 font-mono">${escapeHtml(row.date || '-')}</td>
+      <td class="px-3 py-2 text-right">${Number(row.bets || 0).toLocaleString()}</td>
+      <td class="px-3 py-2 text-right">${money(row.wager || 0)}</td>
+      <td class="px-3 py-2 text-right">${money(row.win || 0)}</td>
+      <td class="px-3 py-2 text-right">${money(row.loss || 0)}</td>
+      <td class="px-3 py-2 text-right" style="color:${net >= 0 ? 'var(--green)' : 'var(--red)'};">${money(net)}</td>
+      <td class="px-3 py-2 text-right">${money(row.commission || 0)}</td>
+    </tr>`;
+  }).join('');
 }
 
 function searchAgentTree() {
@@ -5457,6 +6794,12 @@ function runAgentTreeSearch() {
       ? '<span class="text-[10px] px-1 py-0.5 rounded" style="background:var(--purple);color:#fff;">M</span>'
       : '<span class="text-[10px] px-1 py-0.5 rounded" style="background:var(--border);color:var(--text-dim);">A</span>';
     const alertBadge = node.alert_count > 0 ? `<span class="ml-1 text-[10px] px-1 py-0.5 rounded-full" style="background:var(--red);color:#fff;">${node.alert_count}</span>` : '';
+    const patternInfo = agentPatternCounts[node.agent] || {};
+    const patternCount = Number(patternInfo.pattern_count || 0);
+    const criticalPatternCount = Number(patternInfo.critical_count || 0);
+    const patternBadge = patternCount > 0
+      ? `<button type="button" class="agent-pattern-badge text-[10px] px-1.5 py-0.5 rounded-full" style="background:${criticalPatternCount > 0 ? 'var(--red)' : 'var(--yellow)'};color:${criticalPatternCount > 0 ? '#fff' : '#111'};" data-action="filter-agent-patterns" data-agent="${agentAttr}" title="${criticalPatternCount} critical">${patternIconForAgent(patternInfo)} ${patternCount}</button>`
+      : '—';
     const volumeStr = node.total_volume > 0 ? '$' + Math.round(node.total_volume).toLocaleString() : '—';
     const riskStr = node.total_risk > 0 ? '$' + Math.round(node.total_risk).toLocaleString() : '—';
     const commStr = node.commission > 0 ? node.commission + '%' : '—';
@@ -5473,16 +6816,20 @@ function runAgentTreeSearch() {
       <td class="px-3 py-2 text-right font-mono">${volumeStr}</td>
       <td class="px-3 py-2 text-right font-mono">${riskStr}</td>
       <td class="px-3 py-2 text-center">${alertBadge || '—'}</td>
+      <td class="px-3 py-2 text-center">${patternBadge}</td>
       <td class="px-3 py-2 text-center">
-        <button type="button" class="px-2 py-1 rounded text-xs" style="background:var(--accent);color:#fff;" data-action="filter-agent" data-agent="${agentAttr}">Wagers</button>
+        <div class="flex items-center justify-center gap-1">
+          <button type="button" class="px-2 py-1 rounded text-xs" style="background:var(--accent);color:#fff;" data-action="load-agent-performance" data-agent="${agentAttr}">Perf</button>
+          <button type="button" class="px-2 py-1 rounded text-xs" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" data-action="filter-agent" data-agent="${agentAttr}">Wagers</button>
+        </div>
       </td>
     `;
     tbody.appendChild(row);
   });
   if (filtered.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="10" class="px-3 py-8 text-center text-sm" style="color:var(--text-dim);">No agents match your search.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="px-3 py-8 text-center text-sm" style="color:var(--text-dim);">No agents match your search.</td></tr>';
   } else if (filtered.length > TABLE_RENDER_LIMIT) {
-    tbody.innerHTML += `<tr><td colspan="10" class="px-3 py-2 text-center text-xs" style="color:var(--text-dim);">Showing ${TABLE_RENDER_LIMIT.toLocaleString()} of ${filtered.length.toLocaleString()} matching agents.</td></tr>`;
+    tbody.innerHTML += `<tr><td colspan="11" class="px-3 py-2 text-center text-xs" style="color:var(--text-dim);">Showing ${TABLE_RENDER_LIMIT.toLocaleString()} of ${filtered.length.toLocaleString()} matching agents.</td></tr>`;
   }
 }
 
@@ -8614,6 +9961,7 @@ Object.assign(window, {
   filterWagerType,
   focusPlayerFlagComposer,
   focusPlayerNoteComposer,
+  createIntegrityCaseFromSyndicate,
   findBestBook,
   findTreeNodeAt,
   fitTreeToCanvas,
@@ -8645,6 +9993,8 @@ Object.assign(window, {
   getSidebarGroupState,
   getVisibleBooks,
   getWagerExposure,
+  getZone2InputState,
+  getZone2ProxyCredentials,
   handleAgentDownlineClick,
   handleBuckeyeWagerTableClick,
   handlePlayerSearchClick,
@@ -8661,7 +10011,13 @@ Object.assign(window, {
   isLegitimateWager,
   keepTooltip,
   loadBookPreferences,
+  loadPendingWagers,
+  loadIntegrityCases,
   loadPlayerSearch,
+  loadSyndicateIntel,
+  loadZone1Taxonomy,
+  loadZone2Billing,
+  loadZone2AgentPerformance,
   markCacheFresh,
   mergeAgentDelta,
   mergeAgentStats,
@@ -8717,6 +10073,7 @@ Object.assign(window, {
   renderOddsMatrixMobile,
   renderPatternFilterOptions,
   renderPatternCatalogPanel,
+  renderIntegrityCases,
   renderPatterns,
   renderPerformanceDashboard,
   renderPerformanceError,
@@ -8737,9 +10094,14 @@ Object.assign(window, {
   renderRawLogsTable,
   renderSportBreakdown,
   renderSportExposure,
+  updateIntegrityCaseStatus,
+  renderSyndicateIntel,
   renderTreeLoop,
   renderVelocityChart,
   renderWeeklyFiguresTable,
+  renderZone1Taxonomy,
+  renderZone2Billing,
+  renderZone2Performance,
   resetBookSettings,
   refreshPlayerProfileStatus,
   resetPatternDetail,
@@ -8747,6 +10109,9 @@ Object.assign(window, {
   resyncBuckeye,
   runAgentTreeSearch,
   saveAndConnect,
+  selectZone1Game,
+  selectZone1League,
+  selectZone1Sport,
   saveBookPreferences,
   saveBookSettings,
   saveSettings,
@@ -8756,6 +10121,8 @@ Object.assign(window, {
   searchAgentTree,
   searchGames,
   searchPlayers,
+  selectZone2AgentPerformance,
+  setZone2PanelTab,
   openPlayerProfileDocs,
   openSidebarStatusForPlayer,
   setPlayerAgentFilter,
@@ -8832,5 +10199,9 @@ Object.assign(window, {
   matrixState,
   wsClient,
   buckeyeWagers,
+  pendingWagers,
+  zone1TaxonomyState,
+  syndicateIntelState,
+  integrityCaseState,
   performanceState,
 });

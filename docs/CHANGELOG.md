@@ -6,16 +6,16 @@
 
 - **System Status issue rollup** — `/api/health/system-status` now consolidates scraper errors, action queue backlog, raw API failures, Player 360 source errors, offline books, and critical/high patterns into a single operator issue feed.
 - **System Status data flows** — `/api/health/system-status` now includes `operationalStatus`, `riskStatus`, and local `dataFlows` evidence for wagers, archive reconciliation, Player 360 ledgers, hierarchy, player-agent maps, patterns, and exposure inputs.
-- **Cross-reference investigation layer** — `/api/v1/cross-reference` and the Player 360 Overview Cross-Refs card connect assigned agents, lineage, wagers, access logs, free-play totals, related players, pattern evidence, and source trust flags without adding new Buckeye calls.
+- **Cross-reference investigation layer** — `/api/cross-reference` and the Player 360 Overview Cross-Refs card connect assigned agents, lineage, wagers, access logs, free-play totals, related players, pattern evidence, and source trust flags without adding new Buckeye calls.
 - **Pattern detector catalog** — `/api/patterns/catalog` and the Patterns tab now expose active detector definitions, thresholds, source tables, evidence fields, reason codes, and confidence so operators can see exactly how live wager, odds, event, and access-log patterns are produced.
 - **Sensitive artifact guard** — `bun run artifacts:check` now fails if raw Buckeye exports, root-level database dumps, HTML captures, or one-off scratch scripts become tracked or unignored.
-- **Player 360 real-data contract map** — `/api/v1/players/:id/intelligence-map` now includes field-level UI mappings, source freshness, endpoint coverage, explicit contract mismatches, and real/probe/missing status for each profile source.
+- **Player 360 real-data contract map** — `/api/players/:id/intelligence-map` now includes field-level UI mappings, source freshness, endpoint coverage, explicit contract mismatches, and real/probe/missing status for each profile source.
 - **Player 360 Status/Docs hardening** — the modal Status and Docs panels now render the live intelligence-map payload and no longer fill missing sources with static live rows.
 - **Player 360 hybrid hotset refresh** — heavy Buckeye sources now expose per-player TTL, policy, scale class, last attempt, last success, and next refresh metadata instead of encouraging all-player polling.
 - **Player 360 cold backfill cohort** — each background Player 360 poll now can pick a tiny archived-customer cohort from local `wager_archive` so ledger/account/performance coverage fills gradually across cold customers without a 50k-customer Buckeye sweep.
 - **Real API-only Player 360 profile hydration** — profile endpoint failures show an API error and retry path instead of generating a local mock profile from already-loaded wagers.
 - **Confirmed Buckeye player endpoints** — `getPerformancePlayer`, `getTransactionList`, `getTransactionHistory`, `getReportDeletedTransactions`, `getInfoPlayer`, and mapped-probe `getTeaserProfile` are now tracked as Player 360 source candidates.
-- **Standalone enhanced Buckeye proxy** — `enhanced-proxy.ts` now provides `/features`, `/metrics`, `/ready`, `/config`, `/ws`, retry/backoff, response/WebSocket compression flags, rate limiting, idempotency, token pre-renewal, stream mode, and isolated SQLite cache/token storage.
+- **Standalone enhanced Buckeye proxy** — `proxy-enhanced.ts` now provides `/features`, `/metrics`, `/ready`, `/config`, `/ws`, retry/backoff, response/WebSocket compression flags, rate limiting, idempotency, token pre-renewal, stream mode, and isolated SQLite cache/token storage.
 - **Enhanced proxy config tests** — Added regression coverage for requested `ENABLE_*` aliases so `/features` reflects metrics, compression, retry, rate limiting, and token-renewal runtime configuration.
 
 ### Changed
@@ -28,6 +28,7 @@
 - Player 360 watermarks and status now include hot player count plus cold-backfill count/limit so operators can see whether database seeding is progressing.
 - v5.32 frontend assets use the new cache-busting version label.
 - Documentation now covers the enhanced proxy runbook, feature flags, endpoint surface, and verification commands.
+- Documentation now treats `localhost:3000` as the only public frontend API; direct `localhost:3001` proxy routes are internal/operator diagnostics.
 
 ## v5.31
 

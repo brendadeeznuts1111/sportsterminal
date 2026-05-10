@@ -1,4 +1,4 @@
-# AGENTS.md — Sports Terminal v5.32
+# AGENTS.md — Sports Terminal v5.42
 
 Always run commands from repo root `C:\Users\bobby\sportsterminal\` (not a subdirectory).
 
@@ -26,9 +26,9 @@ Always run commands from repo root `C:\Users\bobby\sportsterminal\` (not a subdi
 
 ## Architecture
 
-Monorepo with one Bun workspace (`backend`). Frontend is a static SPA in `frontend/public/` — no build step, served directly by the backend.
+Monorepo with one Bun workspace (`backend`). Frontend is a static SPA in `frontend/public/` — no build step, served directly by the backend. Standalone proxy in `proxy-enhanced.ts` (not part of backend workspace).
 
-**Default port is 3000** (not 3002). Configured in `backend/.env` or defaults in `backend/src/config/env.ts`.
+**Backend port: 3000. Proxy port: 3001** (configurable via `PROXY_PORT`).
 
 ### Backend `backend/src/`
 
@@ -66,34 +66,73 @@ types/                 Shared TypeScript interfaces
 utils/                 Shared utilities
 ```
 
-### Backend tsconfig — strict mode
+### Proxy `proxy-enhanced.ts`
 
-`backend/tsconfig.json` enables `strict`, `noImplicitAny`, `strictNullChecks`. The root tsconfig has `strict: false` but only covers root-level `.ts` files (proxy scripts), **not** backend code.
+```
+ENDPOINT_MAP (48 entries)           — Buckeye API catalog with cacheTTLs and categories
+PROXY_ALIAS_MAP                     — Friendly-name → Buckeye endpoint fallbacks
+TAXONOMY_MAP                        — Taxonomy level → endpoint/shape config
+normalizeResponse()                  — 18+ Buckeye shape normalizers
+parseBuckeyeWagers()                 — Raw Buckeye wager → Wager[] (cents→dollars)
+detectSyndicates()                   — Correlated betting detection (5-min windows)
+correlateSharpMoney()                — Wager ↔ line movement correlation
+computeExpectedValue()              — EV simulation per sport/wagerType
+computePredictiveSharpness()         — Predictive sharpness scoring (0-100)
+simulateLineAdjustments()           — Backtesting line-move rules
+evaluateLineAdjustments()           — Background task (60s interval)
+runRiskEngine()                      — Background task (30s interval)
+```
 
-Path alias: `@/*` maps to `./src/*` in backend — use `import { X } from '@/services/BunSecretVault'`.
+### Proxy SQLite Tables
 
-### Key dependencies
+| Table | Purpose |
+|-------|---------|
+| `tokens` | Stored Buckeye JWT tokens per customer |
+| `api_cache` | SWR cache with TTL |
+| `request_log` | Per-request timing and error logging |
+| `rate_limit` | Per-IP/per-endpoint rate limiting |
+| `idempotency` | Idempotency key dedup |
+| `rate_limit_overrides` | Custom rate limits per endpoint |
+| `risk_config` | Per-agent risk thresholds + webhook URL |
+| `syndicate_cache` | Detected syndicates with pattern/members/stake |
+| `line_history` | Historical line movements |
+| `wager_analytics` | Parsed wager data for analytics |
+| `line_adjustment_rules` | Auto line-adjustment rules per agent |
+| `sharpness_history` | Historical sharpness scores per bettor |
+| `line_adjustment_log` | Audit log of executed line adjustments |
 
-- **Bun runtime** v1.3.13+ (no Node required)
-- **zod** — request/response validation in routes
-- **jose** — JWT signing/verification
-- **fast-geoip** — IP geolocation enrichment
-- **Bun.SQL** — built-in SQLite (no external package)
+### Feature Flags (`config.ts`)
+
+| Flag | Env Var | Default | Description |
+|------|---------|---------|-------------|
+| `analytics` | `ENABLE_ANALYTICS` | true | Syndicate detection, sharp money, EV, sharpness, backtest, line rules |
+| `riskEngine` | `ENABLE_RISK_ENGINE` | true | Risk alert config, background risk evaluation |
+| `wsValidation` | `ENABLE_WS_VALIDATION` | true | Validate WS message types |
+| `wsClientBatching` | `ENABLE_WS_CLIENT_BATCHING` | true | Per-subscriber WS batch intervals |
+| `memoryCache` | `ENABLE_MEMORY_CACHE` | true | Hot endpoint 2s TTL cache |
+| `requestDedupe` | `ENABLE_REQUEST_DEDUPE` | true | Inflight request deduplication |
+| `tokenCache` | `ENABLE_TOKEN_CACHE` | true | 5s TTL token cache |
+| `responseNormalize` | `ENABLE_RESPONSE_NORMALIZE` | false | Gate for Buckeye shape normalizers |
+| `requestSampling` | `ENABLE_REQUEST_SAMPLING` | true | Controls log sampling via `LOG_SAMPLE_RATE` |
 
 ## Critical Conventions
 
 ### Amount units (don't get this wrong)
 - **Buckeye API returns cents** — `AmountWagered: 2500` = $25.00
 - **Backend normalizes** in `BuckeyeAPI.normalizeWager()` (divide by 100)
+- **Proxy normalizes** in `parseBuckeyeWagers()` (divide by 100)
 - **Database stores dollars** — all SQL queries operate on dollar amounts
 - **Frontend displays dollars** directly — no further conversion
 
-### Authentication flow
-1. Frontend sends `auth` WS message with `agentId`, `password`, `cfCookie`
-2. Backend `BuckeyeAPI.login()` POSTs to `/cloud/api/System/authenticateCustomer`
-3. Receives JWT → starts polling `getBetTicker` every 5s
-4. Token returned to frontend → `localStorage` for resume
-5. Auto-reconnects on refresh (token ~10 min valid)
+### Auto-renewToken
+- Proxy auto-updates stored token when `System/renewToken` succeeds
+- Invalidates token cache, reschedules renewal timer
+- Token renewal happens every 15 min (configurable via `TOKEN_RENEWAL_INTERVAL_MS`)
+
+### Response normalization
+- `normalizeResponse()` handles 21+ Buckeye endpoint shapes when `ENABLE_RESPONSE_NORMALIZE=true`
+- Key normalizers: `betTicker`, `sportsLeagues`, `leagueLines`, `games`, `playerInfo`, `agentDownline`, `dynamicLive`, `accountInfo`, `vigSetup`, `amountLimits`, `buyPoints`, `agentBilling`, `gameVolume`, `scoresLive`, `sportsTypesLive`, `liveGame`, `props`, `authorizations`, `newEmails`
+- Fallback: `{ items, count }` for any `LIST`/`Data` response
 
 ### Cloudflare
 - `cf_clearance` cookie is **mandatory** for fantasy402.com access
@@ -104,6 +143,8 @@ Path alias: `@/*` maps to `./src/*` in backend — use `import { X } from '@/ser
 - Normal: 5s. Exponential backoff: 5→10→20→40→max 60s
 - Token renewal: every 15 min
 - Max 3 re-login attempts, then `auth_failed` broadcast and stop
+- Risk engine: every 30s (when `ENABLE_RISK_ENGINE=true`)
+- Line adjustment engine: every 60s (when `ENABLE_ANALYTICS=true`)
 
 ### Environment constraints
 - `NODE_ENV=production` enables JWT auth + rate limiting; `development` bypasses both
@@ -121,12 +162,42 @@ Path alias: `@/*` maps to `./src/*` in backend — use `import { X } from '@/ser
 - **Database schema**: `backend/src/database.ts` — all table definitions and migrations
 - **Buckeye API client**: `backend/src/scrapers/BuckeyeAPI.ts` — auth, wager, access-log, performance calls
 - **Env validation**: `backend/src/config/env.ts` — all env vars and their constraints
+- **Proxy endpoint catalog**: `proxy-enhanced.ts` — `ENDPOINT_MAP` (51 entries), `getEndpointMeta()`, `getEndpointDescription()`
+- **Proxy feature flags**: `config.ts` — `FeatureFlags` interface with `analytics`, `riskEngine`, `requestSampling`
+- **Proxy analytics algorithms**: `detectSyndicates()`, `correlateSharpMoney()`, `computeExpectedValue()`, `computePredictiveSharpness()`, `simulateLineAdjustments()`
+- **Proxy background engines**: `runRiskEngine()` (30s), `evaluateLineAdjustments()` (60s)
+- **Live score flash**: `pushLiveFlash()` — detects score changes via cached prev/next comparison, pushes `live_flash` WS messages
+- **Live betting frontend**: `frontend/public/js/live.js` — Zone 5 Live Betting Center
+- **`liveGame` normalizer** uses `keyOverride` param in `normalizeResponse()` so it doesn't shadow `games` normalizer
+- `/api/proxy/renewToken` excluded from generic proxy catch-all — dedicated handler with stored-credential fallback now reachable
+- Backend `handleProxyCompatibleRoute` now supports `Report/*`, `League/*`, `Lines/*`, `Provider/*`, `Limit/*` paths
+- `shouldLog()` gated by `CONFIG.features.requestSampling` — when disabled, all request logs pass through
+- `risk/alerts` POST now validates `thresholds` with `asTaxonomyRecord()`, consistent with `risk/config`
+- All prepared statements (48 total) are finalized on shutdown
+- Inline `db.prepare()` calls replaced with pre-prepared statements (`deleteRiskConfig`, `deleteRateLimitOverrideInline`)
+
+## Proxy API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/proxy/analytics/syndicates` | Detect correlated betting patterns |
+| POST | `/api/proxy/analytics/sharp-money` | Correlate wagers with line movements |
+| POST | `/api/proxy/analytics/ev-simulation` | Expected value simulation |
+| POST | `/api/proxy/analytics/predictive-sharpness` | Predictive sharpness score (0-100) |
+| POST | `/api/proxy/analytics/backtest` | Backtest line adjustment rules |
+| GET | `/api/proxy/agent/heatmap` | 7×24 access + wager heatmap |
+| POST | `/api/proxy/risk/alerts` | Configure risk thresholds + webhook |
+| GET | `/api/proxy/risk/alerts` | Read risk config for agent |
+| DELETE | `/api/proxy/risk/config` | Delete risk config |
+| GET | `/api/proxy/risk/syndicates` | Cached syndicate detections |
+| GET/POST/PUT/DELETE | `/api/proxy/line-rules` | Auto line adjustment rule CRUD |
+| GET | `/api/proxy/line-adjustments/log` | Line adjustment audit log |
 
 ## Testing
 
 Tests in `backend/tests/*.test.ts`. Run from repo root with `bun test`.
 
-Test files: `actionQueue`, `api`, `auth`, `health`, `odds`, `patterns`, `performance`, `players`, `proxy-enhanced-config`, `rateLimiter`, `raw-api-logger`, `router`, `scheduler`, `webhook`.
+Test files: `actionQueue`, `analytics`, `api`, `auth`, `health`, `odds`, `patterns`, `performance`, `players`, `proxy-enhanced-config`, `rateLimiter`, `raw-api-logger`, `router`, `scheduler`, `webhook`.
 
 Database tests use `:memory:` SQLite. No external services required.
 
@@ -138,8 +209,10 @@ Database tests use `:memory:` SQLite. No external services required.
 | Multiple Bun processes | `bun run status` then `bun run stop` or `taskkill /F /IM bun.exe` |
 | Stale deps | Delete `node_modules` + `backend/node_modules`, then `bun install` |
 | Verify backend running | `Invoke-RestMethod http://localhost:3000/health` |
+| Verify proxy running | `Invoke-RestMethod http://localhost:3001/` |
 | Buckeye login fails | Fresh `cf_clearance` cookie, confirm `BUCKEYE_BASE_URL`, check vault status |
 | Odds grid empty | Demo odds auto-activate; live data requires Buckeye auth or `ODDS_API_KEY` |
+| Analytics endpoints return 403 | Set `ENABLE_ANALYTICS=true` in proxy `.env` |
 
 ## Security reminders
 
@@ -147,3 +220,5 @@ Database tests use `:memory:` SQLite. No external services required.
 - `Bun.secrets` stores passwords/tokens; vault-status endpoint returns only presence flags
 - `DELETE /api/buckeye/vault-status?agentId=...` clears one agent; `all=1` clears all
 - `bunfig.toml` enables OSV install-time security scanner
+- Risk config webhooks are stored in SQLite — never log threshold values in responses
+- Line adjustment logs contain game IDs and line movements — treat as sensitive

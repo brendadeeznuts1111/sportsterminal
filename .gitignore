@@ -66,3 +66,8 @@ coverage/
 
 # Bun
 *.lockb
+
+# Temp / build artifacts
+tmp-build/
+admin-test.json
+start-proxy-test.bat

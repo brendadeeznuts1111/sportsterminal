@@ -1,6 +1,12 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 
-import { registerHealthRoutes } from '../src/api/routes/health';
+import {
+  getCriticalPatternRiskByType,
+  getPatternRiskRollup,
+  getRiskBreakdown,
+  getRiskStatusAndBreakdown,
+  registerHealthRoutes,
+} from '../src/api/routes/health';
 import type { Database } from '../src/database';
 import type { BuckeyeScraperManager } from '../src/scrapers/ScraperManager';
 
@@ -14,10 +20,18 @@ interface HealthIssueBody {
 interface SystemStatusBody {
   status: string;
   operationalStatus: string;
+  enhancedProxyHealth: string;
+  proxyHealth: string;
+  patternRiskStatus: string;
+  criticalPatternRiskByType: Record<string, number>;
+  patternRiskExpiresAt: string | null;
   riskStatus: string;
+  riskBreakdown: Record<string, number>;
+  riskStatusExpiresAt: string | null;
   summary: Record<string, number>;
   issues: HealthIssueBody[];
   dataFlows: Record<string, Record<string, unknown>>;
+  details: Record<string, unknown>;
 }
 
 function testScraperManager(db: object, metrics: object): BuckeyeScraperManager {
@@ -28,6 +42,16 @@ function testScraperManager(db: object, metrics: object): BuckeyeScraperManager 
 }
 
 describe('system status health route', () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({ ready: true }), { status: 200 })) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
   test('rolls up scraper, raw API, player source, book, pattern, and queue issues', async () => {
     const db = {
       all: async (sql: string) => {
@@ -39,6 +63,12 @@ describe('system status health route', () => {
         }
         if (sql.includes('FROM book_health')) {
           return [{ book: 'Pinnacle', status: 'offline', error_count: 4, last_error: 'provider timeout', last_seen: '2026-05-09T20:10:00Z' }];
+        }
+        if (sql.includes('FROM detected_patterns') && sql.includes("severity = 'critical'")) {
+          return [{ pattern_type: 'agent_swarm', count: 1, last_seen: new Date().toISOString() }];
+        }
+        if (sql.includes('FROM detected_patterns') && sql.includes("severity = 'warning'")) {
+          return [];
         }
         if (sql.includes('FROM detected_patterns')) {
           return [{ type: 'agent_swarm', severity: 'critical', count: 1, last_seen: '2026-05-09T20:15:00Z' }];
@@ -73,7 +103,14 @@ describe('system status health route', () => {
     expect(body.summary.rawApiFailures24h).toBe(2);
     expect(body.summary.playerSourceErrors).toBe(3);
     expect(body.operationalStatus).toBe('critical');
+    expect(body.patternRiskStatus).toBe('critical');
     expect(body.riskStatus).toBe('critical');
+    expect(body.enhancedProxyHealth).toBe('ok');
+    expect(body.proxyHealth).toBe('ok');
+    expect(body.criticalPatternRiskByType.agent_swarm).toBe(1);
+    expect(body.riskBreakdown.agent_swarm).toBe(1);
+    expect(body.patternRiskExpiresAt).not.toBeNull();
+    expect(body.riskStatusExpiresAt).not.toBeNull();
     expect(body.issues.some((issue) => issue.source === 'raw_api_logs')).toBe(true);
     expect(body.issues.some((issue) => issue.source === 'ActionQueue')).toBe(true);
     expect(body.issues.some((issue) => issue.source === 'book_health')).toBe(true);
@@ -197,5 +234,69 @@ describe('system status health route', () => {
     expect(body.dataFlows.crossReferences.patternAgentRows).toBe(12);
     expect(body.dataFlows.crossReferences.patternAgentLastSeen).toBe('2026-05-09T20:28:00Z');
     expect(body.status).toBe('ok');
+  });
+
+  test('returns degraded operational status when proxy readiness is degraded', async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({ ready: false, database: true, hasUsableToken: false }), { status: 503 })) as unknown as typeof fetch;
+    const db = {
+      all: async () => [],
+      get: async (sql: string) => {
+        if (sql.includes('FROM raw_api_logs')) return { total: 0, failures: 0, last_seen: null };
+        if (sql.includes('FROM player_source_status')) return { total: 0, errors: 0, last_seen: null };
+        return null;
+      },
+    };
+    const scraperManager = testScraperManager(
+      db,
+      {
+        activeAgents: 0,
+        agents: [],
+        actionQueue: { totalQueued: 0, queues: {} },
+        counters: { wagers_total: 0, alerts_triggered_total: 0, errors_total: 0 },
+      }
+    );
+
+    const response = await registerHealthRoutes(
+      new URL('http://localhost/api/health/system-status'),
+      new Request('http://localhost/api/health/system-status'),
+      scraperManager
+    );
+    const body = await response!.json() as SystemStatusBody;
+
+    expect(body.enhancedProxyHealth).toBe('degraded');
+    expect(body.proxyHealth).toBe('degraded');
+    expect(body.operationalStatus).toBe('degraded');
+    expect(body.status).toBe('warning');
+    expect(body.issues.some((issue) => issue.source === 'EnhancedProxyReadiness')).toBe(true);
+    expect((body.details.enhancedProxy as Record<string, unknown>).status).toBe('degraded');
+  });
+
+  test('returns risk breakdown and expiry from recent detected patterns', async () => {
+    const detectedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const db = {
+      all: async (sql: string) => {
+        if (sql.includes("severity = 'critical'")) {
+          return [{ pattern_type: 'steam_chase', count: 2, last_seen: detectedAt }];
+        }
+        if (sql.includes("severity = 'warning'")) {
+          return [{ pattern_type: 'line_velocity', count: 3, last_seen: detectedAt }];
+        }
+        return [];
+      },
+    } as unknown as Database;
+
+    const criticalByType = await getCriticalPatternRiskByType(db);
+    const rollup = await getPatternRiskRollup(db);
+    const compatibilityBreakdown = await getRiskBreakdown(db);
+    const compatibilityRollup = await getRiskStatusAndBreakdown(db);
+
+    expect(criticalByType.steam_chase).toBe(2);
+    expect(rollup.status).toBe('critical');
+    expect(rollup.criticalByType.steam_chase).toBe(2);
+    expect(rollup.warningByType.line_velocity).toBe(3);
+    expect(rollup.expiresAt).not.toBeNull();
+    expect(new Date(rollup.expiresAt!).getTime()).toBeGreaterThan(Date.now());
+    expect(compatibilityBreakdown.steam_chase).toBe(2);
+    expect(compatibilityRollup.breakdown.steam_chase).toBe(2);
   });
 });

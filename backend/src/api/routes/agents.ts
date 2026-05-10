@@ -37,8 +37,18 @@ export const registerAgentPerformanceRoutes = createParamRouteHandler(
   }
 );
 
-export const registerAgentDownlineRoutes = createRouteHandler('/api/agents/downline', async (_url, _req, scraperManager) => {
+export const registerAgentDownlineRoutes = createRouteHandler('/api/agents/downline', async (url, _req, scraperManager) => {
   logRequest('GET', '/api/agents/downline');
+  if (url.searchParams.get('live') === 'true' || url.searchParams.get('source') === 'live') {
+    const agentId = url.searchParams.get('agentId') || url.searchParams.get('customerID') || undefined;
+    const liveHierarchy = await scraperManager.getAgentHierarchy(agentId);
+    return {
+      ...liveHierarchy,
+      source: 'live_buckeye',
+      endpoint: 'Manager/getListAgenstByAgent',
+      agentId: agentId || null,
+    };
+  }
   return scraperManager.getAgentDownline();
 });
 

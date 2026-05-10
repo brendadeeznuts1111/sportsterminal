@@ -3,7 +3,8 @@
  *
  * Policy (lenient mode):
  *   - Public (no auth): /health, /metrics, /api/health/*, /api/connect,
- *     /api/agents, /api/players/search, /api/stats
+ *     /api/agents, /api/players/search, /api/stats, static frontend assets,
+ *     and read-only archive/dashboard data routes
  *   - Protected: all other /api/* routes
  *
  * Dev bypass: NODE_ENV=development skips verification (existing behaviour).
@@ -18,6 +19,8 @@ const PUBLIC_PATHS = new Set([
   '/api/health/system-status',
   '/api/connect',
   '/api/agents',
+  '/api/agents/downline',
+  '/api/agents/hierarchy/tree',
   '/api/players/search',
   '/api/cross-reference',
   '/api/v1/agents/hierarchy',
@@ -33,15 +36,33 @@ const PUBLIC_PREFIXES = [
   '/api/health/',
 ];
 
-function isPublicPath(pathname: string): boolean {
+const PUBLIC_READ_PATHS = new Set([
+  '/api/wagers',
+  '/api/wagers/live',
+  '/api/wagers/alerts',
+  '/api/performance/status',
+  '/api/performance/summary',
+]);
+
+const PUBLIC_READ_PREFIXES = [
+  '/api/players/',
+  '/api/performance/details',
+];
+
+function isPublicPath(pathname: string, method = 'GET'): boolean {
   if (pathname.startsWith('/api/v1/')) {
     const normalizedPath = pathname === '/api/v1/agents/hierarchy'
       ? '/api/agents/hierarchy/tree'
       : pathname.replace(/^\/api\/v1/, '/api');
-    return isPublicPath(normalizedPath);
+    return isPublicPath(normalizedPath, method);
   }
   if (PUBLIC_PATHS.has(pathname)) return true;
-  return PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+  if (PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return true;
+  if (['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())) {
+    if (PUBLIC_READ_PATHS.has(pathname)) return true;
+    return PUBLIC_READ_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+  }
+  return false;
 }
 
 export interface AuthContext {
@@ -59,7 +80,8 @@ export async function requireAuth(
   pathname: string
 ): Promise<AuthContext | Response | null> {
   if (isDevMode()) return null;
-  if (isPublicPath(pathname)) return null;
+  if (!pathname.startsWith('/api/')) return null;
+  if (isPublicPath(pathname, request.method)) return null;
 
   const header = request.headers.get('Authorization') || '';
   const match = header.match(/^Bearer\s+(.+)$/i);

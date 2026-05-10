@@ -3,10 +3,12 @@
 // renewToken, status, endpoints, openapi.json, dashboard, request tracking,
 // JWT auth, per-endpoint rate limiting, token scheduling, idempotency
 import { Database } from "bun:sqlite";
+import { heapStats as jscHeapStats } from "bun:jsc";
 import { randomUUID } from "node:crypto";
 import { watch } from "node:fs";
-import { config, reloadFromEnv } from "./config";
+import { CONFIG, reloadFromEnv } from "./config";
 import { CircuitBreaker, logger, hashPayload as utilsHashPayload, fetchWithRetry as utilsFetchWithRetry, requestContext, json as utilsJson } from "./utils";
+import { fetchWithTimeout } from "./utils/fetchWithTimeout";
 import { getAllEndpoints, ENDPOINT_COUNTS, TEST_SUMMARY } from "./endpoint-index";
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 
@@ -52,6 +54,19 @@ interface TaxonomyConfig {
 type TaxonomyLevel = "sports" | "leagues" | "schedule" | "lines" | "periods" | "gametypes";
 type TaxonomyRecord = Record<string, unknown>;
 type PerformancePeriod = "daily" | "weekly";
+type ProxyAliasName = "sportsLeagues" | "leagueLines" | "agentDownline" | "agentBilling" | "playerInfo" | "dynamicLive" | "gameVolume" | "pendingReportConfig" | "updatePendingReportConfig";
+
+interface ProxyAliasCandidate {
+  endpoint: string;
+  operation: string;
+  defaults?: JsonObject;
+}
+
+interface ProxyAliasParam {
+  required: string[];
+  optional: string[];
+  example: JsonObject;
+}
 
 interface AgentSummary {
   id: string;
@@ -85,8 +100,69 @@ interface PerformanceReport {
   totals: Omit<PerformanceBucket, "date" | "startDate" | "endDate">;
 }
 
-const CONFIG = config;
-const AUTH_ENDPOINT = "/cloud/api/System/authenticateCustomer";
+interface StoredWagerAnalytic {
+  bettorId: string;
+  gameId: string;
+  wagerType: string;
+  side: string;
+  line: number;
+  odds: number;
+  stake: number;
+  profit: number;
+  sport: string;
+  timestamp: number;
+}
+
+interface Syndicate {
+  id: string;
+  members: string[];
+  commonGame: string;
+  pattern: string;
+  totalStake: number;
+  timestamp: number;
+  windowMs?: number;
+  wagerCount?: number;
+  avgStake?: number;
+  riskScore?: number;
+  confidence?: number;
+  signals?: string[];
+}
+
+interface IntegrityCaseRow {
+  id: string;
+  agentID: string;
+  syndicateId: string | null;
+  status: string;
+  priority: string;
+  title: string;
+  summary: string | null;
+  evidence: string | null;
+  reviewer: string | null;
+  notes: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface LineMove {
+  gameId: string;
+  timestamp: number;
+  lineType: string;
+  side: string;
+  oldLine: number;
+  newLine: number;
+  oldOdds: number;
+  newOdds: number;
+}
+
+interface SharpAlert {
+  gameId: string;
+  movement: LineMove;
+  correlatedBettors: string[];
+  totalStake: number;
+  confidence: number;
+}
+
+const AUTH_ENDPOINT = CONFIG.authEndpoint;
 const TAXONOMY_MAP: Record<TaxonomyLevel, TaxonomyConfig> = {
   sports: { endpoint: "System/getSports", cacheTtl: 3600, shape: "Sport[]" },
   leagues: { endpoint: "System/getLeagues", cacheTtl: 1800, shape: "League[]" },
@@ -95,6 +171,259 @@ const TAXONOMY_MAP: Record<TaxonomyLevel, TaxonomyConfig> = {
   periods: { endpoint: "Manager/getPeriods", cacheTtl: 600, shape: "Period[]" },
   gametypes: { endpoint: "System/getGameTypes", cacheTtl: 3600, shape: "GameType[]" },
 };
+const PENDING_REPORT_CONFIG_DEFAULTS: JsonObject = {
+  agent: "on",
+  customerID: "on",
+  password: "off",
+  name: "on",
+  timeAccepted: "on",
+  timeScheduled: "on",
+  type: "on",
+  print: "on",
+  delete: "off",
+  custTotal: "off",
+  agentSite: "1",
+};
+const PROXY_ALIAS_MAP: Record<ProxyAliasName, ProxyAliasCandidate[]> = {
+  sportsLeagues: [
+    { endpoint: "Manager/getSportsType", operation: "getSportsType", defaults: { agentSite: "1" } },
+    { endpoint: "System/getSports", operation: "getSports" },
+    { endpoint: "System/getLeagues", operation: "getLeagues" },
+  ],
+  leagueLines: [
+    { endpoint: "Manager/getLines", operation: "getLines" },
+    { endpoint: "Manager/getSchedule", operation: "getSchedule" },
+  ],
+  agentDownline: [
+    { endpoint: "Manager/getListAgenstByAgent", operation: "getListAgenstByAgent", defaults: { agentType: "M", agentSite: "1" } },
+  ],
+  agentBilling: [
+    { endpoint: "Manager/getAgentBilling", operation: "getAgentBilling", defaults: { agentSite: "1", week: "0" } },
+  ],
+  playerInfo: [
+    { endpoint: "System/getPlayerActivity", operation: "getPlayerActivity" },
+    { endpoint: "Manager/getBettorDetails", operation: "getBettorDetails", defaults: { agentSite: "1" } },
+    { endpoint: "Manager/getReportPlayerAnalysis", operation: "getReportPlayerAnalysis", defaults: { agentSite: "1" } },
+  ],
+  dynamicLive: [
+    { endpoint: "Manager/getDynamicLines", operation: "getDynamicLines" },
+    { endpoint: "Manager/getLiveLines", operation: "getLiveLines" },
+    { endpoint: "Manager/getBetTicker", operation: "getBetTicker" },
+  ],
+  gameVolume: [
+    { endpoint: "Manager/getGameVolume", operation: "getGameVolume" },
+    { endpoint: "Manager/getGameExposure", operation: "getGameExposure" },
+    { endpoint: "Manager/getWagerByGame", operation: "getWagerByGame" },
+  ],
+  pendingReportConfig: [
+    { endpoint: "Manager/getConfigWebReportsPending", operation: "getConfigWebReportsPending", defaults: { agentSite: "1" } },
+  ],
+  updatePendingReportConfig: [
+    { endpoint: "Manager/updateReportConfigPending", operation: "updateReportConfigPending", defaults: PENDING_REPORT_CONFIG_DEFAULTS },
+  ],
+};
+const PROXY_ALIAS_PARAMS: Record<ProxyAliasName, ProxyAliasParam> = {
+  sportsLeagues: {
+    required: ["token", "cf_clearance"],
+    optional: ["agentID", "customerID"],
+    example: { token: "...", cf_clearance: "...", agentID: "BILLY666" },
+  },
+  leagueLines: {
+    required: ["token", "cf_clearance", "league", "sport"],
+    optional: ["agentID", "customerID", "period", "live", "gameId"],
+    example: { token: "...", cf_clearance: "...", league: "NFL", sport: "NFL" },
+  },
+  agentDownline: {
+    required: ["token", "cf_clearance", "agentID"],
+    optional: ["customerID", "agentType", "agentOwner", "agentSite"],
+    example: { token: "...", cf_clearance: "...", agentID: "BILLY666" },
+  },
+  agentBilling: {
+    required: ["token", "cf_clearance", "agentID"],
+    optional: ["customerID", "agentSite", "week", "startDate", "endDate"],
+    example: { token: "...", cf_clearance: "...", agentID: "BILLY666", week: "0" },
+  },
+  playerInfo: {
+    required: ["token", "cf_clearance", "playerID"],
+    optional: ["agentID", "customerID", "bettorID", "startDate", "endDate"],
+    example: { token: "...", cf_clearance: "...", playerID: "PLAYER123" },
+  },
+  dynamicLive: {
+    required: ["token", "cf_clearance"],
+    optional: ["agentID", "customerID", "sport", "league", "live"],
+    example: { token: "...", cf_clearance: "..." },
+  },
+  gameVolume: {
+    required: ["token", "cf_clearance", "gameId"],
+    optional: ["agentID", "customerID", "sport", "league", "GameID"],
+    example: { token: "...", cf_clearance: "...", gameId: "12345" },
+  },
+  pendingReportConfig: {
+    required: ["token", "cf_clearance", "agentID"],
+    optional: ["agentOwner", "agentSite", "__cf_bm"],
+    example: { token: "...", cf_clearance: "...", agentID: "BILLY666" },
+  },
+  updatePendingReportConfig: {
+    required: ["token", "cf_clearance", "agentID"],
+    optional: ["agent", "customerID", "password", "name", "timeAccepted", "timeScheduled", "type", "print", "delete", "custTotal", "agentOwner", "agentSite", "__cf_bm"],
+    example: { token: "...", cf_clearance: "...", agentID: "BILLY666", customerID: "on", password: "off" },
+  },
+};
+
+type RequiredParamSpec = string | string[];
+
+const REQUIRED_ENDPOINT_PARAMS: Record<string, RequiredParamSpec[]> = {
+  leagueLines: ["league", "sport"],
+  "Lines/Get_LeagueLines2": ["league", "sport"],
+  playerInfo: [["playerID", "playerLogin", "bettorID", "customerID", "acc"]],
+  "Manager/getInfoPlayer": [["playerLogin", "playerID", "bettorID", "customerID", "acc"]],
+  agentPerformance: [["agentID", "customerID"]],
+  "Manager/getAgentPerformance": [["agentID", "customerID"]],
+  getAgentPerformance: [["agentID", "customerID"]],
+  gameVolume: [["gameId", "GameID", "gameID"]],
+  "Manager/getGameVolume": [["gameId", "GameID", "gameID"]],
+  pending: ["date"],
+  getPending: ["date"],
+  "Manager/getPending": ["date"],
+  pendingReportConfig: [["agentID", "customerID"]],
+  updatePendingReportConfig: [["agentID", "customerID"]],
+};
+
+const DEMO_ENDPOINT_KEYS = new Set([
+  "accountInfo",
+  "agentDownline",
+  "agentBilling",
+  "betTicker",
+  "dynamicLive",
+  "gameVolume",
+  "leagueLines",
+  "pending",
+  "playerInfo",
+]);
+
+// ==========================================
+// COMPLETE BUCKEYE ENDPOINT MAP (from network trace)
+// ==========================================
+const ENDPOINT_MAP: Record<string, { path: string; cacheTtl: number; category: string }> = {
+  auth:           { path: "System/authenticateCustomer", cacheTtl: 0,    category: "auth" },
+  renewToken:     { path: "System/renewToken",           cacheTtl: 0,    category: "auth" },
+  logWrite:       { path: "Log/write",                    cacheTtl: 0,    category: "telemetry" },
+  accountInfo:    { path: "Manager/getAccountInfoOwner",  cacheTtl: 60,   category: "account" },
+  playerInfo:     { path: "Manager/getInfoPlayer",        cacheTtl: 120,  category: "player" },
+  newEmails:      { path: "Manager/getNewEmailsCount",    cacheTtl: 30,   category: "account" },
+  mail:           { path: "Manager/getMail",             cacheTtl: 60,   category: "account" },
+  cryptoInfo:     { path: "Manager/getCryptoInfo",        cacheTtl: 300,  category: "banking" },
+  authorizations: { path: "Manager/getAuthorizations",    cacheTtl: 300,  category: "admin" },
+  sportsLeagues:  { path: "League/Get_SportsLeagues",     cacheTtl: 3600, category: "taxonomy" },
+  leagueLines:    { path: "Lines/Get_LeagueLines2",       cacheTtl: 60,   category: "lines" },
+  games:          { path: "Manager/getGames",             cacheTtl: 300,  category: "taxonomy" },
+  gameVolume:     { path: "Manager/getGameVolume",        cacheTtl: 30,   category: "lines" },
+  periodsBySport: { path: "Manager/getPeriodsBySport",   cacheTtl: 3600, category: "config" },
+  buyPoints:      { path: "Lines/getBuyPointsGroup",     cacheTtl: 3600, category: "config" },
+  amountLimits:   { path: "Limit/getAmountLimitGroup",    cacheTtl: 3600, category: "config" },
+  linesPlus:      { path: "Provider/getLinesPlusData",    cacheTtl: 60,   category: "lines" },
+  propBuilderURL: { path: "Provider/getPropBuilderGameScheduleURL", cacheTtl: 300, category: "props" },
+  dynamicLive:    { path: "Manager/getDynamicLive",       cacheTtl: 10,   category: "live" },
+  sportsTypesLive: { path: "Manager/getSportsTypesLive",   cacheTtl: 60,   category: "live" },
+  scoresLive:     { path: "Report/getScoresLiveDynamic",   cacheTtl: 15,   category: "live" },
+  props:          { path: "Manager/getProps",              cacheTtl: 300,  category: "props" },
+  extendedProps:  { path: "Manager/getExtendedProps",     cacheTtl: 300,  category: "props" },
+  teaserProfile:  { path: "Manager/getTeaserProfile",     cacheTtl: 300,  category: "config" },
+  agentDownline:  { path: "Manager/getListAgenstByAgent",  cacheTtl: 300,  category: "agent" },
+  agentBilling:   { path: "Manager/getAgentBilling",      cacheTtl: 300,  category: "agent" },
+  sportsAdmin:    { path: "Manager/getSportsCustomerAdmin", cacheTtl: 300,  category: "admin" },
+  sportsType:     { path: "Manager/getSportsType",          cacheTtl: 3600, category: "taxonomy" },
+  vigSetup:       { path: "Manager/getSportsVigSetup",     cacheTtl: 300,  category: "admin" },
+  maxWager:       { path: "Manager/getSportsMaxWager",     cacheTtl: 300,  category: "admin" },
+  colors:         { path: "Manager/getColorsSelections",    cacheTtl: 3600, category: "admin" },
+  stores:         { path: "Manager/getStores",              cacheTtl: 3600, category: "admin" },
+  circleLimits:   { path: "Manager/getCircleLimits",        cacheTtl: 300,  category: "admin" },
+  betTicker:      { path: "Manager/getBetTicker",           cacheTtl: 5,    category: "analytics" },
+  betTickerConfig:{ path: "Manager/getBetTickerConfig",     cacheTtl: 300,  category: "analytics" },
+  pending:        { path: "Manager/getPending",             cacheTtl: 15,   category: "analytics" },
+  pendingReportConfig: { path: "Manager/getConfigWebReportsPending", cacheTtl: 300, category: "reports" },
+  updatePendingReportConfig: { path: "Manager/updateReportConfigPending", cacheTtl: 0, category: "reports" },
+  openBets:       { path: "Manager/getOpenBets",            cacheTtl: 30,   category: "analytics" },
+  agentPerformance:{ path: "Manager/getAgentPerformance",   cacheTtl: 300,  category: "analytics" },
+  wagerByPlayer:  { path: "Manager/getWagerByPlayer",       cacheTtl: 60,   category: "analytics" },
+  playerWeek:     { path: "Manager/getPlayerWeek",           cacheTtl: 300,  category: "analytics" },
+  transactionPlayer:{ path: "Manager/getEnterTransactions",  cacheTtl: 300,  category: "analytics" },
+  historyPlayer:  { path: "Manager/getReportPlayerAnalysis",  cacheTtl: 300,  category: "analytics" },
+  webLog:         { path: "Manager/getWebLog",               cacheTtl: 60,   category: "analytics" },
+  getConfigWebReports:{ path: "Manager/getConfigWebReports",  cacheTtl: 300,  category: "reports" },
+  agentManagement:{ path: "Manager/getAgentManagement",      cacheTtl: 300,  category: "agent" },
+  listVip:        { path: "Manager/getListVip",               cacheTtl: 300,  category: "agent" },
+  cryptoAvailable:{ path: "Manager/getCryptoAvailable",      cacheTtl: 300,  category: "banking" },
+  getMessage:     { path: "Manager/getMessage",              cacheTtl: 30,   category: "account" },
+  playerActivity:  { path: "System/getPlayerActivity",        cacheTtl: 120,  category: "player" },
+  bettorDetails:  { path: "Manager/getBettorDetails",        cacheTtl: 120,  category: "player" },
+  liveGame:       { path: "Manager/getGames",               cacheTtl: 15,   category: "live" },
+};
+
+function getEndpointMeta(endpointPath: string): { key: string; cacheTtl: number; category: string } | null {
+  for (const [key, meta] of Object.entries(ENDPOINT_MAP)) {
+    if (meta.path === endpointPath) return { key, cacheTtl: meta.cacheTtl, category: meta.category };
+  }
+  return null;
+}
+
+function getEndpointDescription(key: string): string {
+  const desc: Record<string, string> = {
+    auth: "Authenticate with customerID/password",
+    renewToken: "Refresh bearer token (auto-called every 30s)",
+    logWrite: "Frontend telemetry passthrough",
+    accountInfo: "Agent account snapshot and balance",
+    playerInfo: "Player profile, limits, and status",
+    newEmails: "Unread notification count",
+    mail: "Inbox messages",
+    cryptoInfo: "Crypto deposit addresses and history",
+    authorizations: "Agent permissions and feature flags",
+    sportsLeagues: "Sports and leagues tree (all sports)",
+    leagueLines: "Betting lines for a specific league",
+    games: "Scheduled games list",
+    gameVolume: "Game exposure and wager volume",
+    periodsBySport: "Available periods (FG, 1H, 2H, etc)",
+    buyPoints: "Buy points configuration",
+    amountLimits: "Wager amount limits by type",
+    linesPlus: "Enhanced lines data",
+    propBuilderURL: "Prop builder schedule URL",
+    dynamicLive: "Live in-game betting events",
+    sportsTypesLive: "Live sports categories",
+    scoresLive: "Real-time scores",
+    props: "Available prop bets",
+    extendedProps: "Extended prop offerings",
+    teaserProfile: "Teaser odds and rules",
+    agentDownline: "Agent sub-agent and player list",
+    agentBilling: "Weekly/daily billing figures",
+    sportsAdmin: "Sports admin configuration",
+    sportsType: "Available sport type codes and names",
+    vigSetup: "Vig/juice settings by sport",
+    maxWager: "Maximum wager amounts",
+    colors: "UI color scheme",
+    stores: "Retail store locations",
+    circleLimits: "Circle game limits",
+    betTicker: "Real-time bet ticker (live wagers)",
+    betTickerConfig: "Ticker display configuration",
+    pending: "Raw pending wagers grouped by ticket/wager with parlay legs",
+    pendingReportConfig: "Pending report column visibility configuration",
+    updatePendingReportConfig: "Update pending report column visibility toggles",
+    openBets: "Current open wagers",
+    agentPerformance: "Agent performance report",
+    wagerByPlayer: "Player wager history",
+    playerWeek: "Player weekly figures",
+    transactionPlayer: "Player transaction log",
+    historyPlayer: "Player account analysis",
+    webLog: "Web/IP access log",
+    getConfigWebReports: "Web reports column configuration",
+    agentManagement: "Agent downline management tree",
+    listVip: "VIP player list",
+    cryptoAvailable: "Available cryptocurrency options",
+    getMessage: "Agent messages",
+    playerActivity: "Player activity events",
+    bettorDetails: "Detailed bettor information",
+  };
+  return desc[key] || "Buckeye PPH API endpoint";
+}
 
 // ==========================================
 // ACTIVE REQUEST TRACKING + SHUTDOWN
@@ -118,6 +447,36 @@ const db = new Database(CONFIG.dbPath, { create: true });
 db.run("PRAGMA journal_mode = WAL;");
 db.run("PRAGMA busy_timeout = 5000;");
 db.run("PRAGMA foreign_keys = ON;");
+
+// Graceful startup wait — ensure WAL checkpoint is idle before accepting traffic.
+let walReady = CONFIG.dbPath === ":memory:";
+if (!walReady) {
+  for (let i = 0; i < 50; i++) {
+    const result = db.query("PRAGMA wal_checkpoint(PASSIVE)").get() as any;
+    if (result && Number(result.busy ?? 0) === 0) {
+      walReady = true;
+      break;
+    }
+    await Bun.sleep(100);
+  }
+}
+if (!walReady) {
+  logger.error("SQLite WAL checkpoint failed after 5s");
+  process.exit(1);
+}
+logger.info("SQLite WAL ready");
+
+// PRAGMA optimize after every 1000 writes to keep query planner sharp
+let writeCounter = 0;
+const originalDbRun = db.run.bind(db);
+db.run = function (...args: any[]) {
+  writeCounter++;
+  const result = originalDbRun.apply(this, args);
+  if (writeCounter % 1000 === 0) {
+    try { originalDbRun.call(this, "PRAGMA optimize"); } catch {}
+  }
+  return result;
+};
 
 const dbRead = CONFIG.dbPath === ":memory:"
   ? db
@@ -190,10 +549,146 @@ db.run(`
   )
 `);
 
+db.run(`
+  CREATE TABLE IF NOT EXISTS risk_config (
+    agentID TEXT PRIMARY KEY,
+    customerID TEXT,
+    thresholds TEXT,
+    webhook TEXT,
+    updated_at INTEGER DEFAULT (unixepoch())
+  )
+`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS syndicate_cache (
+    id TEXT PRIMARY KEY,
+    agentID TEXT,
+    pattern TEXT,
+    members TEXT,
+    totalStake REAL,
+    commonGame TEXT,
+    windowMs INTEGER DEFAULT 0,
+    wagerCount INTEGER DEFAULT 0,
+    avgStake REAL DEFAULT 0,
+    riskScore INTEGER DEFAULT 0,
+    confidence INTEGER DEFAULT 0,
+    signals TEXT DEFAULT '[]',
+    detected_at INTEGER DEFAULT (unixepoch())
+  )
+`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS line_history (
+    id INTEGER PRIMARY KEY,
+    gameId TEXT,
+    lineType TEXT,
+    side TEXT,
+    oldLine REAL,
+    newLine REAL,
+    oldOdds REAL,
+    newOdds REAL,
+    timestamp INTEGER DEFAULT (unixepoch())
+  )
+`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS wager_analytics (
+    id INTEGER PRIMARY KEY,
+    agentID TEXT,
+    wagerNumber TEXT,
+    bettorId TEXT,
+    gameId TEXT,
+    wagerType TEXT,
+    side TEXT,
+    line REAL,
+    odds REAL,
+    stake REAL,
+    profit REAL,
+    sport TEXT,
+    timestamp INTEGER
+  )
+`);
+db.run(`CREATE INDEX IF NOT EXISTS idx_syndicate_agent_detected ON syndicate_cache(agentID, detected_at)`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS integrity_cases (
+    id TEXT PRIMARY KEY,
+    agentID TEXT NOT NULL,
+    syndicateId TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    priority TEXT NOT NULL DEFAULT 'medium',
+    title TEXT NOT NULL,
+    summary TEXT,
+    evidence TEXT DEFAULT '{}',
+    reviewer TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
+    created_at INTEGER DEFAULT (unixepoch()),
+    updated_at INTEGER DEFAULT (unixepoch())
+  )
+`);
+db.run(`CREATE INDEX IF NOT EXISTS idx_integrity_cases_agent_status ON integrity_cases(agentID, status, updated_at)`);
+
+db.run(`CREATE INDEX IF NOT EXISTS idx_line_history_game_time ON line_history(gameId, timestamp)`);
+db.run(`CREATE INDEX IF NOT EXISTS idx_wager_analytics_bettor_time ON wager_analytics(bettorId, timestamp)`);
+db.run(`CREATE INDEX IF NOT EXISTS idx_wager_analytics_agent_time ON wager_analytics(agentID, timestamp)`);
+db.run(`CREATE INDEX IF NOT EXISTS idx_wager_analytics_game_time ON wager_analytics(gameId, timestamp)`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS line_adjustment_rules (
+    id INTEGER PRIMARY KEY,
+    agentID TEXT NOT NULL,
+    sport TEXT NOT NULL DEFAULT '',
+    league TEXT NOT NULL DEFAULT '',
+    lineType TEXT NOT NULL DEFAULT 'SPREAD',
+    condition TEXT NOT NULL DEFAULT 'sharp_money_threshold',
+    threshold REAL NOT NULL DEFAULT 5000,
+    adjustmentPercent REAL NOT NULL DEFAULT 5,
+    maxMovePercent REAL NOT NULL DEFAULT 10,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER DEFAULT (unixepoch())
+  )
+`);
+db.run(`CREATE INDEX IF NOT EXISTS idx_line_rules_agent ON line_adjustment_rules(agentID, enabled)`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS sharpness_history (
+    bettorId TEXT NOT NULL,
+    sharpScore INTEGER NOT NULL DEFAULT 0,
+    wagerCount INTEGER NOT NULL DEFAULT 0,
+    winRate REAL NOT NULL DEFAULT 0,
+    roi REAL NOT NULL DEFAULT 0,
+    calculated_at INTEGER DEFAULT (unixepoch())
+  )
+`);
+db.run(`CREATE INDEX IF NOT EXISTS idx_sharpness_bettor ON sharpness_history(bettorId, calculated_at)`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS line_adjustment_log (
+    id INTEGER PRIMARY KEY,
+    gameId TEXT NOT NULL,
+    lineType TEXT NOT NULL,
+    side TEXT NOT NULL,
+    oldLine REAL,
+    newLine REAL,
+    reason TEXT NOT NULL,
+    ruleId INTEGER,
+    executed_by TEXT NOT NULL DEFAULT 'auto_engine',
+    timestamp INTEGER DEFAULT (unixepoch())
+  )
+`);
+db.run(`CREATE INDEX IF NOT EXISTS idx_line_adj_log_game ON line_adjustment_log(gameId, timestamp)`);
+
 // Add missing columns if upgrading from older schema
 for (const column of [
   "ALTER TABLE request_log ADD COLUMN customerID TEXT",
   "ALTER TABLE request_log ADD COLUMN req_id TEXT",
+  "ALTER TABLE wager_analytics ADD COLUMN agentID TEXT",
+  "ALTER TABLE syndicate_cache ADD COLUMN windowMs INTEGER DEFAULT 0",
+  "ALTER TABLE syndicate_cache ADD COLUMN wagerCount INTEGER DEFAULT 0",
+  "ALTER TABLE syndicate_cache ADD COLUMN avgStake REAL DEFAULT 0",
+  "ALTER TABLE syndicate_cache ADD COLUMN riskScore INTEGER DEFAULT 0",
+  "ALTER TABLE syndicate_cache ADD COLUMN confidence INTEGER DEFAULT 0",
+  "ALTER TABLE syndicate_cache ADD COLUMN signals TEXT DEFAULT '[]'",
 ]) {
   try { db.run(column); } catch { /* column exists */ }
 }
@@ -212,6 +707,9 @@ const getCacheStale = dbRead.prepare(`SELECT * FROM api_cache WHERE endpoint = $
 const logRequestStmt = db.prepare(`INSERT INTO request_log (customerID, req_id, endpoint, status, duration_ms, error) VALUES ($customerID, $req_id, $endpoint, $status, $duration_ms, $error)`);
 const totalRequestCount = db.prepare(`SELECT COUNT(*) AS count FROM request_log`);
 const errorRequestCount = db.prepare(`SELECT COUNT(*) AS count FROM request_log WHERE error IS NOT NULL`);
+const statusErrorRequestCount = dbRead.prepare(`SELECT COUNT(*) AS count FROM request_log WHERE status >= 400`);
+const avgRequestDuration = dbRead.prepare(`SELECT AVG(duration_ms) AS avg FROM request_log`);
+const recentRequestLogsStmt = dbRead.prepare(`SELECT * FROM request_log ORDER BY logged_at DESC LIMIT $limit`);
 const countCustomerRequests = db.prepare(`SELECT COUNT(*) AS count FROM request_log WHERE customerID = $customerID AND logged_at > $windowStart`);
 const countCustomerEndpointRequests = db.prepare(`SELECT COUNT(*) AS count FROM request_log WHERE customerID = $customerID AND endpoint = $endpoint AND logged_at > $windowStart`);
 
@@ -223,11 +721,49 @@ const setIdempotency = db.prepare(`INSERT OR REPLACE INTO idempotency (key, endp
 
 const purgeExpiredCache = db.prepare(`DELETE FROM api_cache WHERE (unixepoch() - cached_at) > ttl_seconds`);
 const purgeOldIdempotency = db.prepare(`DELETE FROM idempotency WHERE (unixepoch() - created_at) > 86400`);
+const purgeOldRequestLogs = db.prepare(`DELETE FROM request_log WHERE (unixepoch() - logged_at) > 604800`);
 const tokenCount = dbRead.prepare(`SELECT COUNT(*) as total FROM tokens WHERE bearer_token IS NOT NULL`);
+const getWarmableTokens = dbRead.prepare(`SELECT customerID, MAX(expires_at) AS expires_at FROM tokens WHERE bearer_token IS NOT NULL AND expires_at > unixepoch() GROUP BY customerID ORDER BY expires_at DESC LIMIT 20`);
 
 const getRateLimitOverrideStmt = dbRead.prepare(`SELECT endpoint, "limit", window, updated_at FROM rate_limit_overrides WHERE endpoint = $endpoint`);
 const setRateLimitOverrideStmt = db.prepare(`INSERT OR REPLACE INTO rate_limit_overrides (endpoint, "limit", window, updated_at) VALUES ($endpoint, $limit, $window, unixepoch())`);
 const getAllRateLimitOverridesStmt = dbRead.prepare(`SELECT endpoint, "limit", window, updated_at FROM rate_limit_overrides`);
+
+const insertSyndicate = db.prepare(`INSERT OR REPLACE INTO syndicate_cache (id, agentID, pattern, members, totalStake, commonGame, windowMs, wagerCount, avgStake, riskScore, confidence, signals, detected_at) VALUES ($id, $agentID, $pattern, $members, $totalStake, $commonGame, $windowMs, $wagerCount, $avgStake, $riskScore, $confidence, $signals, $detected_at)`);
+const getSyndicates = dbRead.prepare(`SELECT * FROM syndicate_cache WHERE agentID = $agentID ORDER BY detected_at DESC LIMIT $limit`);
+const insertIntegrityCase = db.prepare(`INSERT INTO integrity_cases (id, agentID, syndicateId, status, priority, title, summary, evidence, reviewer, notes, created_at, updated_at) VALUES ($id, $agentID, $syndicateId, $status, $priority, $title, $summary, $evidence, $reviewer, $notes, unixepoch(), unixepoch())`);
+const getIntegrityCaseById = dbRead.prepare(`SELECT * FROM integrity_cases WHERE id = $id LIMIT 1`);
+const getIntegrityCases = dbRead.prepare(`SELECT * FROM integrity_cases WHERE agentID = $agentID AND ($status = '' OR status = $status) ORDER BY updated_at DESC LIMIT $limit`);
+const updateIntegrityCase = db.prepare(`UPDATE integrity_cases SET status = $status, priority = $priority, title = $title, summary = $summary, evidence = $evidence, reviewer = $reviewer, notes = $notes, updated_at = unixepoch() WHERE id = $id`);
+const getIntegrityCaseStatusCounts = dbRead.prepare(`SELECT status, COUNT(*) AS count FROM integrity_cases WHERE agentID = $agentID GROUP BY status`);
+const getSyndicateStats = dbRead.prepare(`SELECT COUNT(*) AS count, COALESCE(SUM(totalStake), 0) AS totalStake, COALESCE(MAX(riskScore), 0) AS maxRiskScore, COALESCE(MAX(detected_at), 0) AS latestDetectedAt FROM syndicate_cache WHERE agentID = $agentID AND detected_at > $since`);
+const insertRiskConfig = db.prepare(`INSERT OR REPLACE INTO risk_config (agentID, customerID, thresholds, webhook, updated_at) VALUES ($agentID, $customerID, $thresholds, $webhook, unixepoch())`);
+const getRiskConfig = dbRead.prepare(`SELECT * FROM risk_config WHERE agentID = $agentID`);
+const insertLineHistory = db.prepare(`INSERT INTO line_history (gameId, lineType, side, oldLine, newLine, oldOdds, newOdds) VALUES ($gameId, $lineType, $side, $oldLine, $newLine, $oldOdds, $newOdds)`);
+const getLineHistory = dbRead.prepare(`SELECT * FROM line_history WHERE gameId = $gameId AND timestamp > $since ORDER BY timestamp`);
+const getLineHistorySince = dbRead.prepare(`SELECT * FROM line_history WHERE timestamp > $since ORDER BY timestamp`);
+const insertWagerAnalytics = db.prepare(`INSERT INTO wager_analytics (agentID, wagerNumber, bettorId, gameId, wagerType, side, line, odds, stake, profit, sport, timestamp) VALUES ($agentID, $wagerNumber, $bettorId, $gameId, $wagerType, $side, $line, $odds, $stake, $profit, $sport, $timestamp)`);
+const getWagerAnalytics = dbRead.prepare(`SELECT * FROM wager_analytics WHERE bettorId = $bettorId AND timestamp > $since ORDER BY timestamp DESC`);
+const getAgentWagers = dbRead.prepare(`SELECT * FROM wager_analytics WHERE agentID = $agentID AND timestamp > $since ORDER BY timestamp`);
+const getGameWagerAnalytics = dbRead.prepare(`SELECT * FROM wager_analytics WHERE gameId = $gameId AND timestamp > $since ORDER BY timestamp`);
+const getAllRiskConfigs = dbRead.prepare(`SELECT * FROM risk_config`);
+const getSyndicatesByAgent = dbRead.prepare(`SELECT * FROM syndicate_cache WHERE agentID = $agentID AND detected_at > $since ORDER BY detected_at DESC`);
+
+const insertLineRule = db.prepare(`INSERT INTO line_adjustment_rules (agentID, sport, league, lineType, condition, threshold, adjustmentPercent, maxMovePercent, enabled) VALUES ($agentID, $sport, $league, $lineType, $condition, $threshold, $adjustmentPercent, $maxMovePercent, $enabled)`);
+const getLineRulesByAgent = dbRead.prepare(`SELECT * FROM line_adjustment_rules WHERE agentID = $agentID AND enabled = 1 ORDER BY created_at DESC`);
+const getAllLineRules = dbRead.prepare(`SELECT * FROM line_adjustment_rules WHERE enabled = 1 ORDER BY created_at DESC`);
+const updateLineRule = db.prepare(`UPDATE line_adjustment_rules SET sport = $sport, league = $league, lineType = $lineType, condition = $condition, threshold = $threshold, adjustmentPercent = $adjustmentPercent, maxMovePercent = $maxMovePercent, enabled = $enabled WHERE id = $id`);
+const deleteLineRule = db.prepare(`DELETE FROM line_adjustment_rules WHERE id = $id AND agentID = $agentID`);
+
+const deleteRiskConfig = db.prepare(`DELETE FROM risk_config WHERE agentID = $agentID`);
+const deleteRateLimitOverrideInline = db.prepare(`DELETE FROM rate_limit_overrides WHERE endpoint = $endpoint`);
+
+const insertSharpness = db.prepare(`INSERT INTO sharpness_history (bettorId, sharpScore, wagerCount, winRate, roi, calculated_at) VALUES ($bettorId, $sharpScore, $wagerCount, $winRate, $roi, unixepoch())`);
+const getSharpnessByBettor = dbRead.prepare(`SELECT * FROM sharpness_history WHERE bettorId = $bettorId ORDER BY calculated_at DESC LIMIT $limit`);
+
+const insertLineAdjLog = db.prepare(`INSERT INTO line_adjustment_log (gameId, lineType, side, oldLine, newLine, reason, ruleId, executed_by, timestamp) VALUES ($gameId, $lineType, $side, $oldLine, $newLine, $reason, $ruleId, $executed_by, unixepoch())`);
+const getLineAdjLog = dbRead.prepare(`SELECT * FROM line_adjustment_log WHERE gameId = $gameId ORDER BY timestamp DESC LIMIT $limit`);
+const getRecentLineAdjLog = dbRead.prepare(`SELECT * FROM line_adjustment_log WHERE timestamp > $since ORDER BY timestamp DESC LIMIT $limit`);
 
 // Request counters for /metrics
 let totalRequests = 0;
@@ -262,8 +798,88 @@ setInterval(() => {
     const r1 = purgeExpiredCache.run();
     const r2 = purgeOldIdempotency.run();
     if (r1.changes || r2.changes) logger.info("Purged stale entries", { cache: r1.changes, idempotency: r2.changes });
+    if (r2.changes) logger.info("Cleaned old idempotency keys", { deleted: r2.changes, olderThanHours: 24 });
   } catch (err: unknown) { logger.warn("Purge failed", { error: err instanceof Error ? err.message : String(err) }); }
 }, 21600000);
+
+// SQLite hot backup every 6 hours (offset by 1h from purge)
+setInterval(async () => {
+  try {
+    const backupDir = "./backups";
+    await Bun.write(`${backupDir}/.keep`, "").catch(() => {});
+    const backupPath = `${backupDir}/proxy-${Date.now()}.db`;
+    db.run(`VACUUM INTO '${backupPath}'`);
+    logger.log("info", "backup", `SQLite hot backup created`, { path: backupPath });
+    // Keep only last 10 backups
+    const files = Array.fromAsync ? await Array.fromAsync(Bun.glob(`${backupDir}/proxy-*.db`)) : [];
+    const sorted = files.sort();
+    while (sorted.length > 10) {
+      const old = sorted.shift();
+      if (old) { await Bun.file(old).delete().catch(() => {}); }
+    }
+  } catch (err: unknown) {
+    logger.warn("Backup failed", { error: err instanceof Error ? err.message : String(err) });
+  }
+}, 21600000 + 3600000);
+
+// ==========================================
+// RISK ENGINE — background alert evaluation
+// ==========================================
+let riskEngineRunning = false;
+var riskEngineTimer: Timer | null = null;
+async function runRiskEngine(): Promise<void> {
+  if (riskEngineRunning) return;
+  riskEngineRunning = true;
+  try {
+    const configs = getAllRiskConfigs.all() as Array<{ agentID: string; thresholds: string; webhook: string | null }>;
+    for (const cfg of configs) {
+      const thresholds = JSON.parse(cfg.thresholds || "{}");
+      const stored = getLatestTokenWrite.get({ $customerID: cfg.agentID }) as TokenRow | null;
+      if (!stored?.bearer_token) continue;
+
+      try {
+        const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
+          method: "POST",
+          headers: browserHeaders(stored.bearer_token || "", `cf_clearance=${stored.cf_clearance || ""}`),
+          body: toForm({ operation: "getBetTicker", agentID: cfg.agentID, agentOwner: cfg.agentID, agentSite: "1" }),
+        }), { reqId: "risk-engine", endpoint: "getBetTicker" });
+        const wagerData = await wagerRes.json().catch(() => null);
+        const wagers = parseBuckeyeWagers(wagerData);
+        const now = Date.now();
+        const todayStart = new Date(now).setHours(0, 0, 0, 0);
+        const weekStart = now - 7 * 86400000;
+
+        const todayWagers = wagers.filter(w => w.timestamp >= todayStart);
+        const weekWagers = wagers.filter(w => w.timestamp >= weekStart);
+        const todayPL = todayWagers.reduce((s, w) => s + (w.profit || 0), 0);
+        const weekPL = weekWagers.reduce((s, w) => s + (w.profit || 0), 0);
+        const maxBet = todayWagers.reduce((mx, w) => Math.max(mx, w.stake), 0);
+
+        const alerts: string[] = [];
+        if (thresholds.maxDailyLoss && todayPL < -thresholds.maxDailyLoss) alerts.push(`Daily loss exceeded: $${todayPL.toFixed(2)}`);
+        if (thresholds.maxWeeklyLoss && weekPL < -thresholds.maxWeeklyLoss) alerts.push(`Weekly loss exceeded: $${weekPL.toFixed(2)}`);
+        if (thresholds.maxBet && maxBet > thresholds.maxBet) alerts.push(`Large bet placed: $${maxBet.toFixed(2)}`);
+
+        if (alerts.length > 0 && cfg.webhook) {
+          await fetch(cfg.webhook, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ agentID: cfg.agentID, alerts, timestamp: Date.now() }),
+          }).catch(() => {});
+          logger.info("Risk alert sent", { agentID: cfg.agentID, alerts });
+        }
+      } catch (err: unknown) {
+        logger.warn("Risk engine agent check failed", { agentID: cfg.agentID, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  } finally {
+    riskEngineRunning = false;
+  }
+}
+
+if (CONFIG.features.riskEngine) {
+  riskEngineTimer = setInterval(() => { void runRiskEngine().catch(() => {}); }, 30000) as unknown as Timer;
+}
 
 // ==========================================
 // 3. TOKEN PRE-RENEWAL + SCHEDULING
@@ -332,6 +948,44 @@ if (CONFIG.features.tokenPreRenewal) {
   }, CONFIG.tokenRenewal.renewalIntervalMs);
 }
 
+// Cache warming piggybacks on the existing proxy route and stored credentials.
+const CACHE_WARM_ENDPOINTS = ["sportsLeagues", "betTicker"] as const;
+
+async function warmPopularCaches(): Promise<void> {
+  if (!CONFIG.features.memoryCache) return;
+  const rows = getWarmableTokens.all() as Array<{ customerID: string; expires_at: number }>;
+  if (rows.length === 0) return;
+
+  for (const row of rows) {
+    for (const endpoint of CACHE_WARM_ENDPOINTS) {
+      await fetch(`http://localhost:${CONFIG.port}/api/proxy/${endpoint}`, {
+        method: "POST",
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+          "X-API-Key": CONFIG.apiKey,
+        },
+        body: JSON.stringify({ customerID: row.customerID, agentID: row.customerID }),
+      }).catch((error: unknown) => {
+        logger.warn("Cache warm failed", { endpoint, customerID: row.customerID, error: error instanceof Error ? error.message : String(error) });
+      });
+    }
+  }
+}
+
+if (CONFIG.features.memoryCache) {
+  setInterval(() => {
+    void warmPopularCaches().catch((error: unknown) => {
+      logger.warn("Cache warm sweep failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+  }, CONFIG.tokenRenewal.renewalIntervalMs);
+  setTimeout(() => {
+    void warmPopularCaches().catch((error: unknown) => {
+      logger.warn("Startup cache warm failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+  }, 2500);
+}
+
 // ==========================================
 // 4. SWR (STALE-WHILE-REVALIDATE) CACHE
 // ==========================================
@@ -362,14 +1016,15 @@ async function getCacheWithSWR(
   endpoint: string,
   payload: JsonObject,
   fetchFn: () => Promise<unknown>,
-  reqId = "global"
+  reqId = "global",
+  ttlSeconds = CONFIG.defaultRateLimit.window
 ): Promise<{ data: unknown; source: string; stale?: boolean }> {
   const pHash = utilsHashPayload({ endpoint, ...payload });
   const cacheKey = { $endpoint: endpoint, $payload_hash: pHash };
   const cached = getCacheStale.get(cacheKey) as CacheRow | null;
 
   const now = Math.floor(Date.now() / 1000);
-  const ttl = cached?.ttl_seconds || CONFIG.defaultRateLimit.window;
+  const ttl = cached?.ttl_seconds || ttlSeconds;
   const swrWindow = ttl * SWR_TTL_MULTIPLIER;
 
   if (cached && (now - cached.cached_at) < ttl) {
@@ -382,7 +1037,7 @@ async function getCacheWithSWR(
   }
 
   const data = await fetchFn();
-  storeCache(endpoint, pHash, data);
+  storeCache(endpoint, pHash, data, ttlSeconds);
   return { data, source: "live" };
 }
 
@@ -395,7 +1050,7 @@ const cors = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, X-Request-ID, X-Stream, Idempotency-Key",
 };
 
-const corsMethods = ["POST", "GET", "OPTIONS"];
+const corsMethods = ["POST", "GET", "PATCH", "DELETE", "OPTIONS"];
 const corsHeaders = ["Content-Type", "Authorization", "X-API-Key", "X-Request-ID", "X-Stream", "Idempotency-Key"];
 
 function browserHeaders(token = "undefined", cookie = "") {
@@ -431,6 +1086,42 @@ async function readBody(req: Request): Promise<JsonObject> {
   return Object.fromEntries(new URLSearchParams(text)) as JsonObject;
 }
 
+function parseJsonValue<T>(text: string | null | undefined, fallback: T): T {
+  if (!text) return fallback;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeCaseStatus(value: unknown): string {
+  const status = String(value || "open").toLowerCase();
+  return ["open", "reviewing", "escalated", "closed", "false_positive"].includes(status) ? status : "open";
+}
+
+function normalizeCasePriority(value: unknown): string {
+  const priority = String(value || "medium").toLowerCase();
+  return ["low", "medium", "high", "critical"].includes(priority) ? priority : "medium";
+}
+
+function serializeIntegrityCase(row: IntegrityCaseRow) {
+  return {
+    id: row.id,
+    agentID: row.agentID,
+    syndicateId: row.syndicateId || null,
+    status: row.status,
+    priority: row.priority,
+    title: row.title,
+    summary: row.summary || "",
+    evidence: parseJsonValue<JsonObject>(row.evidence, {}),
+    reviewer: row.reviewer || "",
+    notes: row.notes || "",
+    createdAt: new Date(row.created_at * 1000).toISOString(),
+    updatedAt: new Date(row.updated_at * 1000).toISOString(),
+  };
+}
+
 function hashPayloadImpl(payload: unknown): string {
   return Bun.hash(JSON.stringify(payload)).toString(36);
 }
@@ -451,7 +1142,8 @@ function json(data: unknown, status = 200, headers: Record<string, string> = {},
 }
 
 function shouldLog(): boolean {
-  const sampleRate = Number(process.env.LOG_SAMPLE_RATE ?? Bun.env.LOG_SAMPLE_RATE ?? "1");
+  if (!CONFIG.features.requestSampling) return true;
+  const sampleRate = CONFIG.sampleRate;
   if (!Number.isFinite(sampleRate) || sampleRate >= 1) return true;
   if (sampleRate <= 0) return false;
   return Math.random() < sampleRate;
@@ -570,6 +1262,539 @@ function buildHeatmapFromWagers(wagers: Array<Record<string, unknown>>, days: nu
   return { days, matrix, peakHour, peakDay, total, totalVolume };
 }
 
+// ==========================================
+// ANALYTICS: SYNDICATE DETECTION, SHARP MONEY, EV
+// ==========================================
+
+interface Wager {
+  bettorId: string;
+  gameId: string;
+  wagerType: string;
+  side: string;
+  line: number;
+  odds: number;
+  stake: number;
+  timestamp: number;
+  profit?: number;
+  sport?: string;
+  wagerStatus?: string;
+  chosenTeam?: string;
+  description?: string;
+  originalLine?: number;
+  adjustedLine?: number;
+  isParlay?: boolean;
+  parlayName?: string;
+  overUnder?: string;
+  amountWon?: number;
+}
+
+const WAGER_TYPE_MAP: Record<string, string> = {
+  L: "STRAIGHT",
+  S: "STRAIGHT",
+  P: "PARLAY",
+  I: "IF_BET",
+  T: "TEASER",
+  G: "RACEBOOK",
+  A: "MANUAL_PLAY",
+  C: "CONTEST",
+  N: "LIVE_PROP",
+  R: "REVERSE",
+  M: "MONEYLINE",
+};
+
+interface EVCategory {
+  category: string;
+  roi: number;
+  winRate: number;
+  avgOdds: number;
+  impliedProb: number;
+  edge: number;
+  sampleSize: number;
+}
+
+interface EVResult {
+  model: string;
+  overall: {
+    winRate: number;
+    avgOdds: number;
+    impliedProbability: number;
+    expectedROI: number;
+    confidence: number;
+  };
+  byCategory: EVCategory[];
+}
+
+function parseBuckeyeWagers(raw: unknown): Wager[] {
+  if (!raw) return [];
+  const obj = raw as Record<string, unknown>;
+  const list = (obj.LIST || obj.data || obj.list || obj) as Array<Record<string, unknown>>;
+  if (!Array.isArray(list)) return [];
+  return list.map((w, i) => {
+    const rawType = String(w.WagerType || w.wagerType || w.Type || w.type || "L").trim().toUpperCase();
+    const wagerType = WAGER_TYPE_MAP[rawType] || rawType;
+    const rawSport = String(w.SportType || w.Sport || w.sport || "").trim();
+    const rawCustomerId = String(w.customerID || w.Login || w.bettorID || w.playerLogin || w.agentID || `unknown-${i}`).trim();
+    const rawTeam = String(w.ChosenTeamID || w.chosenTeam || w.Team1ID || w.side || "").trim();
+    const rawStatus = String(w.WagerStatus || w.wagerStatus || w.Status || "").trim();
+    const rawOU = String(w.TotalPointsOU || w.OverUnder || "").trim();
+    const amountWagered = Number(w.AmountWagered || w.amount_wagered || w.Risk || w.LegAmountWagered || 0);
+    const amountWon = Number(w.ToWinAmount || w.amount_won || w.LegToWinAmount || 0);
+    const netWinnings = Number(w.NetWinnings || w.net_winnings || 0);
+    const origLine = Number(w.OrigSpread || w.OrigTotalPoints || w.Line || w.line || w.Spread || w.spread || 0);
+    const adjLine = Number(w.AdjSpread || w.AdjTotalPoints || w.AdjustedSpread || 0);
+    const finalOdds = Number(w.FinalMoney || w.Odds || w.odds || w.MoneyLine || w.moneyLine || 0);
+    const rawGameId = String(w.GRA || w.gra || w.gameID || w.GameID || w.gameId || `${rawSport}-${w.Team1RotNum || ""}-${w.Team2RotNum || ""}`).trim();
+    const rawTime = String(w.AcceptedDateTime || w.Insert_Date_Time || w.insert_date_time || w.Date || w.Time || "");
+    const ts = Date.parse(rawTime);
+    const isParlay = wagerType === "PARLAY" || wagerType === "TEASER" || Number(w.PlayNumber || w.playNumber || 1) > 1;
+    const side = rawOU ? rawOU : (rawTeam.includes("/") ? rawTeam.split("/")[0] : rawTeam);
+    return {
+      bettorId: rawCustomerId,
+      gameId: rawGameId,
+      wagerType,
+      side,
+      line: adjLine || origLine,
+      odds: finalOdds,
+      stake: amountWagered / 100,
+      timestamp: isNaN(ts) ? 0 : ts,
+      profit: netWinnings / 100,
+      sport: rawSport,
+      wagerStatus: rawStatus,
+      chosenTeam: rawTeam,
+      description: String(w.Description || w.ShortDesc || "").trim(),
+      originalLine: origLine,
+      adjustedLine: adjLine,
+      isParlay,
+      parlayName: String(w.ParlayName || "").trim(),
+      overUnder: rawOU,
+      amountWon: amountWon / 100,
+    };
+  }).filter(w => w.timestamp > 0);
+}
+
+function detectSyndicates(wagers: Wager[], opts: { minBettors: number; minStake: number }): Syndicate[] {
+  const { minBettors, minStake } = opts;
+  const groups = new Map<string, Wager[]>();
+  for (const w of wagers) {
+    const key = `${w.gameId}|${w.wagerType}|${w.side}|${w.line}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(w);
+  }
+
+  const syndicates: Syndicate[] = [];
+  for (const [, groupWagers] of groups.entries()) {
+    const sorted = [...groupWagers].sort((a, b) => a.timestamp - b.timestamp);
+    let cluster: Wager[] = [];
+    for (let i = 0; i < sorted.length; i++) {
+      if (cluster.length === 0) {
+        cluster.push(sorted[i]);
+      } else if (sorted[i].timestamp - cluster[cluster.length - 1].timestamp <= 300000) {
+        cluster.push(sorted[i]);
+      } else {
+        const syndicate = buildSyndicateFromCluster(cluster, minBettors, minStake);
+        if (syndicate) syndicates.push(syndicate);
+        cluster = [sorted[i]];
+      }
+    }
+    const syndicate = buildSyndicateFromCluster(cluster, minBettors, minStake);
+    if (syndicate) syndicates.push(syndicate);
+  }
+  return syndicates;
+}
+
+function buildSyndicateFromCluster(cluster: Wager[], minBettors: number, minStake: number): Syndicate | null {
+  if (cluster.length < minBettors) return null;
+  const uniqueBettors = new Set(cluster.map(w => w.bettorId).filter(Boolean));
+  const totalStake = cluster.reduce((s, w) => s + w.stake, 0);
+  if (uniqueBettors.size < minBettors || totalStake < minStake) return null;
+
+  const sorted = [...cluster].sort((a, b) => a.timestamp - b.timestamp);
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  const windowMs = Math.max(0, last.timestamp - first.timestamp);
+  const avgStake = totalStake / cluster.length;
+  const stakeMultiplier = minStake > 0 ? totalStake / minStake : 1;
+  const speedScore = windowMs <= 60000 ? 25 : windowMs <= 180000 ? 15 : 8;
+  const bettorScore = Math.min(30, uniqueBettors.size * 8);
+  const stakeScore = Math.min(30, Math.round(stakeMultiplier * 12));
+  const repeatScore = Math.min(15, cluster.length * 3);
+  const riskScore = Math.min(100, Math.round(speedScore + bettorScore + stakeScore + repeatScore));
+  const signals = [
+    `${uniqueBettors.size} unique bettors`,
+    `${cluster.length} same-selection wagers`,
+    `$${Math.round(totalStake).toLocaleString()} total stake`,
+    `${Math.round(windowMs / 1000)}s cluster window`,
+  ];
+
+  return {
+    id: crypto.randomUUID(),
+    members: Array.from(uniqueBettors),
+    commonGame: first.gameId,
+    pattern: `${first.wagerType} ${first.side || "ANY"} ${first.line}`,
+    totalStake,
+    timestamp: first.timestamp,
+    windowMs,
+    wagerCount: cluster.length,
+    avgStake,
+    riskScore,
+    confidence: Math.min(100, Math.round(riskScore * 0.8 + Math.min(20, uniqueBettors.size * 3))),
+    signals,
+  };
+}
+
+function correlateSharpMoney(lineHistory: LineMove[], wagers: Wager[]): SharpAlert[] {
+  const alerts: SharpAlert[] = [];
+  for (const move of lineHistory) {
+    const before = move.timestamp - 60000;
+    const relevantWagers = wagers.filter(w =>
+      w.timestamp >= before && w.timestamp <= move.timestamp &&
+      w.gameId === move.gameId &&
+      ((move.lineType === "spread" && w.wagerType === "SPREAD" && w.side.toUpperCase() === move.side.toUpperCase()) ||
+       (move.lineType === "total" && w.wagerType === "TOTAL" && w.side.toUpperCase() === move.side.toUpperCase()) ||
+       (move.lineType === "moneyline" && w.wagerType === "MONEYLINE"))
+    );
+    if (relevantWagers.length > 0) {
+      const totalStake = relevantWagers.reduce((s, w) => s + w.stake, 0);
+      const uniqueBettors = new Set(relevantWagers.map(w => w.bettorId));
+      alerts.push({
+        gameId: move.gameId,
+        movement: move,
+        correlatedBettors: Array.from(uniqueBettors),
+        totalStake,
+        confidence: Math.min(100, Math.round((totalStake / 5000) * 50 + relevantWagers.length * 10)),
+      });
+    }
+  }
+  return alerts;
+}
+
+function computeExpectedValue(historicalWagers: Wager[], modelType: string): EVResult {
+  if (historicalWagers.length < 50) {
+    return {
+      model: modelType,
+      overall: { winRate: 0, avgOdds: 0, impliedProbability: 0, expectedROI: 0, confidence: 0 },
+      byCategory: [],
+    };
+  }
+
+  const groups = new Map<string, Wager[]>();
+  for (const w of historicalWagers) {
+    const key = `${w.sport || "unknown"}|${w.wagerType}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(w);
+  }
+
+  const byCategory: EVCategory[] = [];
+  for (const [key, groupWagers] of groups.entries()) {
+    const totalStake = groupWagers.reduce((s, w) => s + w.stake, 0);
+    const totalProfit = groupWagers.reduce((s, w) => s + (w.profit || 0), 0);
+    const roi = totalStake > 0 ? totalProfit / totalStake : 0;
+    const wins = groupWagers.filter(w => (w.profit ?? 0) > 0).length;
+    const winRate = wins / groupWagers.length;
+    const avgOdds = groupWagers.reduce((s, w) => s + w.odds, 0) / groupWagers.length;
+    const impliedProb = avgOdds > 0 ? 100 / (avgOdds + 100) : -avgOdds / (-avgOdds + 100);
+    const edge = winRate - impliedProb;
+    byCategory.push({
+      category: key,
+      roi,
+      winRate,
+      avgOdds,
+      impliedProb,
+      edge,
+      sampleSize: groupWagers.length,
+    });
+  }
+
+  const overallWins = historicalWagers.filter(w => (w.profit ?? 0) > 0).length;
+  const overallWinRate = overallWins / historicalWagers.length;
+  const overallAvgOdds = historicalWagers.reduce((s, w) => s + w.odds, 0) / historicalWagers.length;
+  const overallImplied = overallAvgOdds > 0 ? 100 / (overallAvgOdds + 100) : -overallAvgOdds / (-overallAvgOdds + 100);
+  const expectedROI = overallWinRate * (overallAvgOdds / 100) - (1 - overallWinRate);
+
+  return {
+    model: modelType,
+    overall: {
+      winRate: overallWinRate,
+      avgOdds: overallAvgOdds,
+      impliedProbability: overallImplied,
+      expectedROI,
+      confidence: Math.min(100, historicalWagers.length / 10),
+    },
+    byCategory,
+  };
+}
+
+// ==========================================
+// PREDICTIVE SHARPNESS SCORING
+// ==========================================
+
+interface WagerAnalytic {
+  stake: number;
+  profit: number;
+  sport: string;
+  wagerType: string;
+  timestamp: number;
+}
+
+interface SharpnessResult {
+  score: number;
+  confidence: number;
+  factors: {
+    totalBets: number;
+    avgStake: number;
+    maxStake: number;
+    winRate: number;
+    recentWinRate: number;
+    recentROI: number;
+    sports: number;
+    types: number;
+    stdDev: number;
+    insufficient?: boolean;
+  };
+}
+
+function computePredictiveSharpness(wagers: WagerAnalytic[]): SharpnessResult {
+  if (wagers.length < 30) {
+    return { score: 0, confidence: 10, factors: { totalBets: wagers.length, avgStake: 0, maxStake: 0, winRate: 0, recentWinRate: 0, recentROI: 0, sports: 0, types: 0, stdDev: 0, insufficient: true } };
+  }
+
+  const totalBets = wagers.length;
+  const totalStake = wagers.reduce((s, w) => s + w.stake, 0);
+  const avgStake = totalStake / totalBets;
+  const maxStake = Math.max(...wagers.map(w => w.stake));
+  const winRate = wagers.filter(w => w.profit > 0).length / totalBets;
+
+  const variance = wagers.reduce((s, w) => s + Math.pow(w.stake - avgStake, 2), 0) / totalBets;
+  const stdDev = Math.sqrt(variance);
+
+  const recent = wagers.slice(-20);
+  const recentWinRate = recent.filter(w => w.profit > 0).length / recent.length;
+  const recentStake = recent.reduce((s, w) => s + w.stake, 0);
+  const recentROI = recentStake > 0 ? recent.reduce((s, w) => s + w.profit, 0) / recentStake : 0;
+
+  const sports = new Set(wagers.map(w => w.sport || "UNK")).size;
+  const types = new Set(wagers.map(w => w.wagerType || "UNK")).size;
+
+  let score = 0;
+  if (avgStake > 500) score += 15;
+  if (maxStake > 2000) score += 15;
+  if (winRate > 0.55) score += 25;
+  if (winRate > 0.6) score += 15;
+  if (recentWinRate > 0.6) score += 20;
+  if (recentROI > 0.1) score += 10;
+  if (sports > 3) score += 5;
+  if (types > 2) score += 5;
+  if (stdDev > avgStake * 0.5) score += 10;
+  score = Math.min(100, Math.max(0, score));
+
+  const confidence = Math.min(100, Math.round(30 + (totalBets / 10)));
+
+  return {
+    score,
+    confidence,
+    factors: { totalBets, avgStake, maxStake, winRate, recentWinRate, recentROI, sports, types, stdDev },
+  };
+}
+
+// ==========================================
+// BACKTESTING SIMULATION
+// ==========================================
+
+interface BacktestRule {
+  sport: string;
+  league: string;
+  lineType: string;
+  condition: string;
+  threshold: number;
+  adjustmentPercent: number;
+  maxMovePercent: number;
+}
+
+interface BacktestResult {
+  totalAdjustments: number;
+  totalProfitImpact: number;
+  falsePositives: number;
+  adjustmentsByType: Record<string, number>;
+  adjustmentsByDay: Array<{ date: string; count: number }>;
+  simulatedPnl: number;
+}
+
+function simulateLineAdjustments(
+  wagers: Wager[],
+  rules: BacktestRule[],
+  lineHistory: LineMove[],
+): BacktestResult {
+  let totalAdjustments = 0;
+  let falsePositives = 0;
+  let simulatedPnl = 0;
+  const adjustmentsByType: Record<string, number> = {};
+
+  for (const move of lineHistory) {
+    for (const rule of rules) {
+      if (rule.lineType !== move.lineType && rule.lineType !== "ANY") continue;
+
+      const nearbyWagers = wagers.filter(w =>
+        w.gameId === move.gameId &&
+        w.timestamp >= move.timestamp - 300000 &&
+        w.timestamp <= move.timestamp
+      );
+
+      const totalStake = nearbyWagers.reduce((s, w) => s + w.stake, 0);
+      const uniqueBettors = new Set(nearbyWagers.map(w => w.bettorId)).size;
+
+      let conditionMet = false;
+      if (rule.condition === "sharp_money_threshold" && totalStake >= rule.threshold) conditionMet = true;
+      if (rule.condition === "syndicate_trigger" && uniqueBettors >= 3 && totalStake >= rule.threshold) conditionMet = true;
+      if (rule.condition === "manual") continue;
+
+      if (conditionMet) {
+        totalAdjustments++;
+        const adjKey = `${rule.lineType}:${rule.condition}`;
+        adjustmentsByType[adjKey] = (adjustmentsByType[adjKey] || 0) + 1;
+
+        const movement = Math.abs(move.newLine - move.oldLine);
+        const maxMove = Math.abs(move.oldLine) * (rule.maxMovePercent / 100);
+        if (movement > maxMove) {
+          falsePositives++;
+        } else {
+          const adjustmentDollar = totalStake * (rule.adjustmentPercent / 100);
+          simulatedPnl += adjustmentDollar * 0.05;
+        }
+      }
+    }
+  }
+
+  const adjustmentsByDay: Array<{ date: string; count: number }> = [];
+  const dayMap = new Map<string, number>();
+  for (const move of lineHistory) {
+    const day = new Date(move.timestamp).toISOString().slice(0, 10);
+    dayMap.set(day, (dayMap.get(day) || 0) + 1);
+  }
+  for (const [date, count] of dayMap.entries()) {
+    adjustmentsByDay.push({ date, count });
+  }
+
+  return {
+    totalAdjustments,
+    totalProfitImpact: simulatedPnl,
+    falsePositives,
+    adjustmentsByType,
+    adjustmentsByDay,
+    simulatedPnl,
+  };
+}
+
+// ==========================================
+// LINE ADJUSTMENT ENGINE (background)
+// ==========================================
+
+let lineEngineRunning = false;
+async function evaluateLineAdjustments(): Promise<void> {
+  if (lineEngineRunning || !CONFIG.features.analytics) return;
+  lineEngineRunning = true;
+  try {
+    const rules = getAllLineRules.all() as Array<{ id: number; agentID: string; sport: string; league: string; lineType: string; condition: string; threshold: number; adjustmentPercent: number; maxMovePercent: number; enabled: number }>;
+    if (rules.length === 0) return;
+
+    for (const rule of rules) {
+      const stored = getLatestTokenWrite.get({ $customerID: rule.agentID }) as TokenRow | null;
+      if (!stored?.bearer_token) continue;
+
+      try {
+        const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
+          method: "POST",
+          headers: browserHeaders(stored.bearer_token || "", `cf_clearance=${stored.cf_clearance || ""}`),
+          body: toForm({ operation: "getBetTicker", agentID: rule.agentID, agentOwner: rule.agentID, agentSite: "1" }),
+        }), { reqId: "line-engine", endpoint: "getBetTicker" });
+        const wagerData = await wagerRes.json().catch(() => null);
+        const wagers = parseBuckeyeWagers(wagerData);
+        const fiveMinAgo = Date.now() - 300000;
+        const recentWagers = wagers.filter(w => w.timestamp >= fiveMinAgo);
+
+        const totalStake = recentWagers.reduce((s, w) => s + w.stake, 0);
+
+        let conditionMet = false;
+        if (rule.condition === "sharp_money_threshold" && totalStake >= rule.threshold) conditionMet = true;
+        if (rule.condition === "syndicate_trigger") {
+          const syndicates = detectSyndicates(recentWagers, { minBettors: 3, minStake: rule.threshold });
+          if (syndicates.length > 0) conditionMet = true;
+        }
+
+        if (conditionMet) {
+          const gameGroups = new Map<string, Wager[]>();
+          for (const w of recentWagers) {
+            if (!gameGroups.has(w.gameId)) gameGroups.set(w.gameId, []);
+            gameGroups.get(w.gameId)!.push(w);
+          }
+
+          for (const [gameId, gameWagers] of gameGroups.entries()) {
+            const gameStake = gameWagers.reduce((s, w) => s + w.stake, 0);
+            if (gameStake < rule.threshold) continue;
+
+            const gameLines = getLineHistory.all({ $gameId: gameId, $since: Math.floor(fiveMinAgo / 1000) }) as Array<{ lineType: string; side: string; oldLine: number; newLine: number }>;
+            if (gameLines.length > 0 && rule.lineType !== "ANY") {
+              for (const line of gameLines) {
+                if (line.lineType === rule.lineType.toLowerCase()) {
+                  const oldLine = line.oldLine;
+                  const newLine = line.newLine || oldLine + (oldLine * rule.adjustmentPercent / 100);
+                  const maxMove = Math.abs(oldLine) * (rule.maxMovePercent / 100);
+                  const finalLine = Math.min(Math.abs(newLine), Math.abs(oldLine) + maxMove) * Math.sign(newLine || oldLine || 1);
+
+                  insertLineAdjLog.run({
+                    $gameId: gameId, $lineType: line.lineType, $side: line.side,
+                    $oldLine: oldLine, $newLine: finalLine,
+                    $reason: rule.condition, $ruleId: rule.id, $executed_by: "auto_engine",
+                  });
+
+                  logger.info("Line adjustment", { gameId, lineType: line.lineType, oldLine, newLine: finalLine, rule: rule.id });
+                }
+              }
+            } else {
+              const primaryWager = gameWagers[0];
+              const assumedOldLine = primaryWager?.line || 0;
+              const adjustment = assumedOldLine * (rule.adjustmentPercent / 100);
+              const newLine = assumedOldLine + adjustment;
+              const maxMove = Math.abs(assumedOldLine) * (rule.maxMovePercent / 100);
+              const finalLine = assumedOldLine === 0 ? adjustment : Math.min(Math.abs(newLine), Math.abs(assumedOldLine) + maxMove) * Math.sign(newLine);
+
+              insertLineAdjLog.run({
+                $gameId: gameId, $lineType: rule.lineType, $side: primaryWager?.side || "UNKNOWN",
+                $oldLine: assumedOldLine, $newLine: finalLine,
+                $reason: rule.condition, $ruleId: rule.id, $executed_by: "auto_engine",
+              });
+
+              logger.info("Line adjustment (assumed)", { gameId, lineType: rule.lineType, oldLine: assumedOldLine, newLine: finalLine, rule: rule.id });
+            }
+
+            for (const [, sub] of subscribers) {
+              try {
+                sub.ws.send(JSON.stringify({
+                  type: "line_adjustment",
+                  gameId,
+                  lineType: rule.lineType,
+                  ruleId: rule.id,
+                  condition: rule.condition,
+                  stake: gameStake,
+                  threshold: rule.threshold,
+                  timestamp: Date.now(),
+                }));
+              } catch { /* ws closed */ }
+            }
+          }
+        }
+      } catch (err: unknown) {
+        logger.warn("Line engine rule evaluation failed", { agentID: rule.agentID, ruleId: rule.id, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  } finally {
+    lineEngineRunning = false;
+  }
+}
+
+if (CONFIG.features.analytics) {
+  setInterval(() => { void evaluateLineAdjustments().catch(() => {}); }, 60000);
+}
+
 const memCache = new Map<string, { value: unknown; expires: number }>();
 const tokenMemCache = new Map<string, { token: TokenRow | null; expires: number }>();
 const inflight = new Map<string, Promise<unknown>>();
@@ -624,11 +1849,390 @@ async function dedupeRequest<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return promise;
 }
 
-function normalizeResponse(endpoint: string, raw: unknown): unknown {
-  if (endpoint.includes("getBetTicker") && typeof raw === "object" && raw !== null) {
-    const obj = raw as JsonObject;
-    return obj.LIST ?? obj.data ?? obj.result ?? raw;
+function normalizeResponse(endpoint: string, raw: unknown, keyOverride?: string): unknown {
+  if (!CONFIG.features.responseNormalize) return raw;
+  if (typeof raw !== "object" || raw === null) return raw;
+
+  const topLevelRows = Array.isArray(raw) ? raw.filter(isTaxonomyRecord) : null;
+  const obj = topLevelRows ? {} as Record<string, unknown> : raw as Record<string, unknown>;
+  const list = topLevelRows ?? obj.LIST ?? obj.Data ?? obj.data ?? obj.Result ?? obj.result ?? obj.GENERAL ?? null;
+  const arr = Array.isArray(list) ? list : (list ? [list] : null);
+  const meta = getEndpointMeta(endpoint);
+  const key = keyOverride || meta?.key || "";
+
+  if (key === "betTicker" || endpoint.includes("getBetTicker")) {
+    const wagers = (arr || [obj]).map((w: Record<string, unknown>) => ({
+      wagerNumber: w.WagerNumber || w.ItemNumber || w.wagerNumber,
+      agentID: String(w.agentID || w.AgentID || w.AgentLogin || "").trim(),
+      customerID: String(w.customerID || w.Login || "").trim(),
+      nameFirst: String(w.NameFirst || "").trim(),
+      login: String(w.Login || "").trim(),
+      wagerType: WAGER_TYPE_MAP[String(w.WagerType || w.LegWagerType || "L").trim().toUpperCase()] || String(w.WagerType || "L").trim(),
+      wagerTypeCode: String(w.WagerType || w.LegWagerType || "L").trim(),
+      amountWagered: Number(w.AmountWagered || w.LegAmountWagered || 0) / 100,
+      toWinAmount: Number(w.ToWinAmount || w.LegToWinAmount || 0) / 100,
+      netWinnings: Number(w.NetWinnings || 0) / 100,
+      volumeAmount: Number(w.VolumeAmount || w.AmountWagered || 0) / 100,
+      sportType: String(w.SportType || w.Sport || "").trim(),
+      chosenTeam: String(w.ChosenTeamID || w.Team1ID || "").trim(),
+      description: String(w.Description || w.ShortDesc || "").trim(),
+      origSpread: Number(w.OrigSpread || w.OrigTotalPoints || 0),
+      adjSpread: Number(w.AdjSpread || w.AdjTotalPoints || 0),
+      finalMoney: Number(w.FinalMoney || w.Odds || 0),
+      overUnder: String(w.TotalPointsOU || "").trim(),
+      wagerStatus: String(w.WagerStatus || w.Status || "").trim(),
+      gameDateTime: String(w.GameDateTime || "").trim(),
+      team1: String(w.Team1ID || w.ShortName1 || "").trim(),
+      team2: String(w.Team2ID || w.ShortName2 || "").trim(),
+      team1Rot: Number(w.Team1RotNum || 0),
+      team2Rot: Number(w.Team2RotNum || 0),
+      isParlay: Number(w.PlayNumber || 1) > 1 || String(w.WagerType || "L").trim() === "P",
+      parlayName: String(w.ParlayName || "").trim(),
+      placedOn: String(w.PlacedOn || "").trim(),
+      acceptedDateTime: String(w.AcceptedDateTime || "").trim(),
+    }));
+    return { wagers, count: wagers.length, rawCount: arr ? arr.length : 1 };
   }
+
+  if (key === "pending" || endpoint.includes("getPending")) {
+    const nestedList = typeof list === "object" && list !== null && !Array.isArray(list)
+      ? (list as Record<string, unknown>).ARRAY ?? (list as Record<string, unknown>).array
+      : null;
+    const rows = topLevelRows
+      ? topLevelRows
+      : Array.isArray(list)
+      ? list as Record<string, unknown>[]
+      : Array.isArray(nestedList)
+        ? nestedList as Record<string, unknown>[]
+        : arr
+          ? arr as Record<string, unknown>[]
+          : [obj];
+    const grouped = new Map<string, Record<string, unknown>[]>();
+
+    for (const row of rows) {
+      const ticketNumber = cleanString(row.TicketNumber ?? row.ticketNumber);
+      const wagerNumber = cleanString(row.WagerNumber ?? row.wagerNumber);
+      const key = `${ticketNumber || "ticket"}-${wagerNumber || grouped.size}`;
+      const group = grouped.get(key) || [];
+      group.push(row);
+      grouped.set(key, group);
+    }
+
+    const wagers = Array.from(grouped.entries()).map(([groupKey, legs]) => {
+      const first = legs[0] || {};
+      const wagerType = cleanString(first.WagerType ?? first.wagerType).toUpperCase();
+      const ticketNumber = numberField(first, ["TicketNumber", "ticketNumber"]);
+      const wagerNumber = numberField(first, ["WagerNumber", "wagerNumber"]);
+      const stake = moneyField(first, ["AmountWagered", "amountWagered"]);
+      const toWin = moneyField(first, ["ToWinAmount", "toWinAmount"]);
+
+      return {
+        key: groupKey,
+        ticketNumber,
+        wagerNumber,
+        player: {
+          id: cleanString(first.customerID ?? first.playerID),
+          name: cleanString(first.NameFirst ?? first.name),
+          login: cleanString(first.Login ?? first.login),
+          agent: cleanString(first.AgentLogin ?? first.agentID ?? first.agent),
+        },
+        wager: {
+          type: wagerType,
+          typeName: pendingWagerTypeName(wagerType),
+          status: cleanString(first.WagerStatus ?? first.status, "P"),
+          outcome: cleanString(first.Outcome ?? first.outcome, "P"),
+          stake,
+          toWin,
+          risk: stake,
+          description: cleanString(first.Description ?? first.description),
+          placedAt: cleanString(first.AcceptedDateTime ?? first.placedAt),
+          placedOn: cleanString(first.PlacedOn ?? first.placedOn, "Internet"),
+          credit: cleanString(first.CreditAcctFlag ?? first.credit) === "Y",
+          freePlay: cleanString(first.FreePlayFlag ?? first.freePlay) === "Y",
+          roundRobin: numberField(first, ["RoundRobinLink", "roundRobin"]) === 1,
+          parlayName: cleanString(first.ParlayName ?? first.TeaserName) || null,
+          totalPicks: numberField(first, ["totalPicks", "TotalPicks"], legs.length),
+          teaserPoints: numberField(first, ["TeaserPoints", "teaserPoints"]),
+        },
+        legs: legs.map((leg, index) => {
+          const legWagerType = cleanString(leg.LegWagerType ?? leg.legType).toUpperCase();
+          const side = pendingTotalSide(leg);
+          const wagerTypeName = pendingLegMarketName(legWagerType, side);
+          const odds = numberField(leg, ["FinalMoney", "finalMoney"]);
+          const spread = numberField(leg, ["AdjSpread", "adjSpread", "OrigSpread"]);
+          const totalPoints = numberField(leg, ["AdjTotalPoints", "adjTotalPoints", "OrigTotalPoints"]);
+          const line = wagerTypeName === "MONEYLINE" ? odds : wagerTypeName === "TOTAL" ? totalPoints : spread;
+          return {
+            itemNumber: numberField(leg, ["ItemNumber", "itemNumber"], index + 1),
+            chosenTeam: cleanString(leg.ChosenTeamID ?? leg.chosenTeam),
+            wagerType: legWagerType,
+            wagerTypeName,
+            side,
+            line,
+            odds,
+            spread,
+            totalPoints,
+            buyPoints: numberField(leg, ["BuyPoints", "buyPoints"]),
+            game: {
+              datetime: cleanString(leg.GameDateTime ?? leg.gameDateTime),
+              sport: cleanString(leg.SportType ?? leg.sport),
+              league: cleanString(leg.SportSubType ?? leg.league),
+              away: {
+                team: cleanString(leg.Team1ID ?? leg.awayTeam),
+                shortName: cleanString(leg.ShortName1 ?? leg.awayShort),
+                rot: numberField(leg, ["Team1RotNum", "awayRot"]),
+                pitcher: cleanString(leg.ListedPitcher1 ?? leg.awayPitcher) || null,
+                pitcherReq: cleanString(leg.Pitcher1ReqFlag ?? leg.awayPitcherReq) === "Y",
+                logo: cleanString(leg.LogoTeam1 ?? leg.awayLogo) || null,
+                score: leg.Team1FinalScore ?? leg.awayScore ?? null,
+              },
+              home: {
+                team: cleanString(leg.Team2ID ?? leg.homeTeam),
+                shortName: cleanString(leg.ShortName2 ?? leg.homeShort),
+                rot: numberField(leg, ["Team2RotNum", "homeRot"]),
+                pitcher: cleanString(leg.ListedPitcher2 ?? leg.homePitcher) || null,
+                pitcherReq: cleanString(leg.Pitcher2ReqFlag ?? leg.homePitcherReq) === "Y",
+                logo: cleanString(leg.LogoTeam2 ?? leg.homeLogo) || null,
+                score: leg.Team2FinalScore ?? leg.homeScore ?? null,
+              },
+            },
+            volume: moneyField(leg, ["VolumeAmount", "volume"]),
+            legStake: moneyField(leg, ["LegAmountWagered", "legStake"]),
+            legToWin: moneyField(leg, ["LegToWinAmount", "legToWin"]),
+          };
+        }),
+      };
+    });
+
+    return {
+      date: obj.Date || obj.date,
+      totalPending: obj.Total || wagers.length,
+      totalRisk: moneyField(obj, ["TotalRisk", "totalRisk"], wagers.reduce((sum, wager) => sum + wager.wager.stake, 0)),
+      totalToWin: wagers.reduce((sum, wager) => sum + wager.wager.toWin, 0),
+      rawRowCount: rows.length,
+      wagers,
+    };
+  }
+
+  if (key === "sportsLeagues" || endpoint.includes("Get_SportsLeagues") || endpoint.includes("getSports")) {
+    const sports = (arr || [obj]).map((s: Record<string, unknown>) => {
+      const leagueRows = s.Leagues || s.leagues;
+      return {
+        id: s.SportID || s.ID || s.Sport,
+        code: s.Sport || s.Code,
+        name: s.SportName || s.Name || s.Description,
+        icon: s.Icon || s.SportIcon,
+        leagues: Array.isArray(leagueRows) ? leagueRows.map((lg: Record<string, unknown>) => ({
+          id: lg.LeagueID || lg.ID || lg.League,
+          code: lg.League || lg.Code,
+          name: lg.LeagueName || lg.Name || lg.Description,
+          season: lg.Season || lg.CurrentSeason,
+          hasLines: lg.HasLines || lg.hasLines || true,
+        })) : [],
+      };
+    });
+    return { sports, count: sports.length };
+  }
+
+  if (key === "leagueLines" || endpoint.includes("Get_LeagueLines") || endpoint.includes("getLines")) {
+    const games = (arr || [obj]).map((g: Record<string, unknown>) => {
+      const lineRows = g.Lines || g.lines || g.Line;
+      return {
+        id: g.GameID || g.ID,
+        rot: g.RotNum || g.Rotation || g.ROT,
+        datetime: g.GameDateTime || g.DateTime,
+        status: g.GameStatus || g.Status || "SCHEDULED",
+        away: { team: g.AwayTeam || g.Away, pitcher: g.AwayPitcher || null, score: g.AwayScore || null, rot: g.AwayRot || g.RotNumAway || null },
+        home: { team: g.HomeTeam || g.Home, pitcher: g.HomePitcher || null, score: g.HomeScore || null, rot: g.HomeRot || g.RotNumHome || null },
+        lines: Array.isArray(lineRows) ? lineRows.map((ln: Record<string, unknown>) => ({
+          id: ln.LineID || ln.ID,
+          type: ln.WagerType || ln.Type || "SPREAD",
+          period: ln.Period || ln.period || "FG",
+          side: ln.Side || ln.side || null,
+          line: ln.Line || ln.Points || ln.Spread || 0,
+          odds: ln.Odds || ln.odd || 0,
+          overOdds: ln.OverOdds || ln.over || null,
+          underOdds: ln.UnderOdds || ln.under || null,
+          moneyline: ln.MoneyLine || ln.moneyline || null,
+          vig: ln.Vig || 110,
+          maxRisk: ln.MaxRisk || ln.maxRisk || null,
+          status: ln.Status || "OPEN",
+        })) : [],
+      };
+    });
+    return { games, count: games.length };
+  }
+
+  if ((key === "games" || endpoint.includes("getGames")) && key !== "liveGame") {
+    const games = (arr || [obj]).map((g: Record<string, unknown>) => ({
+      id: g.GameID || g.ID, sport: g.Sport || g.sport, league: g.League || g.league,
+      away: g.AwayTeam || g.Away, home: g.HomeTeam || g.Home,
+      datetime: g.GameDateTime || g.DateTime, status: g.Status || g.GameStatus || "SCHEDULED", tv: g.TV || null,
+    }));
+    return { games, count: games.length };
+  }
+
+  if (key === "playerInfo" || endpoint.includes("getInfoPlayer")) {
+    const p = (arr ? arr[0] : obj) as Record<string, unknown>;
+    return { player: { id: p.Player || p.ID || p.playerID, name: p.Name || p.PlayerName, balance: p.Balance || 0, atRisk: p.AtRisk || 0, dayGross: p.DayGross || 0, weekGross: p.WeekGross || 0, monthGross: p.MonthGross || 0, status: p.Status || "Active", agent: p.Agent || p.AgentID, phone: p.Phone || null, email: p.Email || null, lastLogin: p.LastLogin || null, lastWager: p.LastWager || null, creditLimit: p.CreditLimit || 0, maxWager: p.MaxWager || 0 } };
+  }
+
+  if (key === "agentDownline" || endpoint.includes("getListAgenstByAgent") || endpoint.includes("getAgentManagement")) {
+    const rows = buckeyeRows(raw);
+    const agents = (rows.length ? rows : (arr || [obj])).map((a: Record<string, unknown>) => ({
+      id: stringField(a, ["Agent", "AgentID", "ID", "agentID", "customerID", "Login", "login"]),
+      name: stringField(a, ["Name", "AgentName", "name", "Username", "Login", "login"]),
+      login: stringField(a, ["AgentLogin", "Login", "login"]),
+      type: stringField(a, ["Type", "AgentType", "type"], "Agent"),
+      status: stringField(a, ["Status", "status"], "Active"),
+      players: numberField(a, ["Players", "PlayerCount", "players", "playerCount"]),
+      subAgents: numberField(a, ["SubAgents", "subAgents"]),
+      balance: numberField(a, ["Balance", "balance"]),
+      weekGross: numberField(a, ["WeekGross", "weekGross"]),
+      dayGross: numberField(a, ["DayGross", "dayGross"]),
+      monthGross: numberField(a, ["MonthGross", "monthGross"]),
+      creditLimit: numberField(a, ["CreditLimit", "creditLimit"]),
+      maxWager: numberField(a, ["MaxWager", "maxWager"]),
+      phone: nullableStringField(a, ["Phone", "phone"]),
+      email: nullableStringField(a, ["Email", "email"]),
+      lastLogin: nullableStringField(a, ["LastLogin", "lastLogin"]),
+      created: nullableStringField(a, ["Created", "created"]),
+      commission: numberField(a, ["Commission", "commission"]),
+      holdPercent: numberField(a, ["HoldPercent", "holdPercent", "Hold", "hold"]),
+    }));
+    return { agents, count: agents.length };
+  }
+
+  if (key === "dynamicLive" || endpoint.includes("getDynamicLive")) {
+    const events = (arr || [obj]).map((e: Record<string, unknown>) => ({
+      id: e.GameID || e.EventID || e.ID, sport: e.Sport, league: e.League,
+      away: e.AwayTeam || e.Away, home: e.HomeTeam || e.Home,
+      awayScore: e.AwayScore || 0, homeScore: e.HomeScore || 0,
+      period: e.Period || e.CurrentPeriod || "1Q", timeRemaining: e.TimeRemaining || e.Clock || null,
+      status: e.Status || "LIVE", lines: e.Lines || e.lines || [],
+    }));
+    return { events, count: events.length };
+  }
+
+  if (key === "accountInfo" || endpoint.includes("getAccountInfoOwner")) {
+    const info = (obj.INFO || obj.info || obj.accountInfo || obj) as Record<string, unknown>;
+    return { account: { id: info.customerID || info.CustomerID || info.AgentID, active: info.Active ?? info.active, balance: info.CurrentBalance || info.Balance || 0, available: info.AvailableBalance || info.Available || 0, creditLimit: info.CreditLimit || 0 } };
+  }
+
+  if (key === "vigSetup" || endpoint.includes("getSportsVigSetup")) {
+    const settings = (arr || [obj]).map((s: Record<string, unknown>) => ({
+      sport: s.Sport || s.sport, vig: s.Vig || s.vig || 110, juice: s.Juice || s.juice || 0,
+      minVig: s.MinVig || s.minVig || 100, maxVig: s.MaxVig || s.maxVig || 150,
+    }));
+    return { settings, count: settings.length };
+  }
+
+  if (key === "amountLimits" || endpoint.includes("getAmountLimitGroup")) {
+    const limits = (arr || [obj]).map((lim: Record<string, unknown>) => ({
+      type: lim.WagerType || lim.Type || "STRAIGHT", min: lim.MinAmount || lim.Min || 0,
+      max: lim.MaxAmount || lim.Max || 0, perWager: lim.PerWager || lim.maxPerWager || 0,
+    }));
+    return { limits, count: limits.length };
+  }
+
+  if (key === "buyPoints" || endpoint.includes("getBuyPointsGroup")) {
+    const groups = (arr || [obj]).map((g: Record<string, unknown>) => ({
+      id: g.GroupID || g.ID, name: g.Name || g.GroupName, sport: g.Sport,
+      points: g.Points || g.points || 0, cost: g.Cost || g.cost || 0,
+    }));
+    return { groups, count: groups.length };
+  }
+
+  if (key === "agentBilling" || endpoint.includes("getAgentBilling") || endpoint.includes("getWeeklyFigure")) {
+    const rows = buckeyeRows(raw);
+    const figures = (rows.length ? rows : (arr || [obj])).map((f: Record<string, unknown>) => ({
+      agent: stringField(f, ["Agent", "AgentID", "agent"]),
+      name: stringField(f, ["Name", "agentName", "AgentName"]),
+      gross: numberField(f, ["Gross", "gross"]),
+      net: numberField(f, ["Net", "net"]),
+      hold: numberField(f, ["HoldPercent", "Hold", "hold"]),
+      commission: numberField(f, ["Commission", "commission"]),
+      wagers: numberField(f, ["Wagers", "wagerCount", "wagers"]),
+      wins: numberField(f, ["Wins", "wins"]),
+      losses: numberField(f, ["Losses", "losses"]),
+      pending: numberField(f, ["Pending", "pending"]),
+      cancelled: numberField(f, ["Cancelled", "cancelled"]),
+      refunded: numberField(f, ["Refunded", "refunded"]),
+      totalRisk: numberField(f, ["TotalRisk", "totalRisk"]),
+      totalWin: numberField(f, ["TotalWin", "totalWin"]),
+      avgBet: numberField(f, ["AverageBet", "avgBet"]),
+      openBets: numberField(f, ["OpenBets", "openBets"]),
+      playersActive: numberField(f, ["PlayersActive", "playersActive"]),
+      newPlayers: numberField(f, ["NewPlayers", "newPlayers"]),
+    }));
+    return {
+      period: stringField(obj, ["Period", "period", "Week", "week"]),
+      startDate: stringField(obj, ["StartDate", "startDate"]),
+      endDate: stringField(obj, ["EndDate", "endDate"]),
+      figures,
+      count: figures.length,
+    };
+  }
+
+  if (key === "gameVolume" || endpoint.includes("getGameVolume")) {
+    return { gameId: (obj as Record<string, unknown>).GameID || (obj as Record<string, unknown>).gameId, awayVolume: (obj as Record<string, unknown>).AwayVolume || 0, homeVolume: (obj as Record<string, unknown>).HomeVolume || 0, totalRisk: (obj as Record<string, unknown>).TotalRisk || 0, totalCount: (obj as Record<string, unknown>).WagerCount || 0, exposure: (obj as Record<string, unknown>).Exposure || 0 };
+  }
+
+  if (key === "scoresLive" || endpoint.includes("getScoresLiveDynamic")) {
+    const scores = (arr || [obj]).map((s: Record<string, unknown>) => ({
+      id: s.GameID || s.EventID || s.ID, sport: s.Sport || s.SportType, league: s.League,
+      away: s.AwayTeam || s.Away, home: s.HomeTeam || s.Home,
+      awayScore: s.AwayScore || s.Team1FinalScore || 0, homeScore: s.HomeScore || s.Team2FinalScore || 0,
+      period: s.Period || s.CurrentPeriod || "", timeRemaining: s.TimeRemaining || s.Clock || null,
+      status: s.Status || "LIVE",
+    }));
+    return { scores, count: scores.length };
+  }
+
+  if (key === "sportsTypesLive" || endpoint.includes("getSportsTypesLive")) {
+    const sports = (arr || [obj]).map((s: Record<string, unknown>) => ({
+      id: s.SportID || s.ID || s.SportType, name: s.SportName || s.Sport || s.Name, count: s.GameCount || s.Count || 0, live: true,
+    }));
+    return { sports, count: sports.length };
+  }
+
+  if (key === "liveGame") {
+    const scores = (arr || [obj]).map((s: Record<string, unknown>) => ({
+      id: s.GameID || s.ID, sport: s.Sport, away: s.AwayTeam || s.Away, home: s.HomeTeam || s.Home,
+      awayScore: s.AwayScore || 0, homeScore: s.HomeScore || 0, period: s.Period || s.CurrentPeriod || "",
+      timeRemaining: s.TimeRemaining || s.Clock || null, status: s.Status || "LIVE",
+    }));
+    return { scores, count: scores.length };
+  }
+
+  if (key === "props" || endpoint.includes("getProps")) {
+    const props = (arr || [obj]).map((p: Record<string, unknown>) => ({
+      id: p.PropID || p.ID, sport: p.Sport, league: p.League, type: p.PropType || p.Type || "",
+      description: p.Description || p.Desc || "", status: p.Status || "OPEN",
+    }));
+    return { props, count: props.length };
+  }
+
+  if (key === "authorizations" || endpoint.includes("getAuthorizations")) {
+    return { permissions: obj.agent || obj.Agent || obj.permissions || obj.Permissions || obj };
+  }
+
+  if (key === "newEmails" || endpoint.includes("getNewEmailsCount")) {
+    const emailInfo = (obj.INFO || obj.info || obj) as Record<string, unknown>;
+    return { count: emailInfo.newMsgCount || emailInfo.NewMsgCount || 0 };
+  }
+
+  if (key === "renewToken" || endpoint.includes("renewToken")) {
+    return {
+      token: String(obj.token || obj.code || obj.access_token || ""),
+      expires: Number(obj.expires || obj.expires_at || 0),
+    };
+  }
+
+  if (arr && arr.length > 0) {
+    return { items: arr, count: arr.length };
+  }
+
   return raw;
 }
 
@@ -671,6 +2275,66 @@ function numberField(row: TaxonomyRecord, keys: string[], fallback = 0): number 
     if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
   }
   return fallback;
+}
+
+function moneyField(row: TaxonomyRecord, keys: string[], fallback = 0): number {
+  for (const key of keys) {
+    const value = row[key];
+    const amount = typeof value === "number" && Number.isFinite(value)
+      ? value
+      : typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))
+        ? Number(value)
+        : null;
+    if (amount !== null) return Math.abs(amount) >= 1000 ? amount / 100 : amount;
+  }
+  return fallback;
+}
+
+function pendingWagerTypeName(code: string): string {
+  switch (code) {
+    case "":
+      return "ALL TYPES";
+    case "P":
+      return "PARLAY";
+    case "I":
+      return "IF BET";
+    case "T":
+      return "TEASER";
+    case "G":
+      return "RACEBOOK";
+    case "A":
+      return "MANUAL PLAY";
+    case "C":
+      return "CONTEST";
+    case "N":
+      return "LIVE/PROP";
+    case "L":
+      return "LINE";
+    case "S":
+      return "STRAIGHT";
+    default:
+      return code || "PENDING";
+  }
+}
+
+function pendingTotalSide(row: TaxonomyRecord): string | null {
+  const side = stringField(row, ["TotalPointsOU", "totalPointsOU", "Side", "side"]).trim().toUpperCase();
+  if (side === "O" || side === "OVER") return "OVER";
+  if (side === "U" || side === "UNDER") return "UNDER";
+  return side || null;
+}
+
+function pendingLegMarketName(code: string, side: string | null): string {
+  switch (code) {
+    case "M":
+      return "MONEYLINE";
+    case "S":
+      return "SPREAD";
+    case "L":
+      return side === "OVER" || side === "UNDER" ? "TOTAL" : "LINE";
+    default:
+      return code || "LINE";
+  }
 }
 
 function activeField(row: TaxonomyRecord): boolean {
@@ -757,6 +2421,82 @@ function normalizeTaxonomy(level: TaxonomyLevel, raw: unknown): unknown[] {
         sport: stringField(gameType, ["Sport", "sport"]),
       }));
   }
+}
+
+function isProxyAlias(alias: string): alias is ProxyAliasName {
+  return Object.prototype.hasOwnProperty.call(PROXY_ALIAS_MAP, alias);
+}
+
+function aliasPayload(alias: ProxyAliasName, candidate: ProxyAliasCandidate, body: JsonObject): JsonObject {
+  const agentID = cleanString(body.agentID || body.customerID || body.agentOwner);
+  const playerID = cleanString(body.playerID || body.bettorID || body.customerID || body.playerLogin);
+  const payload: JsonObject = {
+    ...candidate.defaults,
+    ...body,
+    operation: candidate.operation,
+    RRO: "1",
+  };
+  delete payload.token;
+  delete payload.cf_clearance;
+  delete payload.cfClearance;
+  delete payload.__cf_bm;
+  delete payload.useCache;
+
+  if (agentID) {
+    payload.agentID ??= agentID;
+    payload.agentOwner ??= agentID;
+  }
+  if (playerID) {
+    payload.playerID ??= playerID;
+    payload.customerID ??= playerID;
+    payload.playerLogin ??= playerID;
+    payload.acc ??= playerID;
+  }
+  if (alias === "leagueLines") {
+    payload.sport ??= body.sport || body.league;
+    payload.league ??= body.league || body.sport;
+  }
+  if (alias === "gameVolume") {
+    payload.gameId ??= body.gameId || body.GameID || body.gameID;
+    payload.GameID ??= body.GameID || body.gameId || body.gameID;
+  }
+  if (alias === "dynamicLive") {
+    payload.live ??= body.live ?? "1";
+  }
+  if (alias === "pendingReportConfig") {
+    payload.agentID = agentID;
+    payload.agentOwner = cleanString(body.agentOwner || agentID);
+    payload.agentSite = cleanString(body.agentSite || payload.agentSite || "1");
+  }
+  if (alias === "updatePendingReportConfig") {
+    payload.agentID = agentID;
+    payload.agentOwner = cleanString(body.agentOwner || agentID);
+    payload.agentSite = cleanString(body.agentSite || payload.agentSite || "1");
+    delete payload.RRO;
+  }
+  return payload;
+}
+
+async function callProxyAlias(alias: ProxyAliasName, body: JsonObject, token: string, cfClearance: string, reqId: string, cfBm = "") {
+  const errors: Array<{ endpoint: string; status?: number; details: string }> = [];
+  const cookie = [`cf_clearance=${cfClearance}`];
+  if (cfBm) cookie.push(`__cf_bm=${cfBm}`);
+  for (const candidate of PROXY_ALIAS_MAP[alias]) {
+    const payload = aliasPayload(alias, candidate, body);
+    try {
+      const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/${candidate.endpoint}`, {
+        method: "POST",
+        headers: browserHeaders(token, cookie.join("; ")),
+        body: toForm(payload),
+      }), { reqId, endpoint: candidate.endpoint });
+      const raw = await readBuckeyeJson(upstream);
+      if (upstream.ok) return { candidate, payload, raw, status: upstream.status };
+      errors.push({ endpoint: candidate.endpoint, status: upstream.status, details: JSON.stringify(raw).slice(0, 400) });
+    } catch (err: unknown) {
+      errors.push({ endpoint: candidate.endpoint, details: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  throw new Error(errors.map((err) => `${err.endpoint}${err.status ? ` ${err.status}` : ""}: ${err.details}`).join("; "));
 }
 
 function cleanString(value: unknown, fallback = ""): string {
@@ -943,11 +2683,183 @@ function performanceReportFromBuckets(period: PerformancePeriod, buckets: Perfor
 }
 
 async function readBuckeyeJson(upstream: Response): Promise<unknown> {
+  return (await parseBuckeyeResponse(upstream)).data;
+}
+
+class UpstreamProxyError extends Error {
+  constructor(
+    readonly upstreamStatus: number,
+    readonly clientStatus: number,
+    readonly payload: JsonObject,
+    readonly rawSnippet: string
+  ) {
+    super(String(payload.error || `Buckeye upstream error ${upstreamStatus}`));
+  }
+}
+
+async function parseBuckeyeResponse(upstream: Response): Promise<{ data: unknown; text: string; contentType: string }> {
+  const contentType = upstream.headers.get("content-type") || "";
   const text = await upstream.text();
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return { raw: text };
+  if (!text) return { data: null, text, contentType };
+
+  if (contentType.includes("application/json") || looksLikeJson(text)) {
+    try {
+      return { data: JSON.parse(text) as unknown, text, contentType };
+    } catch {
+      return { data: { raw: text.slice(0, 500), parseError: "Invalid JSON from Buckeye" }, text, contentType };
+    }
+  }
+
+  return {
+    data: {
+      error: "Non-JSON response from Buckeye",
+      snippet: text.slice(0, 500),
+    },
+    text,
+    contentType,
+  };
+}
+
+async function readBuckeyeOrThrow(upstream: Response, endpoint: string, reqId = "global"): Promise<unknown> {
+  const parsed = await parseBuckeyeResponse(upstream);
+  if (upstream.ok) return parsed.data;
+
+  const errorMessage = buckeyeErrorMessage(upstream.status, parsed.data, parsed.contentType);
+  const payload: JsonObject = {
+    error: errorMessage,
+    upstreamStatus: upstream.status,
+    endpoint,
+    reqId,
+  };
+  logger.warn("Buckeye upstream error", {
+    reqId,
+    endpoint,
+    upstreamStatus: upstream.status,
+    contentType: parsed.contentType,
+    snippet: parsed.text.slice(0, 500),
+  });
+  throw new UpstreamProxyError(upstream.status, upstreamClientStatus(upstream.status), payload, parsed.text.slice(0, 500));
+}
+
+function buckeyeErrorMessage(status: number, data: unknown, contentType: string): string {
+  if (isTaxonomyRecord(data)) {
+    const msg = cleanString(data.error || data.message || data.Message || data.details);
+    if (msg) return msg;
+  }
+  if (!contentType.includes("application/json")) {
+    return `Buckeye returned non-JSON (${status}) - likely auth, session, or Cloudflare failure`;
+  }
+  return `Buckeye upstream error ${status}`;
+}
+
+function upstreamClientStatus(status: number): number {
+  if (status === 401 || status === 403) return status;
+  if (status === 429) return 429;
+  if (status >= 500) return 502;
+  return status >= 400 ? status : 502;
+}
+
+function looksLikeJson(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.startsWith("{") || trimmed.startsWith("[");
+}
+
+function getStoredCredentials(customerID: string): { token: string; cf_clearance: string } | null {
+  const stored = getCachedToken(customerID);
+  if (!stored?.bearer_token || !stored.cf_clearance) return null;
+  return { token: stored.bearer_token, cf_clearance: stored.cf_clearance };
+}
+
+function applyEndpointDefaults(endpointKey: string, endpoint: string, payload: JsonObject): JsonObject {
+  const next = { ...payload };
+  if ((endpointKey === "pending" || endpointKey === "getPending" || endpoint === "Manager/getPending") && !cleanString(next.date)) {
+    next.date = new Date().toISOString().slice(0, 10);
+  }
+  return next;
+}
+
+function missingRequiredParams(endpointKey: string, endpoint: string, payload: JsonObject): string[] {
+  const specs = REQUIRED_ENDPOINT_PARAMS[endpointKey] || REQUIRED_ENDPOINT_PARAMS[endpoint] || [];
+  const missing: string[] = [];
+  for (const spec of specs) {
+    if (Array.isArray(spec)) {
+      if (!spec.some((key) => cleanString(payload[key]))) missing.push(spec.join("|"));
+    } else if (!cleanString(payload[spec])) {
+      missing.push(spec);
+    }
+  }
+  return missing;
+}
+
+function validateRequiredParams(endpointKey: string, endpoint: string, payload: JsonObject): Response | null {
+  const missing = missingRequiredParams(endpointKey, endpoint, payload);
+  if (!missing.length) return null;
+  return json({
+    error: `Missing required parameters: ${missing.join(", ")}`,
+    missing,
+    endpoint: endpointKey,
+  }, 400);
+}
+
+function missingAliasRequestParams(alias: ProxyAliasName, body: JsonObject): string[] {
+  return PROXY_ALIAS_PARAMS[alias].required
+    .filter((param) => param !== "token" && param !== "cf_clearance")
+    .filter((param) => !cleanString(body[param]));
+}
+
+function getMockResponse(endpointKey: string, payload: JsonObject): unknown | null {
+  const key = endpointKey === "getPending" ? "pending" : endpointKey;
+  if (!DEMO_ENDPOINT_KEYS.has(key)) return null;
+  switch (key) {
+    case "accountInfo":
+      return {
+        accountInfo: {
+          customerID: cleanString(payload.customerID || payload.agentID, "DEMO"),
+          balance: 10000,
+          available: 8500,
+          openWagers: 12,
+        },
+      };
+    case "agentDownline":
+      return {
+        agents: [
+          { id: "DEMO1", name: "Demo Agent", login: "DEMO1", players: 5, subAgents: 2, balance: 10000, weekGross: 1250 },
+        ],
+      };
+    case "agentBilling":
+      return { period: "demo", figures: [{ agent: "DEMO1", name: "Demo Agent", gross: 1200, net: 850, wagers: 42 }], count: 1 };
+    case "betTicker":
+      return { wagers: [{ wagerNumber: 12345, customerID: "DEMO100", amountWagered: 100, toWinAmount: 90.91, status: "pending" }] };
+    case "dynamicLive":
+      return { events: [{ id: "DEMO-GAME", sport: "Football", away: "Demo Away", home: "Demo Home", status: "LIVE" }] };
+    case "gameVolume":
+      return { gameId: cleanString(payload.gameId || payload.GameID, "DEMO-GAME"), risk: 1200, toWin: 950, sides: [] };
+    case "leagueLines":
+      return [
+        { id: "DEMO-LINE", gameId: "DEMO-GAME", period: "FG", type: "SPREAD", side: "HOME", line: -3.5, odds: -110, status: "OPEN" },
+      ];
+    case "pending":
+      return {
+        date: cleanString(payload.date),
+        totalPending: 1,
+        totalRisk: 100,
+        totalToWin: 90.91,
+        wagers: [
+          {
+            key: "DEMO-1",
+            ticketNumber: 1000001,
+            wagerNumber: 1,
+            player: { id: "DEMO100", name: "Demo Player", login: "DEMO100", agent: cleanString(payload.agentID, "DEMO") },
+            wager: { type: "S", typeName: "STRAIGHT", status: "P", stake: 100, toWin: 90.91, totalPicks: 1 },
+            legs: [],
+          },
+        ],
+        rawRowCount: 1,
+      };
+    case "playerInfo":
+      return { player: { id: cleanString(payload.playerID || payload.playerLogin || payload.customerID, "DEMO100"), name: "Demo Player", active: true } };
+    default:
+      return null;
   }
 }
 
@@ -992,6 +2904,217 @@ function normalizeBettorDetails(raw: unknown, bettorID: string) {
   };
 }
 
+function rowTimestamp(row: TaxonomyRecord): number {
+  const numeric = rowNumber(row, ["timestamp", "Timestamp", "created_at", "CreatedAt"]);
+  if (numeric > 0) return numeric > 10_000_000_000 ? Math.floor(numeric / 1000) : Math.floor(numeric);
+  const raw = rowString(row, ["InsertDateTime", "Insert_Date_Time", "WagerDateTime", "TicketDate", "PlacedAt", "Date", "Time"]);
+  const parsed = raw ? Date.parse(raw) : NaN;
+  return Number.isNaN(parsed) ? Math.floor(Date.now() / 1000) : Math.floor(parsed / 1000);
+}
+
+function normalizeAnalyticWager(row: TaxonomyRecord, agentID = ""): StoredWagerAnalytic & { agentID: string; wagerNumber: string } {
+  return {
+    agentID,
+    wagerNumber: rowString(row, ["WagerNumber", "TicketNumber", "DocumentNumber", "id"]),
+    bettorId: rowString(row, ["Player", "bettorId", "customerID", "CustomerID", "Login", "login"]),
+    gameId: rowString(row, ["GameID", "gameId", "GameNum", "EventID", "Rotation"]),
+    wagerType: rowString(row, ["WagerType", "type", "LineType", "BetType"], "UNKNOWN").toUpperCase(),
+    side: rowString(row, ["Side", "side", "Pick", "Team", "Selection"]),
+    line: rowNumber(row, ["Line", "line", "Points", "Spread"]),
+    odds: rowNumber(row, ["Odds", "odds", "Price", "price", "AmericanOdds"]),
+    stake: moneyField(row, ["Risk", "risk", "stake", "AmountWagered", "WagerAmount", "Amount"], 0),
+    profit: moneyField(row, ["WinAmount", "profit", "ToWin", "ToWinAmount", "NetProfit"], 0),
+    sport: rowString(row, ["Sport", "sport", "SportType"], "UNK"),
+    timestamp: rowTimestamp(row),
+  };
+}
+
+function storeAnalyticWagers(rows: TaxonomyRecord[], agentID = "", bettorID = ""): StoredWagerAnalytic[] {
+  const wagers = rows
+    .map((row) => {
+      const normalized = normalizeAnalyticWager(row, agentID);
+      if (bettorID && !normalized.bettorId) normalized.bettorId = bettorID;
+      return normalized;
+    })
+    .filter((wager) => wager.bettorId && wager.gameId);
+
+  for (const wager of wagers) {
+    insertWagerAnalytics.run({
+      $agentID: wager.agentID || null,
+      $wagerNumber: wager.wagerNumber || null,
+      $bettorId: wager.bettorId,
+      $gameId: wager.gameId,
+      $wagerType: wager.wagerType,
+      $side: wager.side,
+      $line: wager.line,
+      $odds: wager.odds,
+      $stake: wager.stake,
+      $profit: wager.profit,
+      $sport: wager.sport,
+      $timestamp: wager.timestamp,
+    });
+  }
+  return wagers;
+}
+
+function detectAnalyticSyndicates(wagers: StoredWagerAnalytic[], minBettors = 2, minStake = 1000, timeWindowMs = 300000): Syndicate[] {
+  const groups = new Map<string, StoredWagerAnalytic[]>();
+  for (const wager of wagers) {
+    const key = `${wager.gameId}|${wager.wagerType}|${wager.side}|${wager.line}`;
+    const group = groups.get(key) ?? [];
+    group.push(wager);
+    groups.set(key, group);
+  }
+
+  const syndicates: Syndicate[] = [];
+  for (const groupWagers of groups.values()) {
+    const sorted = [...groupWagers].sort((a, b) => a.timestamp - b.timestamp);
+    let cluster: StoredWagerAnalytic[] = [];
+    for (const wager of sorted) {
+      if (cluster.length === 0 || (wager.timestamp - cluster[cluster.length - 1].timestamp) * 1000 <= timeWindowMs) {
+        cluster.push(wager);
+      } else {
+        processSyndicateCluster(cluster, syndicates, minBettors, minStake);
+        cluster = [wager];
+      }
+    }
+    processSyndicateCluster(cluster, syndicates, minBettors, minStake);
+  }
+  return syndicates;
+}
+
+function processSyndicateCluster(cluster: StoredWagerAnalytic[], syndicates: Syndicate[], minBettors: number, minStake: number): void {
+  if (cluster.length === 0) return;
+  const totalStake = cluster.reduce((sum, wager) => sum + wager.stake, 0);
+  const members = [...new Set(cluster.map((wager) => wager.bettorId).filter(Boolean))];
+  if (members.length < minBettors || totalStake < minStake) return;
+  const sorted = [...cluster].sort((a, b) => a.timestamp - b.timestamp);
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  const windowMs = Math.max(0, (last.timestamp - first.timestamp) * 1000);
+  const avgStake = totalStake / cluster.length;
+  const stakeMultiplier = minStake > 0 ? totalStake / minStake : 1;
+  const speedScore = windowMs <= 60000 ? 25 : windowMs <= 180000 ? 15 : 8;
+  const bettorScore = Math.min(30, members.length * 8);
+  const stakeScore = Math.min(30, Math.round(stakeMultiplier * 12));
+  const repeatScore = Math.min(15, cluster.length * 3);
+  const riskScore = Math.min(100, Math.round(speedScore + bettorScore + stakeScore + repeatScore));
+  syndicates.push({
+    id: randomUUID(),
+    members,
+    commonGame: first.gameId,
+    pattern: `${first.wagerType} ${first.side} ${first.line}`.trim(),
+    totalStake,
+    timestamp: first.timestamp,
+    windowMs,
+    wagerCount: cluster.length,
+    avgStake,
+    riskScore,
+    confidence: Math.min(100, Math.round(riskScore * 0.8 + Math.min(20, members.length * 3))),
+    signals: [
+      `${members.length} unique bettors`,
+      `${cluster.length} same-selection wagers`,
+      `$${Math.round(totalStake).toLocaleString()} total stake`,
+      `${Math.round(windowMs / 1000)}s cluster window`,
+    ],
+  });
+}
+
+function correlateAnalyticSharpMoney(lineHistory: LineMove[], wagers: StoredWagerAnalytic[], lookbackMs = 60000): SharpAlert[] {
+  const alerts: SharpAlert[] = [];
+  for (const move of lineHistory) {
+    const before = move.timestamp - Math.floor(lookbackMs / 1000);
+    const relevant = wagers.filter((wager) =>
+      wager.timestamp >= before &&
+      wager.timestamp <= move.timestamp &&
+      wager.gameId === move.gameId &&
+      ((move.lineType === "SPREAD" && wager.wagerType === "SPREAD" && wager.side === move.side) ||
+        (move.lineType === "TOTAL" && wager.wagerType === "TOTAL" && wager.side === move.side) ||
+        (move.lineType === "MONEYLINE" && wager.wagerType === "MONEYLINE"))
+    );
+    if (relevant.length === 0) continue;
+    const totalStake = relevant.reduce((sum, wager) => sum + wager.stake, 0);
+    alerts.push({
+      gameId: move.gameId,
+      movement: move,
+      correlatedBettors: [...new Set(relevant.map((wager) => wager.bettorId))],
+      totalStake,
+      confidence: Math.min(100, Math.round((totalStake / 5000) * 50 + relevant.length * 10)),
+    });
+  }
+  return alerts;
+}
+
+function computeAnalyticEV(wagers: StoredWagerAnalytic[]): JsonObject {
+  if (wagers.length < 20) return { error: "Insufficient data (min 20 wagers)", sampleSize: wagers.length };
+
+  const groups = new Map<string, StoredWagerAnalytic[]>();
+  for (const wager of wagers) {
+    const key = `${wager.sport || "UNK"}|${wager.wagerType || "UNK"}`;
+    const group = groups.get(key) ?? [];
+    group.push(wager);
+    groups.set(key, group);
+  }
+
+  const byCategory: JsonObject[] = [];
+  let totalStakeAll = 0;
+  let totalProfitAll = 0;
+  let winsAll = 0;
+
+  for (const [category, group] of groups) {
+    const stake = group.reduce((sum, wager) => sum + wager.stake, 0);
+    const profit = group.reduce((sum, wager) => sum + wager.profit, 0);
+    const wins = group.filter((wager) => wager.profit > 0).length;
+    const roi = stake > 0 ? profit / stake : 0;
+    const winRate = group.length > 0 ? wins / group.length : 0;
+    const avgOdds = group.reduce((sum, wager) => sum + wager.odds, 0) / group.length;
+    const impliedProb = avgOdds > 0 ? 100 / (avgOdds + 100) : avgOdds < 0 ? -avgOdds / (-avgOdds + 100) : 0.5;
+
+    totalStakeAll += stake;
+    totalProfitAll += profit;
+    winsAll += wins;
+
+    byCategory.push({
+      category,
+      sampleSize: group.length,
+      roi: Number(roi.toFixed(4)),
+      winRate: Number(winRate.toFixed(4)),
+      avgOdds: Number(avgOdds.toFixed(1)),
+      impliedProb: Number(impliedProb.toFixed(4)),
+      edge: Number((winRate - impliedProb).toFixed(4)),
+      stake,
+      profit,
+    });
+  }
+
+  const overallWinRate = winsAll / wagers.length;
+  const overallAvgOdds = wagers.reduce((sum, wager) => sum + wager.odds, 0) / wagers.length;
+  const overallImplied = overallAvgOdds > 0 ? 100 / (overallAvgOdds + 100) : overallAvgOdds < 0 ? -overallAvgOdds / (-overallAvgOdds + 100) : 0.5;
+  const payoutMultiple = overallAvgOdds > 0 ? overallAvgOdds / 100 : overallAvgOdds < 0 ? 100 / Math.abs(overallAvgOdds) : 1;
+  const expectedROI = overallWinRate * payoutMultiple - (1 - overallWinRate);
+
+  return {
+    model: "frequentist",
+    overall: {
+      sampleSize: wagers.length,
+      winRate: Number(overallWinRate.toFixed(4)),
+      avgOdds: Number(overallAvgOdds.toFixed(1)),
+      impliedProbability: Number(overallImplied.toFixed(4)),
+      expectedROI: Number(expectedROI.toFixed(4)),
+      edge: Number((overallWinRate - overallImplied).toFixed(4)),
+      confidence: Math.min(100, Math.round(wagers.length / 5)),
+      stake: totalStakeAll,
+      profit: totalProfitAll,
+    },
+    byCategory,
+  };
+}
+
+function fmtCur(n: number): string {
+  const abs = Math.abs(n || 0);
+  return `${n < 0 ? "-" : ""}$${abs >= 1000 ? `${(abs / 1000).toFixed(1)}K` : abs.toFixed(0)}`;
+}
+
 function field(value: unknown, fallback = ""): string {
   if (value === null || value === undefined || value === "") return fallback;
   return String(value);
@@ -1029,8 +3152,7 @@ function base64UrlEncode(bytes: Uint8Array): string {
 }
 
 async function verifyJwt(token: string): Promise<JsonObject | null> {
-  if (!CONFIG.otel.endpoint) return null; // use jwtSecret from env if available
-  const jwtSecret = process.env.JWT_SECRET || Bun.env.JWT_SECRET || "";
+  const jwtSecret = CONFIG.jwtSecret;
   if (!jwtSecret) return null;
   const [headerPart, payloadPart, signaturePart] = token.split(".");
   if (!headerPart || !payloadPart || !signaturePart) return null;
@@ -1046,18 +3168,17 @@ async function verifyJwt(token: string): Promise<JsonObject | null> {
 }
 
 function apiKeyAuth(req: Request): Response | null {
-  const apiKey = process.env.PROXY_API_KEY || Bun.env.PROXY_API_KEY || "dev-key-123";
   const key = req.headers.get("X-API-Key");
-  if (key !== apiKey) {
+  if (key !== CONFIG.apiKey) {
     return json({ error: "Invalid API key" }, 401);
   }
   return null;
 }
 
 function adminApiKeyAuth(req: Request): Response | null {
-  const adminKey = process.env.ADMIN_API_KEY || Bun.env.ADMIN_API_KEY || process.env.PROXY_API_KEY || Bun.env.PROXY_API_KEY || "dev-key-123";
-  const key = req.headers.get("X-Admin-Key") || req.headers.get("X-API-Key");
-  if (key !== adminKey) {
+  const url = new URL(req.url);
+  const key = req.headers.get("X-Admin-Key") || req.headers.get("X-API-Key") || url.searchParams.get("api_key");
+  if (key !== CONFIG.adminApiKey) {
     return json({ error: "Invalid admin API key" }, 401);
   }
   return null;
@@ -1091,7 +3212,7 @@ function requestFinished(ctx: { reqId: string; start: number }, endpoint: string
 async function buckeyeFetch(url: string, options: RequestInit, retries = CONFIG.maxRetries): Promise<Response> {
   for (let i = 0; i < retries; i++) {
     try {
-      const res = await fetch(url, options);
+      const res = await fetchWithTimeout(url, options, 30000);
       if (res.status >= 500 && i < retries - 1) throw new Error(`Server error ${res.status}`);
       return res;
     } catch (err: unknown) {
@@ -1154,6 +3275,89 @@ function applySpecialHandler(endpoint: string, payload: JsonObject, body: JsonOb
     enriched.pageSize = enriched.pageSize || 50;
     enriched.pageNumber = enriched.pageNumber || 1;
     enriched.agentID = enriched.agentID || body.customerID || body.agentID || '';
+    (enriched as JsonObject).RRO = '1';
+    return enriched;
+  }
+
+  if (op === 'renewToken') {
+    const enriched = { ...payload };
+    enriched.operation = 'renewToken';
+    (enriched as JsonObject).RRO = '1';
+    return enriched;
+  }
+
+  if (op === 'write' || endpoint.includes('Log/write') || endpoint.includes('logWrite')) {
+    const enriched = { ...payload };
+    (enriched as JsonObject).RRO = '1';
+    return enriched;
+  }
+
+  if (op === 'Get_SportsLeagues' || endpoint.includes('Get_SportsLeagues') || endpoint.includes('sportsLeagues')) {
+    const enriched = { ...payload };
+    (enriched as JsonObject).RRO = '1';
+    return enriched;
+  }
+
+  if (op === 'Get_LeagueLines2' || endpoint.includes('Get_LeagueLines') || endpoint.includes('leagueLines')) {
+    const enriched = { ...payload };
+    (enriched as JsonObject).RRO = '1';
+    return enriched;
+  }
+
+  if (op === 'getDynamicLive' || endpoint.includes('getDynamicLive') || endpoint.includes('dynamicLive')) {
+    const enriched = { ...payload };
+    (enriched as JsonObject).RRO = '1';
+    return enriched;
+  }
+
+  if (op === 'getPending' || endpoint.includes('getPending')) {
+    const enriched = { ...payload };
+    enriched.operation = 'getPending';
+    enriched.agentID = enriched.agentID || body.agentID || body.customerID || '';
+    enriched.agentOwner = enriched.agentOwner || enriched.agentID;
+    enriched.agentSite = enriched.agentSite || '1';
+    enriched.customerID = enriched.customerID || '0';
+    enriched.sort = enriched.sort || '1';
+    enriched.typeSort = enriched.typeSort || '2';
+    enriched.week = enriched.week || '0';
+    (enriched as JsonObject).RRO = '1';
+    delete enriched.path;
+    return enriched;
+  }
+
+  if (op === 'getConfigWebReportsPending' || endpoint.includes('getConfigWebReportsPending')) {
+    const enriched = { ...payload };
+    enriched.operation = 'getConfigWebReportsPending';
+    enriched.agentID = enriched.agentID || body.agentID || '';
+    enriched.agentOwner = enriched.agentOwner || enriched.agentID;
+    enriched.agentSite = enriched.agentSite || '1';
+    (enriched as JsonObject).RRO = '1';
+    delete enriched.path;
+    return enriched;
+  }
+
+  if (op === 'updateReportConfigPending' || endpoint.includes('updateReportConfigPending')) {
+    const enriched: JsonObject = {
+      ...PENDING_REPORT_CONFIG_DEFAULTS,
+      ...payload,
+      operation: 'updateReportConfigPending',
+    };
+    enriched.agentID = enriched.agentID || body.agentID || '';
+    enriched.agentOwner = enriched.agentOwner || enriched.agentID;
+    enriched.agentSite = enriched.agentSite || '1';
+    delete enriched.RRO;
+    delete enriched.path;
+    return enriched;
+  }
+
+  if (op === 'getSportsTypesLive' || endpoint.includes('getSportsTypesLive')) {
+    const enriched = { ...payload };
+    (enriched as JsonObject).RRO = '1';
+    return enriched;
+  }
+
+  if (op === 'getScoresLiveDynamic' || endpoint.includes('getScoresLiveDynamic') || endpoint.includes('scoresLive')) {
+    const enriched = { ...payload };
     (enriched as JsonObject).RRO = '1';
     return enriched;
   }
@@ -1234,6 +3438,34 @@ async function fetchWithFallback(baseUrl: string, endpoint: string, payload: Jso
     }), { reqId, endpoint: op });
   }
 
+  if (op === 'getPending' || endpoint.includes('getPending')) {
+    const body = toForm(payload);
+    const endpoints = [
+      `${baseUrl}/qubic/api/Manager/getPending`,
+      `${baseUrl}/cloud/api/Manager/getPending`,
+    ];
+    let lastError = '';
+
+    for (const url of endpoints) {
+      try {
+        const res = await buckeyeCall(() => buckeyeFetch(url, {
+          method: 'POST',
+          headers: browserHeaders(token, `cf_clearance=${cfClearance}`),
+          body,
+        }), { reqId, endpoint: 'getPending' });
+        if (res.ok) return res;
+        lastError = `${res.status} ${await res.clone().text().catch(() => '')}`;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    return new Response(JSON.stringify({ error: 'getPending failed', details: lastError }), {
+      status: 502,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   return buckeyeCall(() => buckeyeFetch(`${baseUrl}/cloud/api/${endpoint}`, {
     method: 'POST',
     headers: browserHeaders(token, `cf_clearance=${cfClearance}`),
@@ -1269,7 +3501,15 @@ function runtimeMetrics() {
   const memory = process.memoryUsage();
   const cpu = process.cpuUsage();
   let jsc: unknown = {};
+  let heap: unknown = {};
   try { jsc = (Bun as unknown as { jsc?: { getVMStats?: () => unknown } }).jsc?.getVMStats?.() || {}; } catch { jsc = {}; }
+  try { heap = jscHeapStats(); } catch { heap = {}; }
+  const serverLoad = {
+    pendingRequests: server.pendingRequests,
+    pendingWebSockets: server.pendingWebSockets,
+    tickerSubscribers: safeSubscriberCount("ticker"),
+    activeRequests,
+  };
 
   const avgLatencies: Record<string, { avg: number; p50: number; p99: number; count: number }> = {};
   for (const [ep, latencies] of endpointLatencies) {
@@ -1290,6 +3530,8 @@ function runtimeMetrics() {
     memory: { rss: Math.round(memory.rss / 1024 / 1024) + "MB", heapTotal: Math.round(memory.heapTotal / 1024 / 1024) + "MB", heapUsed: Math.round(memory.heapUsed / 1024 / 1024) + "MB" },
     cpu: { user: cpu.user, system: cpu.system },
     jsc,
+    heap,
+    server: serverLoad,
     uptime: process.uptime(),
     activeRequests,
     wsSessions: sessions.size,
@@ -1299,6 +3541,80 @@ function runtimeMetrics() {
     latency: avgLatencies,
     circuitBreaker: circuitBreaker.getStatus(),
   };
+}
+
+function safeSubscriberCount(topic: string): number {
+  try {
+    return server.subscriberCount(topic);
+  } catch {
+    return 0;
+  }
+}
+
+function prometheusMetrics(): string {
+  const memory = process.memoryUsage();
+  let heap: unknown = {};
+  try { heap = jscHeapStats(); } catch { heap = {}; }
+  const dbRow = totalRequestCount.get() as CountRow | null;
+  const errRow = statusErrorRequestCount.get() as CountRow | null;
+  const avgRow = avgRequestDuration.get() as { avg?: number | null } | null;
+  const circuitState = circuitBreaker.getStatus().state;
+  const lines: string[] = [
+    "# HELP buckeye_requests_total Total requests recorded by the Buckeye proxy",
+    "# TYPE buckeye_requests_total counter",
+    `buckeye_requests_total ${numberMetric(dbRow?.count ?? totalRequests)}`,
+    "# HELP buckeye_errors_total Total failed requests recorded by the Buckeye proxy",
+    "# TYPE buckeye_errors_total counter",
+    `buckeye_errors_total ${numberMetric(errRow?.count ?? errorRequests)}`,
+    "# HELP buckeye_avg_duration_ms Average proxy request duration in milliseconds",
+    "# TYPE buckeye_avg_duration_ms gauge",
+    `buckeye_avg_duration_ms ${numberMetric(avgRow?.avg ?? 0)}`,
+    "# HELP buckeye_active_requests Currently active HTTP requests",
+    "# TYPE buckeye_active_requests gauge",
+    `buckeye_active_requests ${numberMetric(activeRequests)}`,
+    "# HELP buckeye_active_websockets Active proxy websocket subscriptions and sessions",
+    "# TYPE buckeye_active_websockets gauge",
+    `buckeye_active_websockets ${numberMetric(subscribers.size + sessions.size)}`,
+    "# HELP buckeye_memory_rss_bytes Resident memory usage",
+    "# TYPE buckeye_memory_rss_bytes gauge",
+    `buckeye_memory_rss_bytes ${numberMetric(memory.rss)}`,
+    "# HELP buckeye_memory_heap_used_bytes Heap memory used",
+    "# TYPE buckeye_memory_heap_used_bytes gauge",
+    `buckeye_memory_heap_used_bytes ${numberMetric(memory.heapUsed)}`,
+    "# HELP buckeye_memory_cache_entries In-memory response cache entries",
+    "# TYPE buckeye_memory_cache_entries gauge",
+    `buckeye_memory_cache_entries ${numberMetric(memCache.size)}`,
+    "# HELP buckeye_token_cache_entries In-memory token cache entries",
+    "# TYPE buckeye_token_cache_entries gauge",
+    `buckeye_token_cache_entries ${numberMetric(tokenMemCache.size)}`,
+    "# HELP buckeye_inflight_requests Inflight deduplicated upstream calls",
+    "# TYPE buckeye_inflight_requests gauge",
+    `buckeye_inflight_requests ${numberMetric(inflight.size)}`,
+    "# HELP buckeye_uptime_seconds Proxy process uptime",
+    "# TYPE buckeye_uptime_seconds gauge",
+    `buckeye_uptime_seconds ${numberMetric(process.uptime())}`,
+    "# HELP buckeye_circuit_breaker_state Circuit breaker state as one-hot labels",
+    "# TYPE buckeye_circuit_breaker_state gauge",
+    `buckeye_circuit_breaker_state{state="CLOSED"} ${circuitState === "CLOSED" ? 1 : 0}`,
+    `buckeye_circuit_breaker_state{state="OPEN"} ${circuitState === "OPEN" ? 1 : 0}`,
+    `buckeye_circuit_breaker_state{state="HALF_OPEN"} ${circuitState === "HALF_OPEN" ? 1 : 0}`,
+    "# HELP buckeye_pending_requests Current requests queued in Bun server",
+    "# TYPE buckeye_pending_requests gauge",
+    `buckeye_pending_requests ${numberMetric(server.pendingRequests)}`,
+    "# HELP buckeye_jsc_objects_total JS object count from JSC heap stats",
+    "# TYPE buckeye_jsc_objects_total gauge",
+    `buckeye_jsc_objects_total ${numberMetric((heap as any).objectCount ?? 0)}`,
+    "# HELP buckeye_jsc_heap_capacity_bytes JSC heap capacity",
+    "# TYPE buckeye_jsc_heap_capacity_bytes gauge",
+    `buckeye_jsc_heap_capacity_bytes ${numberMetric((heap as any).heapCapacity ?? 0)}`,
+  ];
+
+  return `${lines.join("\n")}\n`;
+}
+
+function numberMetric(value: unknown): number {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
 }
 
 async function readiness() {
@@ -1315,12 +3631,19 @@ function buildOpenApiSpec() {
   const all = getAllEndpoints();
   const paths: JsonObject = {
     "/": { get: { summary: "Service info", responses: { "200": { description: "Proxy service status" } } } },
+    "/ping": { get: { summary: "Lightweight liveness probe", responses: { "200": { description: "pong" } } } },
     "/health": { get: { summary: "Dependency health check", responses: { "200": { description: "Healthy" }, "503": { description: "Degraded" } } } },
     "/ready": { get: { summary: "Kubernetes readiness probe", responses: { "200": { description: "Ready" }, "503": { description: "Not ready" } } } },
     "/metrics": { get: { summary: "Runtime metrics", responses: { "200": { description: "Metrics JSON" } } } },
+    "/metrics/prometheus": { get: { summary: "Prometheus text metrics", responses: { "200": { description: "Prometheus text/plain metrics" } } } },
     "/features": { get: { summary: "Feature flags", responses: { "200": { description: "Feature flag config" } } } },
+    "/demo/status": { get: { summary: "Demo mode status and mocked endpoint inventory", responses: { "200": { description: "Demo mode status" } } } },
     "/openapi.json": { get: { summary: "OpenAPI document", responses: { "200": { description: "OpenAPI JSON" } } } },
     "/dashboard": { get: { summary: "Live dashboard HTML", responses: { "200": { description: "HTML dashboard" } } } },
+    "/admin": { get: { summary: "Protected proxy admin dashboard", security: [{ apiKey: [] }], responses: { "200": { description: "HTML admin dashboard" }, "401": { description: "Unauthorized" } } } },
+    "/api/proxy/admin/summary": { get: { summary: "Protected admin summary", security: [{ apiKey: [] }], responses: { "200": { description: "Admin summary JSON" } } } },
+    "/api/proxy/admin/config": { get: { summary: "Protected redacted proxy config", security: [{ apiKey: [] }], responses: { "200": { description: "Redacted config JSON" } } } },
+    "/api/proxy/admin/logs": { get: { summary: "Protected recent proxy request logs", security: [{ apiKey: [] }], responses: { "200": { description: "Recent request logs" } } } },
     "/api/proxy/auth": { post: { summary: "Authenticate and store Buckeye token", security: [{ apiKey: [] }], responses: { "200": { description: "Authentication result" } } } },
     "/api/proxy/{endpoint}": { post: { summary: "Proxy a Buckeye endpoint", security: [{ apiKey: [] }], parameters: [{ name: "endpoint", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "Buckeye response" }, "429": { description: "Rate limited" }, "503": { description: "Shutting down or dependency unavailable" } } } },
     "/api/proxy/taxonomy/{level}": {
@@ -1331,6 +3654,26 @@ function buildOpenApiSpec() {
         parameters: [{ name: "level", in: "path", required: true, schema: { type: "string", enum: Object.keys(TAXONOMY_MAP) } }],
         responses: { "200": { description: "Normalized taxonomy data" }, "400": { description: "Invalid level or missing Buckeye auth" }, "502": { description: "Buckeye fetch failed" } },
       },
+    },
+    "/api/proxy/sportsLeagues": { post: { summary: "Buckeye sports/leagues alias", requestBody: { description: JSON.stringify(PROXY_ALIAS_PARAMS.sportsLeagues) }, responses: { "200": { description: "Sports/leagues payload" } } } },
+    "/api/proxy/leagueLines": { post: { summary: "Buckeye league lines alias", requestBody: { description: JSON.stringify(PROXY_ALIAS_PARAMS.leagueLines) }, responses: { "200": { description: "League line payload" } } } },
+    "/api/proxy/agentDownline": { post: { summary: "Buckeye getListAgenstByAgent alias", requestBody: { description: JSON.stringify(PROXY_ALIAS_PARAMS.agentDownline) }, responses: { "200": { description: "Agent downline" } } } },
+    "/api/proxy/agentBilling": { post: { summary: "Buckeye getAgentBilling alias", requestBody: { description: JSON.stringify(PROXY_ALIAS_PARAMS.agentBilling) }, responses: { "200": { description: "Agent billing figures" } } } },
+    "/api/proxy/playerInfo": { post: { summary: "Buckeye player info alias", requestBody: { description: JSON.stringify(PROXY_ALIAS_PARAMS.playerInfo) }, responses: { "200": { description: "Player details" } } } },
+    "/api/proxy/dynamicLive": { post: { summary: "Buckeye live events alias", requestBody: { description: JSON.stringify(PROXY_ALIAS_PARAMS.dynamicLive) }, responses: { "200": { description: "Live events or ticker payload" } } } },
+    "/api/proxy/gameVolume": { post: { summary: "Buckeye game volume/exposure alias", requestBody: { description: JSON.stringify(PROXY_ALIAS_PARAMS.gameVolume) }, responses: { "200": { description: "Game volume payload" } } } },
+    "/api/proxy/pending": { post: { summary: "Buckeye pending wagers grouped by ticket and parlay legs", requestBody: { description: "Requires token, cf_clearance, agentID. Optional: date, wagerType, amount, sort, typeSort, week, customerID, agentOwner, agentSite, __cf_bm." }, responses: { "200": { description: "Grouped pending wager payload" } } } },
+    "/api/proxy/pendingReportConfig": { post: { summary: "Read Buckeye pending report column visibility", requestBody: { description: JSON.stringify(PROXY_ALIAS_PARAMS.pendingReportConfig) }, responses: { "200": { description: "Pending report configuration" } } } },
+    "/api/proxy/updatePendingReportConfig": { post: { summary: "Update Buckeye pending report column visibility", requestBody: { description: JSON.stringify(PROXY_ALIAS_PARAMS.updatePendingReportConfig) }, responses: { "200": { description: "Pending report configuration update result" } } } },
+    "/api/proxy/analytics/syndicates": { post: { summary: "Detect correlated bettor clusters", security: [{ apiKey: [] }], responses: { "200": { description: "Syndicate scan result" } } } },
+    "/api/proxy/analytics/syndicates/stats": { get: { summary: "Summarize syndicate detections and review cases", security: [{ apiKey: [] }], responses: { "200": { description: "Syndicate stats" } } } },
+    "/api/proxy/integrity/cases": { get: { summary: "List integrity review cases", security: [{ apiKey: [] }], responses: { "200": { description: "Integrity cases" } } }, post: { summary: "Create integrity review case", security: [{ apiKey: [] }], responses: { "201": { description: "Created case" } } } },
+    "/api/proxy/integrity/cases/{id}": { patch: { summary: "Update integrity review case", security: [{ apiKey: [] }], responses: { "200": { description: "Updated case" } } } },
+    "/api/proxy/analytics/sharp-money": { post: { summary: "Correlate wagers with line movement", security: [{ apiKey: [] }], responses: { "200": { description: "Sharp-money alerts" } } } },
+    "/api/proxy/analytics/ev": { post: { summary: "Compute bettor expected-value model", security: [{ apiKey: [] }], responses: { "200": { description: "EV model result" } } } },
+    "/api/proxy/risk/config": {
+      get: { summary: "Read risk thresholds", security: [{ apiKey: [] }], responses: { "200": { description: "Risk config" } } },
+      post: { summary: "Save risk thresholds", security: [{ apiKey: [] }], responses: { "200": { description: "Risk config saved" } } },
     },
   };
 
@@ -1356,6 +3699,167 @@ function buildOpenApiSpec() {
   };
 }
 
+function getAdminLogs(limit: number): JsonObject[] {
+  const safeLimit = Math.min(Math.max(limit || 50, 1), 500);
+  return recentRequestLogsStmt.all({ $limit: safeLimit }) as JsonObject[];
+}
+
+function adminSummaryPayload(limit = 25): JsonObject {
+  const metrics = runtimeMetrics() as JsonObject;
+  const health = {
+    circuitBreaker: circuitBreaker.getStatus(),
+    activeRequests,
+    subscribers: subscribers.size,
+    sessions: sessions.size,
+    shuttingDown,
+  };
+  return {
+    generatedAt: new Date().toISOString(),
+    service: "Buckeye Proxy Admin",
+    url: `http://localhost:${CONFIG.port}`,
+    health,
+    metrics,
+    logs: getAdminLogs(limit),
+    rateLimitOverrides: getAllRateLimitOverridesStmt.all(),
+  };
+}
+
+function redactedConfig(): JsonObject {
+  return redactSensitive(CONFIG) as JsonObject;
+}
+
+function redactSensitive(value: unknown, key = ""): unknown {
+  if (Array.isArray(value)) return value.map((item) => redactSensitive(item, key));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as JsonObject).map(([entryKey, entryValue]) => [
+        entryKey,
+        redactSensitive(entryValue, entryKey),
+      ])
+    );
+  }
+  if (isSensitiveKey(key) && value !== undefined && value !== null && value !== "") return "[redacted]";
+  return value;
+}
+
+function isSensitiveKey(key: string): boolean {
+  return /api[_-]?key|secret|password|clearance|bearer|cookie|jwt|authorization/i.test(key);
+}
+
+function buildAdminHtml(): string {
+  const boot = JSON.stringify({
+    summary: adminSummaryPayload(25),
+    config: redactedConfig(),
+  }).replace(/</g, "\\u003c");
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Buckeye Proxy Admin</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; background: #0b0d10; color: #d7dde8; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 22px; border-bottom: 1px solid #252b34; background: #10141a; }
+  h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
+  main { padding: 18px 22px; display: grid; gap: 18px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .card { border: 1px solid #252b34; border-radius: 6px; padding: 12px; background: #111820; }
+  .label { color: #91a0b5; font-size: 12px; text-transform: uppercase; }
+  .value { margin-top: 6px; font-size: 18px; color: #f3f6fb; overflow-wrap: anywhere; }
+  section { display: grid; gap: 10px; }
+  h2 { margin: 0; font-size: 15px; color: #f3f6fb; }
+  pre, table { width: 100%; overflow: auto; }
+  pre { margin: 0; padding: 12px; border: 1px solid #252b34; border-radius: 6px; background: #080a0d; color: #c9d3e2; }
+  table { border-collapse: collapse; border: 1px solid #252b34; background: #080a0d; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid #252b34; text-align: left; vertical-align: top; }
+  th { color: #91a0b5; font-size: 12px; text-transform: uppercase; }
+  input { min-width: 0; background: #080a0d; color: #f3f6fb; border: 1px solid #2f3845; border-radius: 4px; padding: 8px; font: inherit; }
+  button { background: #1f6feb; color: #fff; border: 0; border-radius: 4px; padding: 8px 12px; font: inherit; cursor: pointer; }
+  form { display: grid; grid-template-columns: minmax(160px, 1fr) 100px 100px auto; gap: 8px; align-items: end; }
+  .muted { color: #91a0b5; }
+  @media (max-width: 720px) { form { grid-template-columns: 1fr; } header { align-items: flex-start; flex-direction: column; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Buckeye Proxy Admin</h1>
+  <div class="muted" id="generatedAt"></div>
+</header>
+<main>
+  <div class="grid" id="cards"></div>
+  <section>
+    <h2>Rate Limit Override</h2>
+    <form id="overrideForm">
+      <input id="endpoint" placeholder="endpoint" autocomplete="off">
+      <input id="limit" type="number" min="1" placeholder="limit">
+      <input id="window" type="number" min="1" placeholder="window">
+      <button type="submit">Save</button>
+    </form>
+    <div class="muted" id="overrideStatus"></div>
+  </section>
+  <section>
+    <h2>Recent Logs</h2>
+    <table>
+      <thead><tr><th>Time</th><th>Endpoint</th><th>Status</th><th>Duration</th><th>Customer</th></tr></thead>
+      <tbody id="logs"></tbody>
+    </table>
+  </section>
+  <section>
+    <h2>Redacted Config</h2>
+    <pre id="config"></pre>
+  </section>
+</main>
+<script>
+  const boot = ${boot};
+  const apiKey = new URLSearchParams(location.search).get('api_key') || '';
+  const headers = apiKey ? { 'X-Admin-Key': apiKey } : {};
+  function cell(value) { return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  function render(summary, config) {
+    document.getElementById('generatedAt').textContent = summary.generatedAt || '';
+    const cards = [
+      ['Active Requests', summary.health?.activeRequests],
+      ['Subscribers', summary.health?.subscribers],
+      ['Sessions', summary.health?.sessions],
+      ['Circuit', summary.health?.circuitBreaker?.state],
+      ['Requests', summary.metrics?.dbLog?.total],
+      ['Errors', summary.metrics?.dbLog?.errors],
+    ];
+    document.getElementById('cards').innerHTML = cards.map(([label, value]) => '<div class="card"><div class="label">' + cell(label) + '</div><div class="value">' + cell(value) + '</div></div>').join('');
+    document.getElementById('logs').innerHTML = (summary.logs || []).map(log => '<tr><td>' + cell(log.logged_at) + '</td><td>' + cell(log.endpoint) + '</td><td>' + cell(log.status) + '</td><td>' + cell(log.duration_ms) + 'ms</td><td>' + cell(log.customerID) + '</td></tr>').join('');
+    document.getElementById('config').textContent = JSON.stringify(config, null, 2);
+  }
+  async function refresh() {
+    try {
+      const [summaryRes, configRes] = await Promise.all([
+        fetch('/api/proxy/admin/summary?limit=100', { headers }),
+        fetch('/api/proxy/admin/config', { headers }),
+      ]);
+      if (!summaryRes.ok || !configRes.ok) throw new Error('Admin refresh failed');
+      render(await summaryRes.json(), (await configRes.json()).config);
+    } catch {
+      render(boot.summary, boot.config);
+    }
+  }
+  document.getElementById('overrideForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const body = {
+      endpoint: document.getElementById('endpoint').value,
+      limit: Number(document.getElementById('limit').value),
+      window: Number(document.getElementById('window').value),
+    };
+    const response = await fetch('/admin/rate-limit', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    document.getElementById('overrideStatus').textContent = response.ok ? 'Saved' : 'Save failed';
+    await refresh();
+  });
+  render(boot.summary, boot.config);
+  refresh();
+  setInterval(refresh, 10000);
+</script>
+</body>
+</html>`;
+}
+
 // ==========================================
 // 10. WEBSOCKET PUB/SUB + TICKER HISTORY + BATCHING
 // ==========================================
@@ -1365,7 +3869,7 @@ const subscribers = new Map<string, Sub>();
 const TICKER_HISTORY_SIZE = 50;
 const tickerHistory: Array<{ timestamp: number; data: unknown }> = [];
 let tickBatch: unknown[] = [];
-let tickBatchTimer: Timer | null = null;
+var tickBatchTimer: Timer | null = null;
 
 function rememberTicker(data: unknown) {
   tickerHistory.push({ timestamp: Date.now(), data });
@@ -1396,6 +3900,21 @@ function enqueueTick(data: unknown) {
   tickBatch.push(data);
   if (!tickBatchTimer) {
     tickBatchTimer = setTimeout(flushBatch, CONFIG.wsBatchIntervalMs);
+  }
+}
+
+const liveScoresCache = new Map<string, { awayScore: number; homeScore: number }>();
+
+function pushLiveFlash(event: { id: string; sport?: string; away?: string; home?: string; awayScore: number; homeScore: number; period?: string }) {
+  const prev = liveScoresCache.get(event.id);
+  const isFlash = prev && (prev.awayScore !== event.awayScore || prev.homeScore !== event.homeScore);
+  liveScoresCache.set(event.id, { awayScore: event.awayScore, homeScore: event.homeScore });
+  if (isFlash) {
+    const msg = JSON.stringify({ type: "live_flash", event, timestamp: Date.now() });
+    for (const sub of subscribers.values()) {
+      if (sub.ws.readyState === 1) sub.ws.send(msg);
+    }
+    for (const ws of sessions.keys()) ws.send(msg);
   }
 }
 
@@ -1443,17 +3962,20 @@ function stopTicker(id: string) {
 // ==========================================
 // 11. BUN SERVER (HTTP + WEBSOCKET)
 // ==========================================
-let configWatcher: ReturnType<typeof watch> | null = null;
+var configWatcher: ReturnType<typeof watch> | null = null;
 
 const server = Bun.serve<WsData>({
   port: CONFIG.port,
   hostname: "0.0.0.0",
-  development: !Bun.env.PROXY_PRODUCTION,
+  development: !CONFIG.production,
 
   websocket: ({
     compress: CONFIG.features.wsCompression,
-    idleTimeout: 120,
-    backpressureLimit: 16 * 1024 * 1024,
+    perMessageDeflate: CONFIG.features.wsCompression ? { compress: true, decompress: true } : false,
+    sendPings: true,
+    idleTimeout: 60,
+    backpressureLimit: 8 * 1024 * 1024,
+    closeOnBackpressureLimit: true,
 
     open(ws: ServerWebSocket<WsData>) {
       if (CONFIG.features.requestLogging) logger.info("WebSocket client connected", { remoteAddress: ws.remoteAddress });
@@ -1555,8 +4077,8 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       let customerID: string | undefined;
       let authenticated = true;
 
-      // JWT auth for WS (if enabled via env)
-      const jwtEnabled = process.env.ENABLE_JWT_AUTH === "true" || Bun.env.ENABLE_JWT_AUTH === "true";
+      // JWT auth for WS (if enabled via validated config)
+      const jwtEnabled = CONFIG.jwtAuthEnabled;
       if (jwtEnabled) {
         const bearer = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "");
         const token = upgradeUrl.searchParams.get("token") || bearer || "";
@@ -1573,10 +4095,15 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       return ok ? undefined : new Response(JSON.stringify({ error: 'WebSocket upgrade failed' }), { status: 400, headers: { 'Content-Type': 'application/json', ...cors } });
     }
 
+    const url = upgradeUrl;
+    const path = url.pathname;
+
+    if (path === "/ping" || path === "/ping/") {
+      return new Response("pong", { status: 200, headers: cors });
+    }
+
     if (shuttingDown) return json({ error: "Server is shutting down" }, 503);
 
-    const url = new URL(req.url);
-    const path = url.pathname;
     const acceptEncoding = req.headers.get("accept-encoding") || "";
     const ctx = requestContext(req);
 
@@ -1590,7 +4117,7 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
         status: "running",
         timestamp: new Date().toISOString(),
         websocket: "/ws",
-        endpoints: ["/", "/features", "/metrics", "/ready", "/health", "/config", "/ws", "/openapi.json", "/dashboard", "/api/proxy/auth", "/api/proxy/:endpoint", "/api/proxy/taxonomy/:level", "/api/proxy/tokens", "/api/proxy/logs", "/api/proxy/health", "/api/proxy/status", "/api/proxy/endpoints", "/api/proxy/renewToken", "/api/proxy/agent/heatmap", "/admin/rate-limit"],
+        endpoints: ["/", "/ping", "/features", "/demo/status", "/metrics", "/metrics/prometheus", "/ready", "/health", "/config", "/ws", "/openapi.json", "/dashboard", "/admin", "/api/proxy/auth", "/api/proxy/:endpoint", "/api/proxy/{endpointKey}", "/api/proxy/taxonomy/:level", "/api/proxy/sportsLeagues", "/api/proxy/leagueLines", "/api/proxy/agentDownline", "/api/proxy/agentBilling", "/api/proxy/playerInfo", "/api/proxy/dynamicLive", "/api/proxy/scoresLive", "/api/proxy/sportsTypesLive", "/api/proxy/liveGame", "/api/proxy/gameVolume", "/api/proxy/pending", "/api/proxy/pendingReportConfig", "/api/proxy/updatePendingReportConfig", "/api/proxy/tokens", "/api/proxy/logs", "/api/proxy/admin/summary", "/api/proxy/admin/config", "/api/proxy/admin/logs", "/api/proxy/health", "/api/proxy/status", "/api/proxy/endpoints", "/api/proxy/renewToken", "/api/proxy/agent/heatmap", "/api/proxy/agents", "/api/proxy/agent/performance", "/api/proxy/bettor/details", "/api/proxy/analytics/syndicates", "/api/proxy/analytics/syndicates/stats", "/api/proxy/analytics/sharp-money", "/api/proxy/analytics/ev-simulation", "/api/proxy/analytics/predictive-sharpness", "/api/proxy/analytics/backtest", "/api/proxy/integrity/cases", "/api/proxy/integrity/cases/:id", "/api/proxy/risk/alerts", "/api/proxy/risk/config", "/api/proxy/risk/syndicates", "/api/proxy/line-rules", "/api/proxy/line-adjustments/log", "/admin/rate-limit"],
         subscribers: subscribers.size + sessions.size,
         features: { ...CONFIG.features },
         circuitBreaker: circuitBreaker.getStatus(),
@@ -1618,13 +4145,39 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
           memCacheEntries: memCache.size,
           inflightRequests: inflight.size,
           tokenMemCacheEntries: tokenMemCache.size,
+          riskEngineRunning,
+          lineEngineRunning,
         },
       });
     }
 
+    // ---- /DEMO/STATUS ----
+    if (path === "/demo/status") {
+      return json({
+        demoMode: CONFIG.features.demoMode,
+        mockedEndpoints: Array.from(DEMO_ENDPOINT_KEYS).sort(),
+        bypassesBuckeyeAuth: CONFIG.features.demoMode,
+        note: CONFIG.features.demoMode
+          ? "Demo mode returns local mock payloads for listed endpoints before Buckeye token validation."
+          : "Demo mode is disabled; listed endpoints still require Buckeye token/cf_clearance or stored credentials.",
+      });
+    }
+
     // ---- /METRICS ----
+    if (path === "/metrics/prometheus" && CONFIG.features.metrics) {
+      return new Response(prometheusMetrics(), {
+        status: 200,
+        headers: { "Content-Type": "text/plain; version=0.0.4; charset=utf-8", ...cors },
+      });
+    }
+
     if (path === "/metrics" && CONFIG.features.metrics) {
       return json(runtimeMetrics());
+    }
+
+    // ---- /PING (liveness probe) ----
+    if (path === "/ping") {
+      return new Response("pong", { status: 200 });
     }
 
     // ---- /READY (k8s probe) ----
@@ -1644,9 +4197,52 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       return json(buildOpenApiSpec());
     }
 
+    // ---- ADMIN JSON + HTML ----
+    if (path === "/api/proxy/admin/summary" && req.method === "GET") {
+      const authErr = adminApiKeyAuth(req);
+      if (authErr) return authErr;
+      const limit = parseInt(url.searchParams.get("limit") || "25", 10);
+      return json(adminSummaryPayload(limit));
+    }
+
+    if (path === "/api/proxy/admin/config" && req.method === "GET") {
+      const authErr = adminApiKeyAuth(req);
+      if (authErr) return authErr;
+      return json({ config: redactedConfig() });
+    }
+
+    if (path === "/api/proxy/admin/logs" && req.method === "GET") {
+      const authErr = adminApiKeyAuth(req);
+      if (authErr) return authErr;
+      const limit = parseInt(url.searchParams.get("limit") || "100", 10);
+      const logs = getAdminLogs(limit);
+      return json({ count: logs.length, logs });
+    }
+
+    if (path === "/api/proxy/admin/sample-rate" && req.method === "POST") {
+      const authErr = adminApiKeyAuth(req);
+      if (authErr) return authErr;
+      const body = await readBody(req);
+      const rate = Number(body.rate);
+      if (Number.isFinite(rate) && rate >= 0 && rate <= 1) {
+        (CONFIG.features as any).sampleRate = rate;
+        logger.log("info", "admin", `Sample rate changed to ${rate}`);
+        return json({ success: true, sampleRate: rate });
+      }
+      return json({ error: "Invalid rate (0-1)" }, 400);
+    }
+
+    if (path === "/admin" && req.method === "GET") {
+      const authErr = adminApiKeyAuth(req);
+      if (authErr) return authErr;
+      return new Response(buildAdminHtml(), {
+        status: 200,
+        headers: { "Content-Type": "text/html; charset=utf-8", ...cors },
+      });
+    }
+
     // ---- /DASHBOARD ----
     if (path === "/dashboard" && req.method === "GET") {
-      const apiKey = process.env.PROXY_API_KEY || Bun.env.PROXY_API_KEY || "dev-key-123";
       const dashboardHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1840,9 +4436,9 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
         let finalToken = token ? String(token) : "";
         let finalCf = cf_clearance ? String(cf_clearance) : "";
         if (customerID && (!finalToken || !finalCf)) {
-          const stored = getCachedToken(customerID);
-          finalToken = stored?.bearer_token || "";
-          finalCf = stored?.cf_clearance || "";
+          const stored = getStoredCredentials(customerID);
+          finalToken ||= stored?.token || "";
+          finalCf ||= stored?.cf_clearance || "";
         }
 
         if (!finalToken || !finalCf) {
@@ -1875,14 +4471,7 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
           body: toForm({ ...filters, operation: taxonomy.endpoint.split("/").pop() || rawLevel, RRO: "1" }),
         }), { reqId: ctx.reqId, endpoint: taxonomy.endpoint });
 
-        const text = await upstream.text();
-        if (!upstream.ok) {
-          requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, upstream.status, text);
-          activeRequests--;
-          return json({ error: "Taxonomy fetch failed", level: rawLevel, status: upstream.status, details: text }, upstream.status, { "X-Request-ID": ctx.reqId });
-        }
-
-        const raw = JSON.parse(text) as unknown;
+        const raw = await readBuckeyeOrThrow(upstream, taxonomy.endpoint, ctx.reqId);
         const data = normalizeTaxonomy(rawLevel, raw);
         insertCache.run({ $endpoint: taxonomy.endpoint, $payload_hash: pHash, $response_json: JSON.stringify(data), $ttl_seconds: taxonomy.cacheTtl });
         setMemCache(memKey, data, taxonomy.cacheTtl * 1000);
@@ -1890,22 +4479,394 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
         activeRequests--;
         return json({ source: "live", level: rawLevel, shape: taxonomy.shape, data }, upstream.status, { "X-Request-ID": ctx.reqId });
       } catch (err: unknown) {
-        requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, 500, err);
+        const status = err instanceof UpstreamProxyError ? err.clientStatus : 500;
+        requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, status, err);
         activeRequests--;
+        if (err instanceof UpstreamProxyError) {
+          return json({ ...err.payload, level: rawLevel }, err.clientStatus, { "X-Request-ID": ctx.reqId });
+        }
         return json({ error: "Taxonomy fetch failed", level: rawLevel, details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
       }
     }
 
-    // ---- /API/PROXY/:ENDPOINT ----
-    if (path.startsWith("/api/proxy/") && path !== "/api/proxy/auth" && path !== "/api/proxy/tokens" && path !== "/api/proxy/logs" && path !== "/api/proxy/health" && path !== "/api/proxy/status" && path !== "/api/proxy/endpoints" && path !== "/api/proxy/renewToken" && !path.startsWith("/api/proxy/agent/") && req.method === "POST") {
+    // ---- /API/PROXY NAMED BUCKEYE ALIASES ----
+    if (path.startsWith("/api/proxy/") && req.method === "POST") {
+      const alias = path.replace("/api/proxy/", "");
+      if (isProxyAlias(alias)) {
+        activeRequests++;
+        let customerID: string | null = null;
+        try {
+          const body = await readBody(req);
+          customerID = cleanString(body.agentID || body.customerID || body.playerID || body.bettorID) || null;
+          const missing = missingAliasRequestParams(alias, body);
+          if (missing.length) {
+            requestFinished(ctx, `alias:${alias}`, customerID, 400, `Missing params: ${missing.join(", ")}`);
+            activeRequests--;
+            return json({ error: `Missing required parameters: ${missing.join(", ")}`, missing, alias }, 400, { "X-Request-ID": ctx.reqId });
+          }
+          if ((alias === "pendingReportConfig" || alias === "updatePendingReportConfig") && !cleanString(body.agentID)) {
+            requestFinished(ctx, `alias:${alias}`, customerID, 400, "Missing agentID");
+            activeRequests--;
+            return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+          }
+          if (CONFIG.features.demoMode) {
+            const mock = getMockResponse(alias, body);
+            if (mock !== null) {
+              requestFinished(ctx, `alias:${alias}`, customerID, 200);
+              activeRequests--;
+              return json({ source: "demo", alias, data: mock }, 200, { "X-Request-ID": ctx.reqId });
+            }
+          }
+          let finalToken = cleanString(body.token);
+          let finalCf = cleanString(body.cf_clearance || body.cfClearance);
+          const finalCfBm = cleanString(body.__cf_bm || body.cf_bm || body.cfBm);
+          if (customerID && (!finalToken || !finalCf)) {
+            const stored = getStoredCredentials(customerID);
+            finalToken ||= stored?.token || "";
+            finalCf ||= stored?.cf_clearance || "";
+          }
+          if (!finalToken || !finalCf) {
+            requestFinished(ctx, `alias:${alias}`, customerID, 400, "Missing token/cf_clearance");
+            activeRequests--;
+            return json({ error: "token/cf_clearance or stored customerID credentials required" }, 400, { "X-Request-ID": ctx.reqId });
+          }
+
+          const result = await callProxyAlias(alias, body, finalToken, finalCf, ctx.reqId, finalCfBm);
+          const normalized = alias === "agentDownline" || alias === "agentBilling"
+            ? normalizeResponse(result.candidate.endpoint, result.raw)
+            : alias === "playerInfo"
+              ? normalizeBettorDetails(result.raw, cleanString(body.playerID || body.bettorID || body.customerID))
+              : alias === "leagueLines"
+                ? normalizeTaxonomy("lines", result.raw)
+                : result.raw;
+
+          requestFinished(ctx, `alias:${alias}`, customerID, result.status);
+          activeRequests--;
+          return json({
+            source: "live",
+            alias,
+            endpoint: result.candidate.endpoint,
+            operation: result.candidate.operation,
+            data: normalized,
+          }, result.status, { "X-Request-ID": ctx.reqId });
+        } catch (err: unknown) {
+          requestFinished(ctx, `alias:${alias}`, customerID, 502, err);
+          activeRequests--;
+          return json({ error: `${alias} failed`, details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
+        }
+      }
+    }
+
+    // ---- /API/PROXY/RISK/CONFIG ----
+    if (path === "/api/proxy/risk/config" && req.method === "POST") {
       activeRequests++;
       const authErr = apiKeyAuth(req);
       if (authErr) { activeRequests--; return authErr; }
-      const endpoint = path.replace("/api/proxy/", "");
+      const body = await readBody(req);
+      const agentID = cleanString(body.agentID);
+      if (!agentID) {
+        activeRequests--;
+        return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+      const thresholds = asTaxonomyRecord(body.thresholds) || {};
+      insertRiskConfig.run({
+        $agentID: agentID,
+        $customerID: cleanString(body.customerID || agentID),
+        $thresholds: JSON.stringify(thresholds),
+        $webhook: cleanString(body.webhookUrl || body.webhook) || null,
+      });
+      requestFinished(ctx, "risk/config", agentID, 200);
+      activeRequests--;
+      return json({ success: true, agentID, thresholds }, 200, { "X-Request-ID": ctx.reqId });
+    }
+
+    if (path === "/api/proxy/risk/config" && req.method === "GET") {
+      activeRequests++;
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const agentID = cleanString(url.searchParams.get("agentID"));
+      if (!agentID) {
+        activeRequests--;
+        return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+      const cfg = getRiskConfig.get({ $agentID: agentID }) as { agentID: string; customerID: string; thresholds: string; webhook: string | null; updated_at: number } | null;
+      requestFinished(ctx, "risk/config", agentID, cfg ? 200 : 404);
+      activeRequests--;
+      if (!cfg) return json({ found: false }, 404, { "X-Request-ID": ctx.reqId });
+      return json({ found: true, agentID: cfg.agentID, customerID: cfg.customerID, thresholds: JSON.parse(cfg.thresholds || "{}"), webhook: cfg.webhook, updatedAt: cfg.updated_at }, 200, { "X-Request-ID": ctx.reqId });
+    }
+
+    // ---- /API/PROXY/ANALYTICS/EV ----
+    if (path === "/api/proxy/analytics/ev" && req.method === "POST") {
+      activeRequests++;
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+
+      const body = await readBody(req);
+      const token = cleanString(body.token);
+      const cf_clearance = cleanString(body.cf_clearance || body.cfClearance);
+      const bettorID = cleanString(body.bettorID || body.bettorId || body.customerID);
+      const days = Math.max(1, rowNumber(body, ["days"], 365));
+      if (!token || !cf_clearance || !bettorID) {
+        activeRequests--;
+        return json({ error: "token, cf_clearance, and bettorID required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      const since = Math.floor(Date.now() / 1000) - days * 86400;
+      try {
+        let wagers = getWagerAnalytics.all({ $bettorId: bettorID, $since: since }) as StoredWagerAnalytic[];
+        if (wagers.length < 20) {
+          const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getWagerByPlayer`, {
+            method: "POST",
+            headers: browserHeaders(token, `cf_clearance=${cf_clearance}`),
+            body: toForm({ playerID: bettorID, customerID: bettorID, operation: "getWagerByPlayer", RRO: "1" }),
+          }), { reqId: ctx.reqId, endpoint: "getWagerByPlayer" });
+          const raw = await readBuckeyeJson(upstream);
+          if (!upstream.ok) throw new Error(`getWagerByPlayer failed with ${upstream.status}: ${JSON.stringify(raw).slice(0, 400)}`);
+          storeAnalyticWagers(buckeyeRows(raw), "", bettorID);
+          wagers = getWagerAnalytics.all({ $bettorId: bettorID, $since: since }) as StoredWagerAnalytic[];
+        }
+
+        const model = computeAnalyticEV(wagers);
+        requestFinished(ctx, "analytics/ev", bettorID, 200);
+        activeRequests--;
+        return json(model, 200, { "X-Request-ID": ctx.reqId });
+      } catch (err: unknown) {
+        requestFinished(ctx, "analytics/ev", bettorID, 500, err);
+        activeRequests--;
+        return json({ error: "EV computation failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
+      }
+    }
+
+    // ---- AGENT DOWNLINE ROUTES ----
+    if (path === "/api/proxy/agents" && (req.method === "GET" || req.method === "POST")) {
+      activeRequests++;
+      const body = req.method === "POST" ? await readBody(req) : {};
+      const token = cleanString(url.searchParams.get("token") || body.token);
+      const cf_clearance = cleanString(url.searchParams.get("cf_clearance") || body.cf_clearance || body.cfClearance);
+      const customerID = cleanString(url.searchParams.get("customerID") || url.searchParams.get("agentID") || body.customerID || body.agentID);
+      if (!token || !cf_clearance) {
+        activeRequests--;
+        return json({ error: "token and cf_clearance required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+      if (!customerID) {
+        activeRequests--;
+        return json({ error: "customerID required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      const candidates = [
+        { endpoint: "Manager/getAgentList", operation: "getAgentList", extra: {} },
+        { endpoint: "Manager/getAgentManagement", operation: "getAgentManagement", extra: {} },
+        { endpoint: "Manager/getListAgenstByAgent", operation: "getListAgenstByAgent", extra: { agentType: "M" } },
+      ];
+      let lastError = "";
+
+      try {
+        for (const candidate of candidates) {
+          const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/${candidate.endpoint}`, {
+            method: "POST",
+            headers: browserHeaders(token, `cf_clearance=${cf_clearance}`),
+            body: toForm({
+              operation: candidate.operation,
+              agentID: customerID,
+              RRO: "1",
+              agentOwner: customerID,
+              agentSite: "1",
+              ...candidate.extra,
+            }),
+          }), { reqId: ctx.reqId, endpoint: candidate.operation });
+          const raw = await readBuckeyeJson(upstream);
+          if (upstream.ok) {
+            const normalized = normalizeAgentList(raw);
+            if (normalized.length > 0 || candidate === candidates[candidates.length - 1]) {
+              requestFinished(ctx, candidate.operation, customerID, upstream.status);
+              activeRequests--;
+              return json(normalized, 200, { "X-Request-ID": ctx.reqId });
+            }
+            lastError = `${candidate.operation} returned no agents`;
+          } else {
+            lastError = `${candidate.operation} failed with ${upstream.status}`;
+          }
+        }
+        requestFinished(ctx, "agentDownline", customerID, 502, lastError);
+        activeRequests--;
+        return json({ error: "Agent list unavailable", details: lastError }, 502, { "X-Request-ID": ctx.reqId });
+      } catch (err: unknown) {
+        requestFinished(ctx, "agentDownline", customerID, 500, err);
+        activeRequests--;
+        return json({ error: "Agent list failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
+      }
+    }
+
+    if (path === "/api/proxy/agent/performance" && req.method === "POST") {
+      activeRequests++;
+      const body = await readBody(req);
+      const token = cleanString(body.token);
+      const cf_clearance = cleanString(body.cf_clearance || body.cfClearance);
+      const agentID = cleanString(body.agentID || body.customerID);
+      const view: PerformancePeriod = cleanString(body.view || body.period, "weekly") === "daily" ? "daily" : "weekly";
+      if (!token || !cf_clearance || !agentID) {
+        activeRequests--;
+        return json({ error: "token, cf_clearance, and agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      try {
+        const buckets = buildPerformanceBuckets(
+          cleanString(body.startDate || body.start) || undefined,
+          cleanString(body.endDate || body.end) || undefined,
+          view
+        );
+        const maxBuckets = view === "daily" ? 31 : 26;
+        if (buckets.length > maxBuckets) {
+          activeRequests--;
+          return json({ error: `${view} reports support a maximum of ${maxBuckets} buckets per request` }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        const data: PerformanceBucket[] = [];
+        for (const bucket of buckets) {
+          const payload: JsonObject = {
+            operation: "getAgentPerformance",
+            agentID,
+            customerID: agentID,
+            startDate: bucket.startDate,
+            endDate: bucket.endDate,
+            type: cleanString(body.type, "CP"),
+            freePlay: cleanString(body.freePlay, "Y"),
+            store: cleanString(body.store || agentID),
+            sport: cleanString(body.sport),
+            subsport: cleanString(body.subsport),
+            period: cleanString(body.performancePeriod || body.buckeyePeriod, "-1"),
+            wagerType: cleanString(body.wagerType),
+            betType: cleanString(body.betType),
+            tipo: cleanString(body.tipo || body.activity, "-1"),
+            debug: cleanString(body.debug, "0"),
+            agentOwner: cleanString(body.agentOwner || agentID),
+            agentSite: "1",
+            RRO: "1",
+          };
+          if (body.group) payload.group = body.group;
+          const upstream = await fetchWithFallback(CONFIG.baseUrl, "Manager/getAgentPerformance", payload, token, cf_clearance, ctx.reqId);
+          const raw = await readBuckeyeJson(upstream);
+          if (!upstream.ok) {
+            throw new Error(`getAgentPerformance ${bucket.date} failed with ${upstream.status}: ${JSON.stringify(raw).slice(0, 400)}`);
+          }
+          data.push({
+            date: bucket.date,
+            startDate: bucket.startDate,
+            endDate: bucket.endDate,
+            ...summarizePerformanceRows(buckeyeRows(raw)),
+          });
+        }
+
+        const report = performanceReportFromBuckets(view, data);
+        requestFinished(ctx, "agentPerformance", agentID, 200);
+        activeRequests--;
+        return json(report, 200, { "X-Request-ID": ctx.reqId });
+      } catch (err: unknown) {
+        requestFinished(ctx, "agentPerformance", agentID, 500, err);
+        activeRequests--;
+        return json({ error: "Agent performance failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
+      }
+    }
+
+    if (path === "/api/proxy/bettor/details" && req.method === "POST") {
+      activeRequests++;
+      const body = await readBody(req);
+      const token = cleanString(body.token);
+      const cf_clearance = cleanString(body.cf_clearance || body.cfClearance);
+      const bettorID = cleanString(body.bettorID || body.customerID || body.playerLogin || body.player);
+      const agentID = cleanString(body.agentID || body.agentOwner || body.store);
+      if (!token || !cf_clearance || !bettorID) {
+        activeRequests--;
+        return json({ error: "token, cf_clearance, and bettorID required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      const startDate = cleanString(body.startDate || body.start) || isoDate(addDays(new Date(), -7));
+      const endDate = cleanString(body.endDate || body.end) || isoDate(new Date());
+      const candidates = [
+        {
+          endpoint: "Manager/getBettorDetails",
+          payload: {
+            operation: "getBettorDetails",
+            bettorID,
+            customerID: bettorID,
+            playerLogin: bettorID,
+            agentID,
+            startDate,
+            endDate,
+            RRO: "1",
+            agentOwner: cleanString(body.agentOwner || agentID),
+            agentSite: "1",
+          },
+        },
+        {
+          endpoint: "System/getPlayerActivity",
+          payload: {
+            operation: "getPlayerActivity",
+            acc: bettorID,
+            customerID: bettorID,
+            playerLogin: bettorID,
+            agentID,
+            startDate,
+            endDate,
+            RRO: "1",
+          },
+        },
+        {
+          endpoint: "Manager/getReportPlayerAnalysis",
+          payload: {
+            operation: "getReportPlayerAnalysis",
+            playerLogin: bettorID,
+            customerID: bettorID,
+            agentID,
+            RRO: "1",
+            agentOwner: cleanString(body.agentOwner || agentID),
+            agentSite: "1",
+          },
+        },
+      ];
+      let lastError = "";
+
+      try {
+        for (const candidate of candidates) {
+          const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/${candidate.endpoint}`, {
+            method: "POST",
+            headers: browserHeaders(token, `cf_clearance=${cf_clearance}`),
+            body: toForm(candidate.payload),
+          }), { reqId: ctx.reqId, endpoint: candidate.endpoint });
+          const raw = await readBuckeyeJson(upstream);
+          if (upstream.ok) {
+            const details = normalizeBettorDetails(raw, bettorID);
+            requestFinished(ctx, candidate.endpoint, agentID || bettorID, upstream.status);
+            activeRequests--;
+            return json(details, 200, { "X-Request-ID": ctx.reqId });
+          }
+          lastError = `${candidate.endpoint} failed with ${upstream.status}`;
+        }
+        requestFinished(ctx, "bettorDetails", agentID || bettorID, 502, lastError);
+        activeRequests--;
+        return json({ error: "Bettor details unavailable", details: lastError }, 502, { "X-Request-ID": ctx.reqId });
+      } catch (err: unknown) {
+        requestFinished(ctx, "bettorDetails", agentID || bettorID, 500, err);
+        activeRequests--;
+        return json({ error: "Bettor details failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
+      }
+    }
+
+    // ---- /API/PROXY/:ENDPOINT ----
+    if (path.startsWith("/api/proxy/") && path !== "/api/proxy/auth" && path !== "/api/proxy/tokens" && path !== "/api/proxy/logs" && path !== "/api/proxy/health" && path !== "/api/proxy/status" && path !== "/api/proxy/endpoints" && path !== "/api/proxy/renewToken" && !path.startsWith("/api/proxy/agent/") && !path.startsWith("/api/proxy/analytics/") && !path.startsWith("/api/proxy/integrity/") && !path.startsWith("/api/proxy/risk/") && !path.startsWith("/api/proxy/line-") && req.method === "POST") {
+      activeRequests++;
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const endpointKey = path.replace("/api/proxy/", "");
+      const meta = ENDPOINT_MAP[endpointKey];
+      const endpoint = meta?.path || endpointKey;
+      const cacheTtl = meta?.cacheTtl ?? CONFIG.defaultRateLimit.window;
+      const isLogWrite = endpoint === "Log/write" || endpointKey === "logWrite";
       let customerID: string | null = null;
 
       try {
-        const idempotencyKey = CONFIG.features.idempotency ? req.headers.get("Idempotency-Key") : null;
+        const idempotencyKey = CONFIG.features.idempotency && !isLogWrite ? req.headers.get("Idempotency-Key") : null;
 
         const respond = async (response: Response) => {
           if (idempotencyKey && response.status < 500) {
@@ -1923,27 +4884,62 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
         }
 
         const body = await readBody(req);
-        const { token: bodyToken, cf_clearance: bodyCf, useCache = false, ...payload } = body;
-        const rawCustomerID = body.customerID || body.customerID;
-        customerID = rawCustomerID ? String(rawCustomerID) : null;
+        const {
+          token: bodyToken,
+          cf_clearance: bodyCf,
+          cfClearance: bodyCfCamel,
+          __cf_bm: _bodyCfBm,
+          cf_bm: _bodyCfBmSnake,
+          cfBm: _bodyCfBmCamel,
+          useCache = false,
+          ...bodyPayload
+        } = body;
+        const rawCustomerID = body.customerID || body.agentID || body.agentOwner;
+        customerID = rawCustomerID ? String(rawCustomerID).trim() : null;
+        const payload = applyEndpointDefaults(endpointKey, endpoint, bodyPayload);
+        const paramError = validateRequiredParams(endpointKey, endpoint, payload);
+        if (paramError) {
+          requestFinished(ctx, endpoint, customerID, 400, "Missing required parameters");
+          activeRequests--;
+          return respond(paramError);
+        }
 
-        if (customerID) {
+        if (CONFIG.features.demoMode) {
+          const mock = getMockResponse(endpointKey, payload);
+          if (mock !== null) {
+            requestFinished(ctx, endpoint, customerID, 200);
+            activeRequests--;
+            return respond(json({ source: "demo", data: mock }, 200, { "X-Request-ID": ctx.reqId }));
+          }
+        }
+
+        if (customerID && !isLogWrite) {
           const rateResult = checkRateLimit(`${customerID}::${endpoint}`);
           if (!rateResult.allowed) {
             requestFinished(ctx, endpoint, customerID, 429, "Rate limit exceeded");
             activeRequests--;
-            return respond(json({ error: "Rate limit exceeded", retryAfter: rateResult.retryAfter }, 429, { "Retry-After": String(rateResult.retryAfter), "X-Request-ID": ctx.reqId }));
+            const nowUnix = Math.floor(Date.now() / 1000);
+            const override = findRateLimitOverride(endpoint);
+            const rateLimit = override?.limit || CONFIG.defaultRateLimit.limit;
+            const rateWindow = override?.window || CONFIG.defaultRateLimit.window;
+            return respond(json({ error: "Rate limit exceeded", retryAfter: rateResult.retryAfter }, 429, {
+              "Retry-After": String(rateResult.retryAfter),
+              "X-RateLimit-Limit": String(rateLimit),
+              "X-RateLimit-Remaining": "0",
+              "X-RateLimit-Reset": String(nowUnix + (rateResult.retryAfter || rateWindow)),
+              "X-Request-ID": ctx.reqId,
+            }));
           }
         }
 
         let finalToken = bodyToken ? String(bodyToken) : "";
-        let finalCf = bodyCf ? String(bodyCf) : "";
+        let finalCf = bodyCf || bodyCfCamel ? String(bodyCf || bodyCfCamel) : "";
 
-        if (!finalToken && customerID) {
-          const stored = getCachedToken(customerID);
+        if (customerID && (!finalToken || !finalCf)) {
+          const stored = getStoredCredentials(customerID);
           if (stored) {
-            finalToken = stored.bearer_token || "";
-            finalCf = stored.cf_clearance || "";
+            finalToken ||= stored.token;
+            finalCf ||= stored.cf_clearance;
           }
         }
 
@@ -1976,38 +4972,87 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
           const dedupeKey = `${endpoint}::${hashPayloadImpl({ endpoint, ...enrichedPayload })}::${tokenPrefix}`;
           return dedupeRequest(dedupeKey, async () => {
             const upstream = await fetchWithFallback(CONFIG.baseUrl, endpoint, enrichedPayload, finalToken, finalCf, ctx.reqId);
-            const text = await upstream.text();
-            if (!upstream.ok) throw new Error(`Upstream ${upstream.status}: ${text}`);
-            try { return JSON.parse(text) as unknown; } catch { return { raw: text }; }
+            return readBuckeyeOrThrow(upstream, endpoint, ctx.reqId);
           });
         };
 
-        if (useCache) {
-          const result = await getCacheWithSWR(endpoint, enrichedPayload, fetchLive, ctx.reqId);
-          const normalizedData = normalizeResponse(endpoint, result.data);
+        // Passthrough for logWrite: no cache at all
+        if (isLogWrite) {
+          const rawData = await fetchLive();
+          const data = normalizeResponse(endpoint, rawData, endpointKey);
+          requestFinished(ctx, endpoint, customerID, 200);
+          activeRequests--;
+          return respond(json({ source: "live", data }, 200, { "X-Request-ID": ctx.reqId }, acceptEncoding));
+        }
+
+        if (useCache && cacheTtl > 0) {
+          const result = await getCacheWithSWR(endpoint, enrichedPayload, fetchLive, ctx.reqId, cacheTtl);
+          const normalizedData = normalizeResponse(endpoint, result.data, endpointKey);
           requestFinished(ctx, endpoint, customerID, 200);
           activeRequests--;
           return respond(json({ source: result.source, stale: Boolean(result.stale), data: normalizedData }, 200, { "X-Request-ID": ctx.reqId }));
         }
 
         // After SWR cache check, check memCache
-        if (CONFIG.features.memoryCache) {
+        if (CONFIG.features.memoryCache && cacheTtl > 0) {
           const memKey = memCacheKey(endpoint, enrichedPayload);
           const cached = getMemCache(memKey);
           if (cached) {
             requestFinished(ctx, endpoint, customerID, 200);
             activeRequests--;
-            return respond(json({ source: "mem_cache", data: normalizeResponse(endpoint, cached) }, 200, { "X-Request-ID": ctx.reqId }));
+            return respond(json({ source: "mem_cache", data: normalizeResponse(endpoint, cached, endpointKey) }, 200, { "X-Request-ID": ctx.reqId }));
           }
         }
 
         const rawData = await fetchLive();
-        const data = normalizeResponse(endpoint, rawData);
+        const data = normalizeResponse(endpoint, rawData, endpointKey);
+
+        // Detect live score changes and push live_flash to WS subscribers
+        if (CONFIG.features.analytics) {
+          const effectiveKey = endpointKey || "";
+          if (effectiveKey === "scoresLive" || effectiveKey === "dynamicLive" || effectiveKey === "liveGame" || effectiveKey === "games") {
+            try {
+              const events = Array.isArray(data) ? data : (data as Record<string, unknown>)?.events ?? (data as Record<string, unknown>)?.scores ?? (data as Record<string, unknown>)?.items ?? [];
+              if (Array.isArray(events)) {
+                for (const ev of events) {
+                  if (typeof ev === "object" && ev !== null && ("awayScore" in ev || "away" in ev)) {
+                    pushLiveFlash({
+                      id: String(ev.id ?? ev.ID ?? ev.GameID ?? ""),
+                      sport: String(ev.sport ?? ev.Sport ?? ""),
+                      away: String(ev.away ?? ev.AwayTeam ?? ""),
+                      home: String(ev.home ?? ev.HomeTeam ?? ""),
+                      awayScore: Number(ev.awayScore ?? ev.AwayScore ?? 0),
+                      homeScore: Number(ev.homeScore ?? ev.HomeScore ?? 0),
+                      period: String(ev.period ?? ev.Period ?? ""),
+                    });
+                  }
+                }
+              }
+            } catch { /* live_flash is best-effort */ }
+          }
+        }
+
+        // Auto-update stored token on renewToken responses
+        if (endpoint === "System/renewToken" && customerID) {
+          try {
+            const tokenData = typeof data === "object" && data !== null ? data as Record<string, unknown> : {};
+            const newToken = String(tokenData.token || tokenData.code || tokenData.access_token || "");
+            if (newToken) {
+              const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+              insertToken.run({ $customerID: customerID, $cf_clearance: finalCf, $auth_code: null, $bearer_token: newToken, $expires_at: expiresAt });
+              invalidateTokenCache(customerID);
+              scheduleTokenRenewal(customerID, expiresAt);
+              logger.info("Auto-renewed token via proxy", { customerID, reqId: ctx.reqId });
+            }
+          } catch (tokenErr: unknown) {
+            logger.warn("Auto-renewToken DB update failed", { error: tokenErr instanceof Error ? tokenErr.message : String(tokenErr) });
+          }
+        }
 
         // Store live response in memCache
-        if (CONFIG.features.memoryCache) {
+        if (CONFIG.features.memoryCache && cacheTtl > 0) {
           const memKey = memCacheKey(endpoint, enrichedPayload);
-          setMemCache(memKey, rawData, CONFIG.memoryCacheTtlMs);
+          setMemCache(memKey, rawData, cacheTtl * 1000);
         }
 
         requestFinished(ctx, endpoint, customerID, 200);
@@ -2015,9 +5060,15 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
         return respond(json({ source: "live", data }, 200, { "X-Request-ID": ctx.reqId }, acceptEncoding));
       } catch (err: unknown) {
         const details = err instanceof Error ? err.message : String(err);
-        requestFinished(ctx, endpoint, customerID, details.includes("CIRCUIT_OPEN") ? 503 : 500, err);
+        const status = err instanceof UpstreamProxyError
+          ? err.clientStatus
+          : details.includes("CIRCUIT_OPEN") ? 503 : 500;
+        requestFinished(ctx, endpoint, customerID, status, err);
         activeRequests--;
-        return json({ error: "Proxy failed", details }, details.includes("CIRCUIT_OPEN") ? 503 : 500, { "X-Request-ID": ctx.reqId });
+        if (err instanceof UpstreamProxyError) {
+          return json(err.payload, err.clientStatus, { "X-Request-ID": ctx.reqId });
+        }
+        return json({ error: "Proxy failed", details }, status, { "X-Request-ID": ctx.reqId });
       }
     }
 
@@ -2064,7 +5115,7 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       const authErr = apiKeyAuth(req);
       if (authErr) return authErr;
       const limit = parseInt(url.searchParams.get("limit") || "50");
-      const logs = dbRead.query(`SELECT * FROM request_log ORDER BY logged_at DESC LIMIT $limit`).all({ $limit: limit });
+      const logs = getAdminLogs(limit);
       return json({ count: logs.length, logs });
     }
 
@@ -2131,6 +5182,37 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
         taxonomy: Object.fromEntries(Object.entries(TAXONOMY_MAP).map(([level, cfg]) => [
           `/api/proxy/taxonomy/${level}`,
           `POST - ${cfg.endpoint} -> ${cfg.shape}, cache ${cfg.cacheTtl}s`,
+        ])),
+        aliases: Object.fromEntries(Object.entries(PROXY_ALIAS_MAP).map(([alias, candidates]) => [
+          `/api/proxy/${alias}`,
+          {
+            method: "POST",
+            params: PROXY_ALIAS_PARAMS[alias as ProxyAliasName],
+            candidates: candidates.map((candidate) => ({
+              endpoint: candidate.endpoint,
+              operation: candidate.operation,
+              defaults: candidate.defaults || {},
+            })),
+          },
+        ])),
+        analytics: {
+          "/api/proxy/analytics/syndicates": "POST - detect same-game/same-line bettor clusters",
+          "/api/proxy/analytics/syndicates/stats": "GET - summarize syndicate detections and integrity case status",
+          "/api/proxy/analytics/sharp-money": "POST - correlate local wager analytics with line history",
+          "/api/proxy/analytics/ev-simulation": "POST - compute bettor EV and edge model",
+          "/api/proxy/analytics/predictive-sharpness": "POST - compute predictive sharpness score for a bettor",
+          "/api/proxy/analytics/backtest": "POST - simulate line adjustment rules against historical data",
+          "/api/proxy/integrity/cases": "GET/POST - list or create integrity review cases",
+          "/api/proxy/integrity/cases/:id": "PATCH - update an integrity review case",
+          "/api/proxy/risk/alerts": "GET/POST - read or save risk alert thresholds",
+          "/api/proxy/risk/config": "GET/POST/DELETE - risk config CRUD",
+          "/api/proxy/risk/syndicates": "GET - read cached syndicate detections",
+          "/api/proxy/line-rules": "GET/POST/PUT/DELETE - auto line adjustment rule CRUD",
+          "/api/proxy/line-adjustments/log": "GET - line adjustment audit log",
+        },
+        endpointMap: Object.fromEntries(Object.entries(ENDPOINT_MAP).map(([key, meta]) => [
+          key,
+          { path: `/cloud/api/${meta.path}`, cacheTtl: meta.cacheTtl, category: meta.category, description: getEndpointDescription(key) },
         ])),
         counts: ENDPOINT_COUNTS,
         test_summary: `${TEST_SUMMARY.passed}/${TEST_SUMMARY.total} passed`,
@@ -2220,8 +5302,668 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       }
     }
 
+    // ---- /API/PROXY/ANALYTICS/SYNDICATES ----
+    if (path === "/api/proxy/analytics/syndicates" && req.method === "POST") {
+      activeRequests++;
+      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const body = await readBody(req);
+      const agentID = String(body.agentID || body.customerID || "");
+      const lookbackHours = Math.min(Math.max(parseInt(String(body.lookbackHours || "24"), 10) || 24, 1), 168);
+      const minBettors = Math.max(parseInt(String(body.minBettors || "2"), 10) || 2, 2);
+      const minStake = Math.max(parseInt(String(body.minStake || "1000"), 10) || 1000, 0);
+      const days = Math.ceil(lookbackHours / 24);
+
+      if (!agentID) {
+        activeRequests--;
+        return json({ error: "agentID or customerID required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      let finalToken = body.token ? String(body.token) : "";
+      let finalCf = body.cf_clearance ? String(body.cf_clearance) : "";
+      if (!finalToken && agentID) {
+        const stored = getCachedToken(agentID);
+        if (stored) { finalToken = stored.bearer_token || ""; finalCf = stored.cf_clearance || ""; }
+      }
+      if (!finalToken || !finalCf) {
+        activeRequests--;
+        return json({ error: "token/cf_clearance or stored credentials required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      try {
+        const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
+          method: "POST",
+          headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
+          body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
+        }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
+
+        const wagerData = await wagerRes.json().catch(() => null);
+        const wagerList = Array.isArray(wagerData?.LIST) ? wagerData.LIST : Array.isArray(wagerData?.data?.LIST) ? wagerData.data.LIST : [];
+        const storedWagers = storeAnalyticWagers(wagerList.filter(isTaxonomyRecord), agentID);
+        const cutoff = Date.now() - lookbackHours * 3600000;
+        const wagers = parseBuckeyeWagers(wagerData).filter(w => w.timestamp >= cutoff);
+        const syndicates = detectSyndicates(wagers, { minBettors, minStake });
+
+        for (const s of syndicates) {
+          insertSyndicate.run({
+            $id: s.id, $agentID: agentID, $pattern: s.pattern,
+            $members: JSON.stringify(s.members), $totalStake: s.totalStake, $commonGame: s.commonGame,
+            $windowMs: s.windowMs || 0, $wagerCount: s.wagerCount || s.members.length, $avgStake: s.avgStake || 0,
+            $riskScore: s.riskScore || 0, $confidence: s.confidence || 0, $signals: JSON.stringify(s.signals || []),
+            $detected_at: Math.floor(s.timestamp / 1000),
+          });
+        }
+
+        requestFinished(ctx, "analytics/syndicates", agentID, 200);
+        activeRequests--;
+        return json({
+          agentID, lookbackHours, minBettors, minStake,
+          totalWagers: wagers.length,
+          storedWagers: storedWagers.length,
+          syndicates: syndicates.length,
+          syndicateDetails: syndicates,
+          fetchedAt: new Date().toISOString(),
+        }, 200, { "X-Request-ID": ctx.reqId });
+      } catch (err: unknown) {
+        requestFinished(ctx, "analytics/syndicates", agentID, 500, err);
+        activeRequests--;
+        return json({ error: "Syndicate detection failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
+      }
+    }
+
+    // ---- /API/PROXY/ANALYTICS/SHARP-MONEY ----
+    if (path === "/api/proxy/analytics/sharp-money" && req.method === "POST") {
+      activeRequests++;
+      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const body = await readBody(req);
+      const agentID = String(body.agentID || body.customerID || "");
+      const gameId = String(body.gameId || "");
+      const minutesBefore = Math.min(Math.max(parseInt(String(body.minutesBefore || "60"), 10) || 60, 1), 1440);
+
+      if (!agentID) {
+        activeRequests--;
+        return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      let finalToken = body.token ? String(body.token) : "";
+      let finalCf = body.cf_clearance ? String(body.cf_clearance) : "";
+      if (!finalToken && agentID) {
+        const stored = getCachedToken(agentID);
+        if (stored) { finalToken = stored.bearer_token || ""; finalCf = stored.cf_clearance || ""; }
+      }
+      if (!finalToken || !finalCf) {
+        activeRequests--;
+        return json({ error: "token/cf_clearance or stored credentials required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      try {
+        const cutoff = Date.now() - minutesBefore * 60000;
+        const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
+          method: "POST",
+          headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
+          body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
+        }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
+
+        const wagerData = await wagerRes.json().catch(() => null);
+        const wagers = parseBuckeyeWagers(wagerData).filter(w => w.timestamp >= cutoff);
+
+        // For sharp money, we need line movements. If the caller provided them, use them.
+        // Otherwise we infer from wager patterns (same game, same type, different lines at different times).
+        const lineHistory: LineMove[] = Array.isArray(body.lineHistory) ? (body.lineHistory as LineMove[]) : [];
+        const alerts = correlateSharpMoney(lineHistory, wagers);
+
+        // If no line history provided, provide wagers grouped by game for manual analysis
+        const gameGroups = new Map<string, Wager[]>();
+        for (const w of wagers) {
+          if (gameId && w.gameId !== gameId) continue;
+          if (!gameGroups.has(w.gameId)) gameGroups.set(w.gameId, []);
+          gameGroups.get(w.gameId)!.push(w);
+        }
+
+        requestFinished(ctx, "analytics/sharp-money", agentID, 200);
+        activeRequests--;
+        return json({
+          agentID, gameId, minutesBefore,
+          totalWagers: wagers.length,
+          lineHistoryProvided: lineHistory.length > 0,
+          sharpAlerts: alerts,
+          gameSummaries: Array.from(gameGroups.entries()).map(([gid, gw]) => ({
+            gameId: gid,
+            wagerCount: gw.length,
+            totalStake: gw.reduce((s, w) => s + w.stake, 0),
+            uniqueBettors: new Set(gw.map(w => w.bettorId)).size,
+          })),
+          fetchedAt: new Date().toISOString(),
+        }, 200, { "X-Request-ID": ctx.reqId });
+      } catch (err: unknown) {
+        requestFinished(ctx, "analytics/sharp-money", agentID, 500, err);
+        activeRequests--;
+        return json({ error: "Sharp money analysis failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
+      }
+    }
+
+    // ---- /API/PROXY/ANALYTICS/EV-SIMULATION ----
+    if (path === "/api/proxy/analytics/ev-simulation" && req.method === "POST") {
+      activeRequests++;
+      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const body = await readBody(req);
+      const agentID = String(body.agentID || body.customerID || "");
+      const bettorID = String(body.bettorID || "");
+      const modelType = String(body.modelType || "bayesian");
+      const lookbackDays = Math.min(Math.max(parseInt(String(body.lookbackDays || "30"), 10) || 30, 1), 365);
+
+      if (!agentID) {
+        activeRequests--;
+        return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      let finalToken = body.token ? String(body.token) : "";
+      let finalCf = body.cf_clearance ? String(body.cf_clearance) : "";
+      if (!finalToken && agentID) {
+        const stored = getCachedToken(agentID);
+        if (stored) { finalToken = stored.bearer_token || ""; finalCf = stored.cf_clearance || ""; }
+      }
+      if (!finalToken || !finalCf) {
+        activeRequests--;
+        return json({ error: "token/cf_clearance or stored credentials required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      try {
+        const cutoff = Date.now() - lookbackDays * 86400000;
+        const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
+          method: "POST",
+          headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
+          body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
+        }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
+
+        const wagerData = await wagerRes.json().catch(() => null);
+        let wagers = parseBuckeyeWagers(wagerData).filter(w => w.timestamp >= cutoff);
+        if (bettorID) wagers = wagers.filter(w => w.bettorId === bettorID);
+
+        const ev = computeExpectedValue(wagers, modelType);
+
+        requestFinished(ctx, "analytics/ev-simulation", agentID, 200);
+        activeRequests--;
+        return json({
+          agentID, bettorID: bettorID || "all", modelType, lookbackDays,
+          totalWagers: wagers.length,
+          ev,
+          fetchedAt: new Date().toISOString(),
+        }, 200, { "X-Request-ID": ctx.reqId });
+      } catch (err: unknown) {
+        requestFinished(ctx, "analytics/ev-simulation", agentID, 500, err);
+        activeRequests--;
+        return json({ error: "EV simulation failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
+      }
+    }
+
+    // ---- /API/PROXY/RISK/ALERTS ----
+    if (path === "/api/proxy/risk/alerts" && req.method === "POST") {
+      activeRequests++;
+      if (!CONFIG.features.riskEngine) { activeRequests--; return json({ error: "Risk engine disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const body = await readBody(req);
+      const agentID = String(body.agentID || body.customerID || "");
+      const thresholds = asTaxonomyRecord(body.thresholds) || {};
+      const webhookUrl = String(body.webhookUrl || "");
+
+      if (!agentID) {
+        activeRequests--;
+        return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      insertRiskConfig.run({
+        $agentID: agentID,
+        $customerID: String(body.customerID || agentID),
+        $thresholds: JSON.stringify(thresholds),
+        $webhook: webhookUrl || null,
+      });
+
+      requestFinished(ctx, "risk/alerts", agentID, 200);
+      activeRequests--;
+      return json({ success: true, agentID, thresholds, webhookUrl: webhookUrl || null }, 200, { "X-Request-ID": ctx.reqId });
+    }
+
+    if (path === "/api/proxy/risk/alerts" && req.method === "GET") {
+      activeRequests++;
+      if (!CONFIG.features.riskEngine) { activeRequests--; return json({ error: "Risk engine disabled" }, 403); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const agentID = url.searchParams.get("agentID");
+      if (agentID) {
+        const cfg = getRiskConfig.get({ $agentID: agentID }) as { agentID: string; thresholds: string; webhook: string | null; updated_at: number } | null;
+        activeRequests--;
+        if (!cfg) return json({ agentID, thresholds: {}, webhookUrl: null });
+        return json({ agentID: cfg.agentID, thresholds: JSON.parse(cfg.thresholds), webhookUrl: cfg.webhook, updatedAt: cfg.updated_at });
+      }
+      const all = getAllRiskConfigs.all() as Array<{ agentID: string; thresholds: string; webhook: string | null; updated_at: number }>;
+      activeRequests--;
+      return json({ configs: all.map(c => ({ agentID: c.agentID, thresholds: JSON.parse(c.thresholds), webhookUrl: c.webhook, updatedAt: c.updated_at })) });
+    }
+
+    // ---- /API/PROXY/RISK/CONFIG ----
+    if (path === "/api/proxy/risk/config" && req.method === "DELETE") {
+      activeRequests++;
+      if (!CONFIG.features.riskEngine) { activeRequests--; return json({ error: "Risk engine disabled" }, 403); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const agentID = url.searchParams.get("agentID");
+      if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400); }
+      deleteRiskConfig.run({ $agentID: agentID });
+      activeRequests--;
+      return json({ success: true, deleted: agentID });
+    }
+
+    // ---- /API/PROXY/RISK/SYNDICATES (GET cached) ----
+    if (path === "/api/proxy/risk/syndicates" && req.method === "GET") {
+      activeRequests++;
+      if (!CONFIG.features.riskEngine) { activeRequests--; return json({ error: "Risk engine disabled" }, 403); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const agentID = url.searchParams.get("agentID");
+      if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400); }
+      const since = url.searchParams.get("since");
+      const sinceTs = since ? Math.floor(new Date(since).getTime() / 1000) : Math.floor(Date.now() / 1000) - 86400;
+      const rows = getSyndicatesByAgent.all({ $agentID: agentID, $since: sinceTs }) as Array<{
+        id: string; agentID: string; pattern: string; members: string; totalStake: number; detected_at: number;
+        windowMs?: number; wagerCount?: number; avgStake?: number; riskScore?: number; confidence?: number; signals?: string;
+      }>;
+      activeRequests--;
+      return json({
+        agentID,
+        syndicates: rows.map(r => ({
+          id: r.id,
+          pattern: r.pattern,
+          members: JSON.parse(r.members),
+          totalStake: r.totalStake,
+          windowMs: r.windowMs || 0,
+          wagerCount: r.wagerCount || 0,
+          avgStake: r.avgStake || 0,
+          riskScore: r.riskScore || 0,
+          confidence: r.confidence || 0,
+          signals: JSON.parse(r.signals || "[]"),
+          detectedAt: new Date(r.detected_at * 1000).toISOString(),
+        })),
+      });
+    }
+
+    // ---- /API/PROXY/ANALYTICS/SYNDICATES/STATS ----
+    if (path === "/api/proxy/analytics/syndicates/stats" && req.method === "GET") {
+      activeRequests++;
+      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const agentID = url.searchParams.get("agentID") || "";
+      if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId }); }
+      const hours = Math.min(Math.max(parseInt(url.searchParams.get("hours") || "24", 10) || 24, 1), 168);
+      const since = Math.floor(Date.now() / 1000) - hours * 3600;
+      const syndicateStats = getSyndicateStats.get({ $agentID: agentID, $since: since }) as { count: number; totalStake: number; maxRiskScore: number; latestDetectedAt: number } | null;
+      const caseRows = getIntegrityCaseStatusCounts.all({ $agentID: agentID }) as Array<{ status: string; count: number }>;
+      activeRequests--;
+      return json({
+        agentID,
+        windowHours: hours,
+        syndicates: {
+          count: syndicateStats?.count || 0,
+          totalStake: syndicateStats?.totalStake || 0,
+          maxRiskScore: syndicateStats?.maxRiskScore || 0,
+          latestDetectedAt: syndicateStats?.latestDetectedAt ? new Date(syndicateStats.latestDetectedAt * 1000).toISOString() : null,
+        },
+        cases: caseRows.reduce((acc, row) => ({ ...acc, [row.status]: row.count }), {} as Record<string, number>),
+      }, 200, { "X-Request-ID": ctx.reqId });
+    }
+
+    // ---- /API/PROXY/INTEGRITY/CASES ----
+    if (path === "/api/proxy/integrity/cases" && req.method === "GET") {
+      activeRequests++;
+      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const agentID = url.searchParams.get("agentID") || "";
+      if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId }); }
+      const status = normalizeCaseStatus(url.searchParams.get("status") || "");
+      const statusFilter = url.searchParams.has("status") ? status : "";
+      const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "50", 10) || 50, 1), 200);
+      const rows = getIntegrityCases.all({ $agentID: agentID, $status: statusFilter, $limit: limit }) as IntegrityCaseRow[];
+      activeRequests--;
+      return json({ agentID, status: statusFilter || "all", cases: rows.map(serializeIntegrityCase) }, 200, { "X-Request-ID": ctx.reqId });
+    }
+
+    if (path === "/api/proxy/integrity/cases" && req.method === "POST") {
+      activeRequests++;
+      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const body = await readBody(req);
+      const agentID = String(body.agentID || "");
+      if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId }); }
+      const id = randomUUID();
+      const status = normalizeCaseStatus(body.status);
+      const priority = normalizeCasePriority(body.priority);
+      const title = String(body.title || body.syndicateId || "Integrity review").slice(0, 160);
+      const evidence = typeof body.evidence === "string" ? body.evidence : JSON.stringify(body.evidence || {});
+      insertIntegrityCase.run({
+        $id: id,
+        $agentID: agentID,
+        $syndicateId: body.syndicateId ? String(body.syndicateId) : null,
+        $status: status,
+        $priority: priority,
+        $title: title,
+        $summary: body.summary ? String(body.summary) : "",
+        $evidence: evidence,
+        $reviewer: body.reviewer ? String(body.reviewer) : "",
+        $notes: body.notes ? String(body.notes) : "",
+      });
+      const row = getIntegrityCaseById.get({ $id: id }) as IntegrityCaseRow | null;
+      activeRequests--;
+      return json({ case: row ? serializeIntegrityCase(row) : null }, 201, { "X-Request-ID": ctx.reqId });
+    }
+
+    if (path.startsWith("/api/proxy/integrity/cases/") && req.method === "PATCH") {
+      activeRequests++;
+      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const id = decodeURIComponent(path.replace("/api/proxy/integrity/cases/", ""));
+      const existing = getIntegrityCaseById.get({ $id: id }) as IntegrityCaseRow | null;
+      if (!existing) { activeRequests--; return json({ error: "case not found" }, 404, { "X-Request-ID": ctx.reqId }); }
+      const body = await readBody(req);
+      const reviewer = body.reviewer !== undefined ? String(body.reviewer) : (existing.reviewer || "");
+      const appended = body.appendNote ? `[${new Date().toISOString()}] ${reviewer || "reviewer"}: ${String(body.appendNote)}` : "";
+      const notes = appended ? [existing.notes || "", appended].filter(Boolean).join("\n") : body.notes !== undefined ? String(body.notes) : (existing.notes || "");
+      const evidence = body.evidence !== undefined ? (typeof body.evidence === "string" ? body.evidence : JSON.stringify(body.evidence)) : (existing.evidence || "{}");
+      updateIntegrityCase.run({
+        $id: id,
+        $status: body.status !== undefined ? normalizeCaseStatus(body.status) : existing.status,
+        $priority: body.priority !== undefined ? normalizeCasePriority(body.priority) : existing.priority,
+        $title: body.title !== undefined ? String(body.title).slice(0, 160) : existing.title,
+        $summary: body.summary !== undefined ? String(body.summary) : (existing.summary || ""),
+        $evidence: evidence,
+        $reviewer: reviewer,
+        $notes: notes,
+      });
+      const row = getIntegrityCaseById.get({ $id: id }) as IntegrityCaseRow | null;
+      activeRequests--;
+      return json({ case: row ? serializeIntegrityCase(row) : null }, 200, { "X-Request-ID": ctx.reqId });
+    }
+
+    // ---- /API/PROXY/ANALYTICS/PREDICTIVE-SHARPNESS ----
+    if (path === "/api/proxy/analytics/predictive-sharpness" && req.method === "POST") {
+      activeRequests++;
+      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const body = await readBody(req);
+      const agentID = String(body.agentID || body.customerID || "");
+      const bettorID = String(body.bettorID || "");
+      const lookbackDays = Math.min(Math.max(parseInt(String(body.lookbackDays || "90"), 10) || 90, 1), 365);
+
+      if (!agentID) {
+        activeRequests--;
+        return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      let finalToken = body.token ? String(body.token) : "";
+      let finalCf = body.cf_clearance ? String(body.cf_clearance) : "";
+      if (!finalToken && agentID) {
+        const stored = getCachedToken(agentID);
+        if (stored) { finalToken = stored.bearer_token || ""; finalCf = stored.cf_clearance || ""; }
+      }
+      if (!finalToken || !finalCf) {
+        activeRequests--;
+        return json({ error: "token/cf_clearance or stored credentials required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      try {
+        const since = Math.floor(Date.now() / 1000) - lookbackDays * 86400;
+        const cutoff = Date.now() - lookbackDays * 86400000;
+
+        let wagers: Wager[] = [];
+        if (bettorID) {
+          const dbRows = getWagerAnalytics.all({ $bettorId: bettorID, $since: since }) as Array<Record<string, unknown>>;
+          if (dbRows.length >= 30) {
+            wagers = dbRows.map(r => ({
+              bettorId: String(r.bettorId || ""),
+              gameId: String(r.gameId || ""),
+              wagerType: String(r.wagerType || ""),
+              side: String(r.side || ""),
+              line: Number(r.line || 0),
+              odds: Number(r.odds || 0),
+              stake: Number(r.stake || 0),
+              timestamp: Number(r.timestamp || 0) * 1000,
+              profit: Number(r.profit || 0),
+              sport: String(r.sport || ""),
+            }));
+          }
+        }
+
+        if (wagers.length < 30) {
+          const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
+            method: "POST",
+            headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
+            body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
+          }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
+          const wagerData = await wagerRes.json().catch(() => null);
+          let parsed = parseBuckeyeWagers(wagerData).filter(w => w.timestamp >= cutoff);
+          if (bettorID) parsed = parsed.filter(w => w.bettorId === bettorID);
+          wagers = parsed;
+        }
+
+        const wagerAnalytics: WagerAnalytic[] = wagers.map(w => ({
+          stake: w.stake,
+          profit: w.profit || 0,
+          sport: w.sport || "",
+          wagerType: w.wagerType || "",
+          timestamp: w.timestamp,
+        }));
+
+        const result = computePredictiveSharpness(wagerAnalytics);
+
+        if (bettorID) {
+          insertSharpness.run({
+            $bettorId: bettorID, $sharpScore: result.score, $wagerCount: wagerAnalytics.length,
+            $winRate: result.factors.winRate, $roi: result.factors.recentROI,
+          });
+        }
+
+        requestFinished(ctx, "analytics/predictive-sharpness", agentID, 200);
+        activeRequests--;
+        return json({
+          bettorID: bettorID || "all",
+          agentID,
+          lookbackDays,
+          totalWagers: wagerAnalytics.length,
+          ...result,
+          fetchedAt: new Date().toISOString(),
+        }, 200, { "X-Request-ID": ctx.reqId });
+      } catch (err: unknown) {
+        requestFinished(ctx, "analytics/predictive-sharpness", agentID, 500, err);
+        activeRequests--;
+        return json({ error: "Predictive sharpness failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
+      }
+    }
+
+    // ---- /API/PROXY/LINE-RULES (CRUD) ----
+    if (path === "/api/proxy/line-rules" && req.method === "GET") {
+      activeRequests++;
+      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const agentID = url.searchParams.get("agentID");
+      const rules = agentID
+        ? getLineRulesByAgent.all({ $agentID: agentID })
+        : getAllLineRules.all();
+      activeRequests--;
+      return json({ rules });
+    }
+
+    if (path === "/api/proxy/line-rules" && req.method === "POST") {
+      activeRequests++;
+      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const body = await readBody(req);
+      const agentID = String(body.agentID || "");
+      const sport = String(body.sport || "NFL");
+      const league = String(body.league || "");
+      const lineType = String(body.lineType || "SPREAD");
+      const condition = String(body.condition || "sharp_money_threshold");
+      const threshold = Number(body.threshold || 5000);
+      const adjustmentPercent = Number(body.adjustmentPercent || 5);
+      const maxMovePercent = Number(body.maxMovePercent || 10);
+      const enabled = body.enabled === false ? 0 : 1;
+
+      if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400); }
+
+      const result = insertLineRule.run({
+        $agentID: agentID, $sport: sport, $league: league, $lineType: lineType,
+        $condition: condition, $threshold: threshold, $adjustmentPercent: adjustmentPercent,
+        $maxMovePercent: maxMovePercent, $enabled: enabled,
+      });
+
+      activeRequests--;
+      return json({ success: true, id: Number(result.lastInsertRowid), agentID, sport, league, lineType, condition, threshold, adjustmentPercent, maxMovePercent, enabled }, 201);
+    }
+
+    if (path === "/api/proxy/line-rules" && req.method === "PUT") {
+      activeRequests++;
+      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const body = await readBody(req);
+      const id = Number(body.id);
+      const agentID = String(body.agentID || "");
+      if (!id || !agentID) { activeRequests--; return json({ error: "id and agentID required" }, 400); }
+
+      updateLineRule.run({
+        $id: id, $agentID: agentID,
+        $sport: String(body.sport || "NFL"), $league: String(body.league || ""),
+        $lineType: String(body.lineType || "SPREAD"), $condition: String(body.condition || "sharp_money_threshold"),
+        $threshold: Number(body.threshold || 5000), $adjustmentPercent: Number(body.adjustmentPercent || 5),
+        $maxMovePercent: Number(body.maxMovePercent || 10), $enabled: body.enabled === false ? 0 : 1,
+      });
+
+      activeRequests--;
+      return json({ success: true, id });
+    }
+
+    if (path === "/api/proxy/line-rules" && req.method === "DELETE") {
+      activeRequests++;
+      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const id = url.searchParams.get("id");
+      const agentID = url.searchParams.get("agentID");
+      if (!id || !agentID) { activeRequests--; return json({ error: "id and agentID required" }, 400); }
+      deleteLineRule.run({ $id: Number(id), $agentID: agentID });
+      activeRequests--;
+      return json({ success: true, deleted: Number(id) });
+    }
+
+    // ---- /API/PROXY/LINE-ADJUSTMENTS/LOG ----
+    if (path === "/api/proxy/line-adjustments/log" && req.method === "GET") {
+      activeRequests++;
+      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const gameId = url.searchParams.get("gameId");
+      const since = url.searchParams.get("since");
+      const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "50", 10), 1), 500);
+
+      if (gameId) {
+        const rows = getLineAdjLog.all({ $gameId: gameId, $limit: limit });
+        activeRequests--;
+        return json({ gameId, adjustments: rows });
+      }
+      const sinceTs = since ? Math.floor(new Date(since).getTime() / 1000) : Math.floor(Date.now() / 1000) - 86400;
+      const rows = getRecentLineAdjLog.all({ $since: sinceTs, $limit: limit });
+      activeRequests--;
+      return json({ adjustments: rows });
+    }
+
+    // ---- /API/PROXY/ANALYTICS/BACKTEST ----
+    if (path === "/api/proxy/analytics/backtest" && req.method === "POST") {
+      activeRequests++;
+      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+      const authErr = apiKeyAuth(req);
+      if (authErr) { activeRequests--; return authErr; }
+      const body = await readBody(req);
+      const agentID = String(body.agentID || body.customerID || "");
+      const days = Math.min(Math.max(parseInt(String(body.days || "7"), 10) || 7, 1), 90);
+      const ruleParams = Array.isArray(body.rules) ? body.rules as BacktestRule[] : [];
+
+      if (!agentID) {
+        activeRequests--;
+        return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      let finalToken = body.token ? String(body.token) : "";
+      let finalCf = body.cf_clearance ? String(body.cf_clearance) : "";
+      if (!finalToken && agentID) {
+        const stored = getCachedToken(agentID);
+        if (stored) { finalToken = stored.bearer_token || ""; finalCf = stored.cf_clearance || ""; }
+      }
+      if (!finalToken || !finalCf) {
+        activeRequests--;
+        return json({ error: "token/cf_clearance or stored credentials required" }, 400, { "X-Request-ID": ctx.reqId });
+      }
+
+      try {
+        const since = Math.floor(Date.now() / 1000) - days * 86400;
+        const cutoff = Date.now() - days * 86400000;
+
+        const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
+          method: "POST",
+          headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
+          body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
+        }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
+        const wagerData = await wagerRes.json().catch(() => null);
+        const wagers = parseBuckeyeWagers(wagerData).filter(w => w.timestamp >= cutoff);
+
+        const lineHistoryRows = getLineHistorySince.all({ $since: since }) as Array<{ gameId: string; lineType: string; side: string; oldLine: number; newLine: number; oldOdds: number; newOdds: number; timestamp: number }>;
+        const lineHistory: LineMove[] = lineHistoryRows.map(r => ({
+          timestamp: r.timestamp * 1000,
+          lineType: r.lineType,
+          side: r.side,
+          oldLine: r.oldLine,
+          newLine: r.newLine,
+          oldOdds: r.oldOdds,
+          newOdds: r.newOdds,
+          gameId: r.gameId,
+        }));
+
+        const rules = ruleParams.length > 0 ? ruleParams : (getAllLineRules.all() as Array<{ id: number; agentID: string; sport: string; league: string; lineType: string; condition: string; threshold: number; adjustmentPercent: number; maxMovePercent: number; enabled: number }>).map(r => ({
+          sport: r.sport, league: r.league, lineType: r.lineType, condition: r.condition,
+          threshold: r.threshold, adjustmentPercent: r.adjustmentPercent, maxMovePercent: r.maxMovePercent,
+        }));
+
+        const simulation = simulateLineAdjustments(wagers, rules, lineHistory);
+
+        requestFinished(ctx, "analytics/backtest", agentID, 200);
+        activeRequests--;
+        return json({
+          agentID, days,
+          wagersAnalyzed: wagers.length,
+          lineHistorySize: lineHistory.length,
+          rulesTested: rules.length,
+          simulation,
+          fetchedAt: new Date().toISOString(),
+        }, 200, { "X-Request-ID": ctx.reqId });
+      } catch (err: unknown) {
+        requestFinished(ctx, "analytics/backtest", agentID, 500, err);
+        activeRequests--;
+        return json({ error: "Backtest failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
+      }
+    }
+
     // ---- /ADMIN/RATE-LIMIT ----
-    if (path === "/admin/rate-limit" && CONFIG.features.adminApi) {
+    if (path === "/admin/rate-limit") {
       const authErr = adminApiKeyAuth(req);
       if (authErr) return authErr;
 
@@ -2246,7 +5988,7 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       if (req.method === "DELETE") {
         const endpoint = url.searchParams.get("endpoint");
         if (!endpoint) return json({ error: "endpoint query param required" }, 400);
-        db.prepare(`DELETE FROM rate_limit_overrides WHERE endpoint = $endpoint`).run({ $endpoint: endpoint });
+        deleteRateLimitOverrideInline.run({ $endpoint: endpoint });
         rateLimitOverrides.delete(endpoint);
         return json({ success: true, deleted: endpoint });
       }
@@ -2355,6 +6097,7 @@ async function shutdown(signal: string) {
   tokenRenewalTimers.clear();
 
   if (tickBatchTimer) clearTimeout(tickBatchTimer);
+  if (riskEngineTimer) clearInterval(riskEngineTimer);
   if (configWatcher) { configWatcher.close(); configWatcher = null; }
 
   // Clear caches
@@ -2365,9 +6108,59 @@ async function shutdown(signal: string) {
 
   insertToken.finalize();
   getLatestToken.finalize();
+  getLatestTokenWrite.finalize();
+  updateToken.finalize();
+  getExpiringTokens.finalize();
   insertCache.finalize();
   getCache.finalize();
+  getCacheStale.finalize();
   logRequestStmt.finalize();
+  totalRequestCount.finalize();
+  errorRequestCount.finalize();
+  countCustomerRequests.finalize();
+  countCustomerEndpointRequests.finalize();
+  checkRateStmt.finalize();
+  upsertRateStmt.finalize();
+  getIdempotency.finalize();
+  setIdempotency.finalize();
+  purgeExpiredCache.finalize();
+  purgeOldIdempotency.finalize();
+  purgeOldRequestLogs.finalize();
+  tokenCount.finalize();
+  getRateLimitOverrideStmt.finalize();
+  setRateLimitOverrideStmt.finalize();
+  getAllRateLimitOverridesStmt.finalize();
+  insertRiskConfig.finalize();
+  getRiskConfig.finalize();
+  getAllRiskConfigs.finalize();
+  insertSyndicate.finalize();
+  getSyndicates.finalize();
+  getSyndicatesByAgent.finalize();
+  insertIntegrityCase.finalize();
+  getIntegrityCaseById.finalize();
+  getIntegrityCases.finalize();
+  updateIntegrityCase.finalize();
+  getIntegrityCaseStatusCounts.finalize();
+  getSyndicateStats.finalize();
+  insertLineHistory.finalize();
+  getLineHistory.finalize();
+  getLineHistorySince.finalize();
+  insertWagerAnalytics.finalize();
+  getWagerAnalytics.finalize();
+  getAgentWagers.finalize();
+  getGameWagerAnalytics.finalize();
+  insertLineRule.finalize();
+  getLineRulesByAgent.finalize();
+  getAllLineRules.finalize();
+  updateLineRule.finalize();
+  deleteLineRule.finalize();
+  deleteRiskConfig.finalize();
+  deleteRateLimitOverrideInline.finalize();
+  insertSharpness.finalize();
+  getSharpnessByBettor.finalize();
+  insertLineAdjLog.finalize();
+  getLineAdjLog.finalize();
+  getRecentLineAdjLog.finalize();
   db.close();
   if (dbRead !== db) dbRead.close();
 
@@ -2377,11 +6170,20 @@ async function shutdown(signal: string) {
 
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGUSR2", () => {
+  logger.log("info", "reload", "SIGUSR2 received, reloading config");
+  try {
+    reloadFromEnv();
+    logger.log("info", "reload", "Config reloaded via SIGUSR2", { features: CONFIG.features });
+  } catch (err: unknown) {
+    logger.error("reload", "SIGUSR2 reload failed", { error: err instanceof Error ? err.message : String(err) });
+  }
+});
 
 // ==========================================
 // 13. CONFIG HOT-RELOAD (dev only)
 // ==========================================
-if (!Bun.env.PROXY_PRODUCTION) {
+if (!CONFIG.production) {
   configWatcher = watch('.env', { persistent: false }, async (event) => {
     if (event !== 'change') return;
     logger.info('.env changed, reloading config');
@@ -2392,15 +6194,35 @@ if (!Bun.env.PROXY_PRODUCTION) {
       logger.error('Config reload failed', { error: err instanceof Error ? err.message : String(err) });
     }
   });
+
+  // Also watch bunfig.toml for changes
+  watch('./bunfig.toml', { persistent: false }, async (event) => {
+    if (event !== 'change') return;
+    logger.info('bunfig.toml changed, reloading config');
+    try {
+      reloadFromEnv();
+      logger.info('Config reloaded from bunfig.toml', { features: CONFIG.features });
+    } catch (err: unknown) {
+      logger.error('Config reload from bunfig.toml failed', { error: err instanceof Error ? err.message : String(err) });
+    }
+  });
 }
 
 // Load rate limit overrides and start token renewal
 loadRateLimitOverrides();
 scheduleExistingTokenRenewals();
-
 logger.info(`Enhanced Proxy running at http://localhost:${CONFIG.port}`);
 logger.info(`WebSocket: ws://localhost:${CONFIG.port}/ws`);
 logger.info(`Features:`, { ...CONFIG.features });
 logger.info(`Metrics: http://localhost:${CONFIG.port}/metrics`);
+logger.info(`Prometheus: http://localhost:${CONFIG.port}/metrics/prometheus`);
 logger.info(`Ready probe: http://localhost:${CONFIG.port}/ready`);
 logger.info(`Dashboard: http://localhost:${CONFIG.port}/dashboard`);
+logger.info(`Admin: http://localhost:${CONFIG.port}/admin`);
+
+// HMR accept handler for fine-grained hot reload in development
+if (import.meta.hot) {
+  import.meta.hot.accept(() => {
+    logger.log("info", "hmr", "Module updated, hot reloaded");
+  });
+}

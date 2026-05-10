@@ -22,7 +22,7 @@ Key current pillars:
 - Alert center, webhook delivery, status page, and operational health endpoints.
 - System Status issue rollup for scraper errors, action queues, raw API failures, Player 360 source errors, offline books, and critical patterns.
 - Player 360 profile modal with real API-only hydration, source coverage, field-contract mapping, explicit gaps, endpoint health, cross-reference overview, mismatch tracking, and focused frontend modules for transaction and Docs/data-map rendering.
-- Standalone enhanced proxy entrypoint (`enhanced-proxy.ts`) with `/features`, `/metrics`, `/ready`, WebSocket compression, response compression, retry/backoff, idempotency, rate limiting, token pre-renewal, and config reload flags.
+- Standalone enhanced proxy entrypoint (`proxy-enhanced.ts`, started with `bun run proxy:dev` or `bun run proxy:start`) with `/features`, `/metrics`, `/ready`, WebSocket compression, response compression, retry/backoff, idempotency, rate limiting, token pre-renewal, and config reload flags. This is internal/debug tooling; the public frontend contract stays on port 3000.
 - Project docs reorganized into README, Buckeye scope, implementation tracker, changelog, and project organization guide.
 
 ---
@@ -155,7 +155,8 @@ Delivered:
 - Status sidebar tab shows backend, vault, book, and pattern health.
 - System Status now includes a consolidated issue feed from `/api/health/system-status` so operators can track likely bugs/regressions from one panel.
 - System Status includes a data-flow strip and `crossReferences` readiness row for player-agent maps, access-log evidence, player links, and pattern-agent links.
-- Standalone enhanced proxy has a documented feature-flag matrix, runtime `/features` endpoint, metrics endpoint, isolated smoke coverage, config alias tests, and Zone 1 taxonomy proxy endpoints for sports, leagues, schedules, lines, periods, and game types.
+- System Status now separates operational health from pattern risk, includes canonical `criticalPatternRiskByType` / `patternRiskExpiresAt` fields with compatibility aliases, polls enhanced proxy `/ready` as `enhancedProxyHealth`, and renders a unified frontend status badge.
+- Standalone enhanced proxy has a documented feature-flag matrix, runtime `/features` endpoint, metrics endpoint, isolated smoke coverage, config alias tests, Zone 1 taxonomy proxy endpoints, and analytics surfaces for syndicates, sharp-money correlation, risk thresholds, and bettor EV.
 
 Notes:
 
@@ -211,10 +212,41 @@ $env:PROXY_PORT=3001
 $env:ENABLE_METRICS='true'
 $env:ENABLE_RESPONSE_COMPRESSION='true'
 $env:ENABLE_RETRY='true'
-bun run enhanced-proxy.ts
-Invoke-RestMethod http://localhost:3001/features
-Invoke-RestMethod http://localhost:3001/metrics
+bun run proxy:dev
 ```
+
+In another shell:
+
+```powershell
+bun run smoke:proxy
+```
+
+Unified backend smoke:
+
+```powershell
+bun run backend:start
+```
+
+In another shell:
+
+```powershell
+bun run smoke:backend
+```
+
+`smoke:proxy` now validates endpoint catalog semantics too: params stay under alias request metadata, endpoint metadata stays under `endpointMap`, OpenAPI request params stay separate from response payloads, alias required-param failures return JSON errors, `/demo/status` reports mock coverage, and pending/report-config auth guards return errors rather than successful `data` bodies. With `DEMO_MODE=true`, it also checks that a mocked endpoint returns `source: "demo"` data without real Buckeye credentials.
+
+Proxy runtime notes:
+
+- Root `bunfig.toml` preloads `scripts/preload.ts` for Bun commands.
+- The preload validates production proxy API-key presence, applies SQLite WAL pragmas to known existing local DB files, and exposes `globalThis.sportsTerminalFetch` with a default timeout. It does not replace `globalThis.fetch` unless `ENABLE_GLOBAL_FETCH_TIMEOUT=true`.
+- Development hot reload uses `bun --watch`.
+- Root proxy env reads use `Bun.env` and Zod validation in `config.ts`.
+- Proxy and backend WebSocket handlers use Bun keepalive/backpressure controls: `sendPings`, `idleTimeout`, `backpressureLimit`, `closeOnBackpressureLimit`, and per-message deflate where enabled.
+- Enhanced proxy `/metrics` includes Bun server load (`pendingRequests`, `pendingWebSockets`, topic subscriber count) and guarded `bun:jsc` heap stats.
+- Production should set `PROXY_PRODUCTION=true`; this maps to `development: false` in `Bun.serve`.
+- Backfilled cache, analytics, token, and risk tables stay on Bun's native `bun:sqlite`.
+- Backend internal bridge uses `backend/src/services/ProxyClient.ts` to forward `/api/proxy/:alias` and `/api/proxy/taxonomy/:level` from port `3000` to the enhanced proxy on port `3001` with `X-API-Key` and vaulted Buckeye credentials.
+- Backend OpenAPI snapshots can be regenerated with `bun run generate:openapi`.
 
 Before handoff after docs-only changes:
 

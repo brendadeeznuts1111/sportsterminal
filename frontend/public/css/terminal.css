@@ -4,7 +4,7 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
 ::-webkit-scrollbar{width:6px;height:6px;}::-webkit-scrollbar-track{background:var(--panel);}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
 .flash-green{animation:flashGreen 0.8s ease-out;}@keyframes flashGreen{0%{background:rgba(16,185,129,0.3);}100%{background:transparent;}}
 .flash-red{animation:flashRed 0.8s ease-out;}@keyframes flashRed{0%{background:rgba(239,68,68,0.3);}100%{background:transparent;}}
-.pulse-dot{animation:pulse 2s infinite;}@keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.3;}}
+.pulse-dot{animation:pulse 2s infinite;}@keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.4;}}@keyframes spin{to{transform:rotate(360deg);}}
 .live-badge{animation:livePulse 1.5s infinite;}@keyframes livePulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0.7);}50%{box-shadow:0 0 0 6px rgba(239,68,68,0);}}
 .sidebar-item:hover{background:var(--panel-hover);}
 .sidebar-item.active{background:var(--accent);color:#fff;}

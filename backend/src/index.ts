@@ -148,7 +148,11 @@ async function startServer() {
     hostname: HOST,
     idleTimeout: 30,
     websocket: {
-      perMessageDeflate: true, // Built-in compression for WS messages
+      sendPings: true,
+      idleTimeout: 60,
+      backpressureLimit: 8 * 1024 * 1024,
+      closeOnBackpressureLimit: true,
+      perMessageDeflate: { compress: true, decompress: true }, // Built-in compression for WS messages
       open(ws) {
         console.log('[WS] Client connected');
         ws.data.agentId = ws.data.agentId ?? null;

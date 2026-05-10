@@ -1,6 +1,6 @@
 # Player 360 Data Map v5.32
 
-Player 360 is real API first. The modal must hydrate from `/api/v1/players/:playerId/profile` and supporting Player 360 routes. It must not fabricate profile stats from browser-side mock data when an endpoint fails.
+Player 360 is real API first. The modal must hydrate from `/api/players/:playerId/profile` and supporting Player 360 routes on the public backend (`localhost:3000`). It must not fabricate profile stats from browser-side mock data when an endpoint fails.
 
 Buckeye's public `manual-agent.pdf` and `FAQ.pdf` confirm the UI/report semantics behind the Player 360 sources. See `docs/BUCKEYE_MANUAL_FINDINGS.md` for the reviewed notes.
 
@@ -11,8 +11,8 @@ Player 360 rendering is being extracted from the legacy `app.js` host into focus
 | Module | Responsibility |
 |---|---|
 | `frontend/public/js/app.js` | Compatibility host, global inline-handler bridge, profile lifecycle, and shared state wiring. |
-| `frontend/public/js/player-transactions.js` | Transaction ledger and Free-Play sub-tab rendering from `/profile`, `/transactions?category=freeplay`, and `/api/v1/freeplay/analysis`-compatible fields. |
-| `frontend/public/js/player-docs.js` | Docs tab renderer for the live `/api/v1/players/:playerId/intelligence-map` data map, source coverage, gaps, and field contract. |
+| `frontend/public/js/player-transactions.js` | Transaction ledger and Free-Play sub-tab rendering from `/profile`, `/transactions?category=freeplay`, and `/api/freeplay/analysis`-compatible fields. |
+| `frontend/public/js/player-docs.js` | Docs tab renderer for the live `/api/players/:playerId/intelligence-map` data map, source coverage, gaps, and field contract. |
 | `frontend/public/js/utils.js` | Shared escaping, date, money, compact-dollar, and DOM text helpers used by Player 360 and broader dashboards. |
 
 New Player 360 UI work should prefer a focused module with explicit dependency injection from `app.js` instead of adding another large inline renderer to the compatibility host.
@@ -40,17 +40,17 @@ Hot players are players with a wager in the last 24 hours, an opened profile, an
 
 | Surface | Route | Source |
 |---|---|---|
-| Search | `/api/v1/players/search?q=&agent=&from=&to=&sort=` | `wager_archive` aggregation |
-| Profile | `/api/v1/players/:playerId/profile` | `wager_archive`, `access_logs`, `agent_performance_snapshots` from `getPerformancePlayer`, `player_transactions` from `getTransactionList` / `getTransactionHistory` / `getReportDeletedTransactions`, `deposits`, `customer_snapshots`, `player_links`, `player_flags`, `player_notes` |
-| Intelligence map | `/api/v1/players/:playerId/intelligence-map` | Source freshness, watermarks, raw API probe history |
-| Cross-reference summary | `/api/v1/cross-reference?playerId=&agentId=` | Read-only local context graph for Player 360 Overview: agent lineage, wager exposure, shared IPs, free-play totals, pattern evidence, and data-quality flags. |
-| Deposits | `/api/v1/players/:playerId/deposits` | `deposits` plus login-IP match against `access_logs` |
-| Transaction ledger | `/api/v1/players/:playerId/transactions` | Combined `getTransactionList` / `getTransactionHistory` / `getReportDeletedTransactions` ledger: wager wins/losses, credits/debits, deleted rows, balances, document numbers. Pass `category=freeplay` to return only free-play rows. |
-| Free-play analysis | `/api/v1/freeplay/analysis?playerId=&agentId=&from=&to=&groupBy=player\|agent\|day` | Aggregates `player_transactions` categories `freeplay_issued`, `freeplay_redeemed`, `freeplay_expired`, and `freeplay_adjustment` into totals and grouped rows with response-computed `sourceConfidence`. |
-| Account | `/api/v1/players/:playerId/account-snapshots` | `customer_snapshots` |
-| Links | `/api/v1/players/:playerId/links` and `/links/check` | `player_links`, derived from access-log overlap |
-| Notes and flags | `/api/v1/players/:playerId/notes`, `/flags` | Manual operator tables |
-| Exports | `/api/v1/players/:playerId/export/wagers`, `/export/access-logs` | CSV streams from `wager_archive` and `access_logs` |
+| Search | `/api/players/search?q=&agent=&from=&to=&sort=` | `wager_archive` aggregation |
+| Profile | `/api/players/:playerId/profile` | `wager_archive`, `access_logs`, `agent_performance_snapshots` from `getPerformancePlayer`, `player_transactions` from `getTransactionList` / `getTransactionHistory` / `getReportDeletedTransactions`, `deposits`, `customer_snapshots`, `player_links`, `player_flags`, `player_notes` |
+| Intelligence map | `/api/players/:playerId/intelligence-map` | Source freshness, watermarks, raw API probe history |
+| Cross-reference summary | `/api/cross-reference?playerId=&agentId=` | Read-only local context graph for Player 360 Overview: agent lineage, wager exposure, shared IPs, free-play totals, pattern evidence, and data-quality flags. |
+| Deposits | `/api/players/:playerId/deposits` | `deposits` plus login-IP match against `access_logs` |
+| Transaction ledger | `/api/players/:playerId/transactions` | Combined `getTransactionList` / `getTransactionHistory` / `getReportDeletedTransactions` ledger: wager wins/losses, credits/debits, deleted rows, balances, document numbers. Pass `category=freeplay` to return only free-play rows. |
+| Free-play analysis | `/api/freeplay/analysis?playerId=&agentId=&from=&to=&groupBy=player\|agent\|day` | Aggregates `player_transactions` categories `freeplay_issued`, `freeplay_redeemed`, `freeplay_expired`, and `freeplay_adjustment` into totals and grouped rows with response-computed `sourceConfidence`. |
+| Account | `/api/players/:playerId/account-snapshots` | `customer_snapshots` |
+| Links | `/api/players/:playerId/links` and `/links/check` | `player_links`, derived from access-log overlap |
+| Notes and flags | `/api/players/:playerId/notes`, `/flags` | Manual operator tables |
+| Exports | `/api/players/:playerId/export/wagers`, `/export/access-logs` | CSV streams from `wager_archive` and `access_logs` |
 
 ## Source Status Rules
 
@@ -71,7 +71,7 @@ Every source row returned by `/intelligence-map` includes `refreshPolicy`, `ttlS
 
 ## Cross-Reference Overview Panel
 
-The Player 360 Overview uses `/api/v1/cross-reference` to render the Cross-Refs card. The endpoint is local-only and must not trigger new Buckeye calls. It provides operator shortcuts from a player to the assigned agent tree, access-log evidence, related pattern rows, and the Free-Play ledger sub-tab.
+The Player 360 Overview uses `/api/cross-reference` to render the Cross-Refs card. The endpoint is local-only and must not trigger new Buckeye calls. It provides operator shortcuts from a player to the assigned agent tree, access-log evidence, related pattern rows, and the Free-Play ledger sub-tab.
 
 Trust flags are derived from local tables: missing player-agent maps, stale access logs, missing transaction coverage, orphan mappings, pattern evidence, and candidate-only free-play rows.
 

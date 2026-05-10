@@ -27,13 +27,21 @@ This is the single reference for Sports Terminal names: environment variables, O
 | `ODDS_API_KEY` | unset | No | `OddsPoller` | Enables The Odds API provider; odds polling is disabled when unset |
 | `ODDS_DEMO_MODE` | `false` | No | `OddsPoller` | Test/development only: enables synthetic odds if no `ODDS_API_KEY`; never used for Buckeye wager data |
 | `REDIS_URL` | unset | No | `PerformanceCache` | Optional Redis cache URL for performance cache |
+| `PROXY_INTERNAL_URL` | `http://localhost:3001` | No | `ProxyClient`, `EnhancedProxyHealth` | Main backend -> enhanced proxy base URL for internal bridge and readiness checks |
+| `PROXY_API_KEY` | `dev-key-123` | No | `ProxyClient`, `EnhancedProxyHealth`, enhanced proxy auth | Shared internal API key sent as `X-API-Key` to enhanced proxy routes |
 | `FRONTEND_PORT` | `3001` | No | `scripts/serve-frontend.ts` | Optional static frontend-only server port |
 | `BUCKEYE_AGENT_ID` | unset | Script-only | `backend/scripts/*` probes | One-off local probe/login scripts only; do not store production credentials |
 | `BUCKEYE_PASSWORD` | unset | Script-only | `backend/scripts/*` probes | One-off local probe/login scripts only; prefer interactive/vaulted auth |
+| `PRELOAD_VERBOSE` | `true` | No | `scripts/preload.ts` | Logs Bun/preload startup mode when not set to `false` |
+| `PRELOAD_SQLITE_WAL` | `true` | No | `scripts/preload.ts` | Applies WAL, busy timeout, and foreign-key pragmas to known existing SQLite files |
+| `PRELOAD_CREATE_SQLITE` | `false` | No | `scripts/preload.ts` | Allows preload to create missing candidate SQLite files before applying pragmas |
+| `DEFAULT_FETCH_TIMEOUT_MS` | `30000` | No | `globalThis.sportsTerminalFetch` | Default timeout for the preload-provided fetch helper |
+| `ENABLE_GLOBAL_FETCH_TIMEOUT` | `false` | No | `scripts/preload.ts` | Opt-in only: replaces `globalThis.fetch` with the timeout helper. Leave false for Bun internals safety. |
+| `ENABLE_PRELOAD_LOG_DB` | `false` | No | `scripts/preload.ts` | Opt-in only: persists preload structured logs to `logs.sqlite`; otherwise logs stay console-only |
 
 ### Standalone Enhanced Proxy
 
-These apply to `enhanced-proxy.ts` / `proxy-enhanced.ts`, not the main backend server.
+These apply to `proxy-enhanced.ts`, not the main backend server.
 
 | Name | Default | Required | Used By | Meaning |
 |------|---------|----------|---------|---------|
@@ -55,11 +63,14 @@ These apply to `enhanced-proxy.ts` / `proxy-enhanced.ts`, not the main backend s
 | `WS_BATCH_INTERVAL_MS` | `200` | No | WebSocket ticker | Batch flush interval when batching is enabled |
 | `ENABLE_STREAM_MODE` | `true` | No | proxy POST handler | Enables streaming upstream bodies when `stream=true` |
 | `ENABLE_REQUEST_LOGGING` | `true` | No | request logger | Persists/logs enhanced-proxy request metadata |
+| `DEMO_MODE` / `ENABLE_DEMO_MODE` | `false` | No | proxy POST handler, `/demo/status` | Development-only local mock payloads for selected enhanced-proxy endpoints; bypasses Buckeye token validation only for listed mocked endpoints |
 | `ENABLE_MEMORY_CACHE` | `true` | No | ticker and taxonomy proxy | Enables short-lived in-memory caching for hot ticker and taxonomy reads |
 | `MEMORY_CACHE_TTL_MS` | `2000` | No | memory cache | Default in-memory cache TTL for hot paths |
 | `ENABLE_REQUEST_DEDUPE` | `true` | No | proxy POST handler | Coalesces identical in-flight upstream requests |
 | `ENABLE_TOKEN_EXPIRY_CHECK` | `true` | No | WebSocket ticker | Closes ticker subscriptions whose stored token is expired |
 | `TOKEN_CACHE_TTL_MS` | `5000` | No | token lookup helper | Caches latest stored token rows for repeated checks |
+| `ENABLE_ANALYTICS` | `true` | No | proxy analytics routes | Gates the enhanced proxy analytics surfaces |
+| `ENABLE_RISK_ENGINE` | `true` | No | risk engine | Enables periodic risk threshold evaluation and alert delivery |
 
 Enhanced proxy taxonomy levels:
 
@@ -71,6 +82,66 @@ Enhanced proxy taxonomy levels:
 | `lines` | `Manager/getLines` | 60s | `Line[]` |
 | `periods` | `Manager/getPeriods` | 600s | `Period[]` |
 | `gametypes` | `System/getGameTypes` | 3600s | `GameType[]` |
+
+The taxonomy levels are `sports` -> `leagues` -> `schedule` -> `lines`. New frontend work should call public backend routes on `localhost:3000`; direct browser calls to the enhanced proxy on `localhost:3001` are legacy diagnostics only. The old browser-storage keys `proxyBaseUrl`, `buckeye_token`, `cf_clearance`, optional `__cf_bm`, and optional `proxyApiKey` may still appear in debug panels, but production UI code should not depend on them.
+
+Main backend health uses these enhanced proxy names:
+
+| Canonical Name | Compatibility Alias | Meaning |
+|----------------|---------------------|---------|
+| `enhancedProxyHealth` | `proxyHealth` | Backend's view of enhanced proxy `/ready`: `ok`, `degraded`, or `critical` |
+| `details.enhancedProxy` | `details.proxy*` fields | Structured proxy readiness body, status code, checked time, and raw proxy details |
+| `patternRiskStatus` | `riskStatus` | Pattern-only risk rollup from recent `detected_patterns` rows |
+| `criticalPatternRiskByType` | `riskBreakdown` | Last-hour critical pattern counts keyed by `detected_patterns.type` |
+| `warningPatternRiskByType` | `riskWarningBreakdown` | Last-hour warning pattern counts keyed by `detected_patterns.type` |
+| `patternRiskExpiresAt` | `riskStatusExpiresAt` | Auto-clear time based on latest recent pattern detection plus one hour |
+
+Use the canonical names for new code. The compatibility aliases exist so older status widgets and smoke scripts keep working during the transition.
+
+Enhanced proxy curl aliases:
+
+These aliases live on the internal/debug enhanced proxy (`localhost:3001`). They are documented for operators and backend bridge work; frontend features should prefer first-class `localhost:3000` routes such as `/api/agents/downline?live=true`.
+
+| Alias Route | Required Params | Optional Params | Primary Buckeye Operation | Notes |
+|-------------|-----------------|-----------------|---------------------------|-------|
+| `/api/proxy/sportsLeagues` | `token`, `cf_clearance` | `agentID`, `customerID` | `Manager/getSportsType` | Sports/league seed payload; falls back to system taxonomy candidates |
+| `/api/proxy/leagueLines` | `token`, `cf_clearance`, `league`, `sport` | `agentID`, `customerID`, `period`, `live`, `gameId` | `Manager/getLines` | Pass `sport` and `league`; falls back to schedule if lines are unavailable |
+| `/api/proxy/agentDownline` | `token`, `cf_clearance`, `agentID` | `customerID`, `agentType`, `agentOwner`, `agentSite` | `Manager/getListAgenstByAgent` | Upstream typo `Agenst` is intentional |
+| `/api/proxy/agentBilling` | `token`, `cf_clearance`, `agentID` | `customerID`, `agentSite`, `week`, `startDate`, `endDate`, `__cf_bm` | `Manager/getAgentBilling` | Weekly/daily agent billing figures |
+| `/api/proxy/playerInfo` | `token`, `cf_clearance`, `playerID` | `agentID`, `customerID`, `bettorID`, `startDate`, `endDate` | `System/getPlayerActivity` | Falls back to bettor detail/player analysis candidates |
+| `/api/proxy/dynamicLive` | `token`, `cf_clearance` | `agentID`, `customerID`, `sport`, `league`, `live` | `Manager/getDynamicLines` | Falls back to live lines and `getBetTicker` |
+| `/api/proxy/gameVolume` | `token`, `cf_clearance`, `gameId` | `agentID`, `customerID`, `sport`, `league`, `GameID` | `Manager/getGameVolume` | Falls back to game exposure/wager-by-game candidates |
+| `/api/proxy/pending` | `token`, `cf_clearance`, `agentID` | `date`, `wagerType`, `amount`, `sort`, `typeSort`, `week`, `customerID`, `agentOwner`, `agentSite`, `__cf_bm` | `Manager/getPending` | Uses the qubic API path first; groups parlay legs by `TicketNumber` + `WagerNumber`; `wagerType` follows Buckeye's type dropdown |
+| `/api/proxy/pendingReportConfig` | `token`, `cf_clearance`, `agentID` | `agentOwner`, `agentSite`, `__cf_bm` | `Manager/getConfigWebReportsPending` | Reads Pending report column visibility config |
+| `/api/proxy/updatePendingReportConfig` | `token`, `cf_clearance`, `agentID` | `agent`, `customerID`, `password`, `name`, `timeAccepted`, `timeScheduled`, `type`, `print`, `delete`, `custTotal`, `agentOwner`, `agentSite`, `__cf_bm` | `Manager/updateReportConfigPending` | Updates Pending report column toggles. Here `customerID` is a visibility flag (`on`/`off`), not a player filter. |
+
+Enhanced proxy pending wager shape:
+
+| Field | Meaning |
+|-------|---------|
+| `wagers[].key` | Stable grouped key from ticket and wager number |
+| `wagers[].wager` | Parent ticket status, stake, to-win, round robin, free-play, credit, and total-picks metadata. Money fields are dollars. |
+| `wagers[].legs[]` | Leg-level team, market type, side, odds, spread, total points, buy-points, pitchers, matchup, volume, and per-leg stake fields. Money fields are dollars. |
+| `rawRowCount` | Original Buckeye row count before parlay grouping |
+
+`getPending` can return a top-level array instead of a `LIST` envelope. The enhanced proxy accepts both shapes, trims padded IDs, excludes raw password fields, and maps `LegWagerType: "L"` with `TotalPointsOU: "O"`/`"U"` to a `TOTAL` leg.
+
+Enhanced proxy analytics tables:
+
+| Table | Used By | Meaning |
+|-------|---------|---------|
+| `risk_config` | `/api/proxy/risk/config`, risk engine | Per-agent loss, stake, and max-bet thresholds with optional webhook URL |
+| `syndicate_cache` | `/api/proxy/analytics/syndicates`, `/api/proxy/risk/syndicates` | Cached correlated bettor clusters, including risk score, confidence, and evidence signals in API output |
+| `integrity_cases` | `/api/proxy/integrity/cases`, `/api/proxy/analytics/syndicates/stats` | Operator review queue for syndicate evidence, status, priority, reviewer, notes, and evidence JSON |
+| `line_history` | `/api/proxy/analytics/sharp-money` | Stored game line/odds movements for correlation checks |
+| `wager_analytics` | syndicate, sharp-money, EV, risk engine | Normalized wager rows used by enhanced proxy analytics. Syndicate scans persist fetched ticker rows here. |
+
+Syndicate Intelligence UI:
+
+| Surface | Data Source | Purpose |
+|---------|-------------|---------|
+| Patterns tab `Syndicate Intelligence` panel | `/api/proxy/analytics/syndicates` | Read-only review surface for same-selection clusters, member accounts, stake concentration, time-window signals, and confidence/risk score |
+| Patterns tab `Integrity Case Queue` panel | `/api/proxy/integrity/cases`, `/api/proxy/analytics/syndicates/stats` | Review workflow for opening, escalating, closing, or marking syndicate clusters as false positives |
 
 Do not store Buckeye passwords, Buckeye JWTs, or Cloudflare cookies in `.env`. Use Settings and the OS vault.
 
@@ -136,6 +207,7 @@ Vault status APIs only expose presence flags:
 | `getInfoPlayer` | `/cloud/api/Manager/getInfoPlayer` | Player profile/account payload candidate |
 | `getConfigWebReports` | `/cloud/api/Manager/getConfigWebReports` | Report config |
 | `getConfigWebReportsPending` | `/cloud/api/Manager/getConfigWebReportsPending` | Pending report config |
+| `updateReportConfigPending` | `/cloud/api/Manager/updateReportConfigPending` | Update pending report visible columns |
 | `getAuthorizations` | `/cloud/api/Manager/getAuthorizations` | Permission/capability metadata |
 | `getMessage` | `/cloud/api/Manager/getMessage` | Manager message payload |
 | `getNewEmailsCount` | `/cloud/api/Manager/getNewEmailsCount` | Email/message count |
@@ -360,7 +432,8 @@ Request fields:
 | `sport` | `Basketball          ` | Sport filter, often padded |
 | `subsport` | `NBA` | League/subsport filter |
 | `period` | `-1` | Period filter |
-| `wagerType` | `S` | Wager type filter, blank for all |
+| `wagerType` | `S` | Wager type filter, blank for all types |
+| `week` | `0` | Pending-wager time preset, `0` means Today |
 | `betType` | `M` | Bet type filter, blank for all |
 | `tipo` | `0` | Activity filter |
 | `group` | `1` | Optional grouping mode |
@@ -405,10 +478,33 @@ Wager and bet type values:
 |-------|-------|-------|
 | `wagerType` | `S` | Straights |
 | `wagerType` | `P` | Parlays |
+| `wagerType` | `I` | If Bets |
 | `wagerType` | `T` | Teasers |
-| `wagerType` | `I` | If-Bets / Action Reverses |
-| `wagerType` | `C` | Contests |
+| `wagerType` | `G` | Racebook |
 | `wagerType` | `A` | Manual Plays |
+| `wagerType` | `C` | Contest |
+| `wagerType` | `N` | Live/Props |
+| pending `week` | `730` | All |
+| pending `week` | `0` | Today |
+| pending `week` | `3` | 3 Days |
+| pending `week` | `7` | 7 days |
+| pending `week` | `14` | 14 days |
+| pending `amount` | blank | All amounts |
+| pending `amount` | `100` | $100+ |
+| pending `amount` | `500` | $500+ |
+| pending `amount` | `1000` | $1,000+ |
+| pending `amount` | `5000` | $5,000+ |
+| pending `amount` | `10000` | $10,000+ |
+| pending report `agent` | `on` | Show agent column |
+| pending report `customerID` | `on` | Show customer/player id column; this is a visibility toggle |
+| pending report `password` | `off` | Hide password column |
+| pending report `name` | `on` | Show player name column |
+| pending report `timeAccepted` | `on` | Show accepted timestamp |
+| pending report `timeScheduled` | `on` | Show scheduled/game timestamp |
+| pending report `type` | `on` | Show wager type column |
+| pending report `print` | `on` | Show print control |
+| pending report `delete` | `off` | Hide delete control |
+| pending report `custTotal` | `off` | Hide customer total rollup |
 | `betType` | `S` | Spread |
 | `betType` | `M` | Money Line |
 | `betType` | `L` | Total |
@@ -559,7 +655,7 @@ Player 360 stores deleted report rows in `player_transactions` and exposes sourc
 
 ## `player_source_status`
 
-Per-player source status used by `/api/v1/players/:id/intelligence-map`, the Player 360 Status tab, and the sidebar Status page. This table prevents heavy Buckeye endpoints from being polled for all archived players.
+Per-player source status used by `/api/players/:id/intelligence-map`, the Player 360 Status tab, and the sidebar Status page. This table prevents heavy Buckeye endpoints from being polled for all archived players.
 
 | Column | Meaning |
 |--------|---------|
@@ -839,7 +935,7 @@ Health and metrics:
 |-------|--------|---------|
 | `/health` | GET | Backend health summary |
 | `/api/health/system-status` | GET | Consolidated System Status issue feed for scraper errors, action queues, raw API failures, Player 360 source errors, offline books, critical patterns, and cheap local `dataFlows` evidence for wagers, archive, player transactions, hierarchy, player-agent map, patterns, exposure inputs, and cross-reference readiness |
-| `/api/v1/cross-reference?playerId=&agentId=` | GET | Local-only context graph for operator investigation links across player-agent maps, agent hierarchy, wagers, access logs, free-play transactions, player links, source status, and detected patterns |
+| `/api/cross-reference?playerId=&agentId=` | GET | Local-only context graph for operator investigation links across player-agent maps, agent hierarchy, wagers, access logs, free-play transactions, player links, source status, and detected patterns |
 | `/metrics` | GET | Scraper/action queue counters |
 
 Local read-only audit:
@@ -928,6 +1024,10 @@ Stats and analytics matrix:
 | `/api/analytics/master-snapshots` | GET | Master snapshot archive browser |
 | `/api/analytics/performance-trends` | GET | Agent performance trend matrix |
 | `/api/analytics/wager-velocity` | GET | Recent live wager velocity by hour |
+| `/api/proxy/analytics/syndicates` | POST | Enhanced proxy syndicate detection |
+| `/api/proxy/analytics/sharp-money` | POST | Enhanced proxy sharp-money correlation |
+| `/api/proxy/analytics/ev` | POST | Enhanced proxy bettor EV model |
+| `/api/proxy/risk/config` | GET/POST | Enhanced proxy risk thresholds |
 | `/api/betting/velocity` | GET | Historical betting velocity timeline |
 | `/api/betting/live-vs-pre` | GET | Live vs pregame split |
 | `/api/master/history` | GET | Master account balance history |

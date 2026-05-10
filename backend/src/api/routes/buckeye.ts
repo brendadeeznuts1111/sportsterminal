@@ -7,6 +7,7 @@ import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 import type { BuckeyeSecretStatus, BunSecretVault } from '../../services/BunSecretVault';
 import { createToken } from '../../auth/jwt';
 import { getEnv } from '../../config/env';
+import { proxyCall } from '../../services/ProxyClient';
 import { z } from 'zod';
 import { validateQuery, formatZodError, webLogQuerySchema, connectBodySchema } from '../middleware/validate';
 
@@ -585,6 +586,8 @@ function handleProxyCompatibleRoute(
           '/api/proxy/Manager/getSportsType': 'POST — Available sports (19)',
           '/api/proxy/Manager/getAuthorizations': 'POST — Agent permissions',
           '/api/proxy/Manager/getConfigWebReports': 'POST — Report config',
+          '/api/proxy/Manager/getConfigWebReportsPending': 'POST — Pending report config',
+          '/api/proxy/Manager/updateReportConfigPending': 'POST — Update pending report column toggles',
           '/api/proxy/Manager/getMessage': 'POST — Agent messages',
           '/api/proxy/Manager/getNewEmailsCount': 'POST — Unread email count',
           '/api/proxy/Manager/getCryptoInfo': 'POST — Crypto cashier config',
@@ -607,11 +610,52 @@ function handleProxyCompatibleRoute(
     return new Response(JSON.stringify({ logs: [] }), { headers: corsHeaders });
   }
 
+  if (isEnhancedProxyForwardPath(path)) {
+    return handleAsync(async () => {
+      const body = request.method === 'POST' ? await readOptionalJsonBody(request) : {};
+      const search = Object.fromEntries(url.searchParams.entries());
+      const endpoint = `/api/proxy/${path}`;
+      const agentId = String(body.agentID || body.agentId || body.customerID || search.agentID || search.agentId || search.customerID || '');
+      return proxyCall(scraperManager, {
+        endpoint,
+        method: request.method === 'GET' ? 'GET' : 'POST',
+        agentId: agentId || undefined,
+        body: { ...search, ...body },
+        includeBuckeyeAuth: request.method !== 'GET',
+      });
+    }, corsHeaders);
+  }
+
   // Manager/* endpoints (proxy style)
   if (path.startsWith('Manager/') && request.method === 'POST') {
     return handleAsync(async () => {
       const body = await readJsonBody(request);
       const operation = body.operation || path.replace('Manager/', '');
+      const api = await getAuthenticatedApi(body.agentID || body.customerID);
+
+      const result = await callManagerOperation(api, operation, body);
+      return { source: 'live', data: result };
+    }, corsHeaders);
+  }
+
+  // Report/* endpoints (proxy style)
+  if (path.startsWith('Report/') && request.method === 'POST') {
+    return handleAsync(async () => {
+      const body = await readJsonBody(request);
+      const operation = body.operation || path.replace('Report/', '');
+      const api = await getAuthenticatedApi(body.agentID || body.customerID);
+
+      const result = await callManagerOperation(api, operation, body);
+      return { source: 'live', data: result };
+    }, corsHeaders);
+  }
+
+  // League/* and Lines/* endpoints (proxy style)
+  if ((path.startsWith('League/') || path.startsWith('Lines/') || path.startsWith('Provider/') || path.startsWith('Limit/')) && request.method === 'POST') {
+    return handleAsync(async () => {
+      const body = await readJsonBody(request);
+      const endpointPath = path.replace(/^(League|Lines|Provider|Limit)\//, '');
+      const operation = body.operation || endpointPath;
       const api = await getAuthenticatedApi(body.agentID || body.customerID);
 
       const result = await callManagerOperation(api, operation, body);
@@ -635,6 +679,33 @@ function handleProxyCompatibleRoute(
   }
 
   return new Response(JSON.stringify({ error: 'Unknown proxy route' }), { status: 404, headers: corsHeaders });
+}
+
+function isEnhancedProxyForwardPath(path: string): boolean {
+  if (path.startsWith('taxonomy/')) return true;
+  if (path.startsWith('admin/')) return true;
+  return new Set([
+    'sportsLeagues',
+    'leagueLines',
+    'agentDownline',
+    'agentBilling',
+    'playerInfo',
+    'dynamicLive',
+    'gameVolume',
+    'pending',
+    'pendingReportConfig',
+    'updatePendingReportConfig',
+  ]).has(path);
+}
+
+async function readOptionalJsonBody(request: Request): Promise<Record<string, unknown>> {
+  const text = await request.text();
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    throw new ApiError(400, 'Malformed JSON body');
+  }
 }
 
 async function callManagerOperation(
@@ -668,6 +739,10 @@ async function callManagerOperation(
     getCryptoInfo: { operation: 'getCryptoInfo', ...baseParams },
     getCryptoAvailable: { operation: 'getCryptoAvailable', ...baseParams },
     getTeaserProfile: { operation: 'getTeaserProfile', customerID: String(params.customerID || params.playerLogin || ''), ...baseParams },
+    getDynamicLive: { operation: 'getDynamicLive', ...baseParams },
+    getScoresLiveDynamic: { operation: 'getScoresLiveDynamic', ...baseParams },
+    getSportsTypesLive: { operation: 'getSportsTypesLive', ...baseParams },
+    getGames: { operation: 'getGames', ...baseParams },
   };
 
   const extra = opMap[operation];
@@ -878,6 +953,13 @@ const BUCKEYE_AGENT_PERFORMANCE_OPTIONS = {
       valuesRef: 'weekPresets',
       meaning: 'Convenience preset we translate into start/end before calling Buckeye.',
     },
+    {
+      key: 'amount',
+      required: false,
+      default: '',
+      valuesRef: 'pendingAmountPresets',
+      meaning: 'Pending wager minimum amount filter. Empty string means all amounts.',
+    },
   ],
   reportTypes: [
     { value: 'CP', label: 'Customer Performance' },
@@ -906,10 +988,20 @@ const BUCKEYE_AGENT_PERFORMANCE_OPTIONS = {
     { value: '2', label: 'Sorting Columns' },
   ],
   weekPresets: [
-    { value: '-1', label: 'Today' },
-    { value: '0', label: 'This Week' },
-    { value: '1', label: 'Last Week' },
+    { value: '730', label: 'All' },
+    { value: '0', label: 'Today' },
+    { value: '3', label: '3 Days' },
+    { value: '7', label: '7 days' },
+    { value: '14', label: '14 days' },
     { value: 'enter-dates', label: 'Entered Dates' },
+  ],
+  pendingAmountPresets: [
+    { value: '', label: 'All Amounts' },
+    { value: '100', label: '$100+' },
+    { value: '500', label: '$500+' },
+    { value: '1000', label: '$1,000+' },
+    { value: '5000', label: '$5,000+' },
+    { value: '10000', label: '$10,000+' },
   ],
   sports: [
     'Auto Racing         ',
@@ -934,12 +1026,26 @@ const BUCKEYE_AGENT_PERFORMANCE_OPTIONS = {
   ].map((rawValue) => ({ value: rawValue.trim(), label: rawValue.trim(), rawValue })),
   wagerTypes: [
     { value: '-1', label: 'All Wager Types' },
-    { value: 'S', label: 'Straights' },
-    { value: 'P', label: 'Parlays' },
-    { value: 'T', label: 'Teasers' },
-    { value: 'I', label: 'If-Bets / Action Reverses' },
-    { value: 'C', label: 'Contests' },
+    { value: 'S', label: 'Straight' },
+    { value: 'P', label: 'Parlay' },
+    { value: 'I', label: 'If Bets' },
+    { value: 'T', label: 'Teaser' },
+    { value: 'G', label: 'Racebook' },
     { value: 'A', label: 'Manual Plays' },
+    { value: 'C', label: 'Contest' },
+    { value: 'N', label: 'Live/Props' },
+  ],
+  pendingReportConfigFields: [
+    { key: 'agent', label: 'Agent', default: 'on' },
+    { key: 'customerID', label: 'Customer ID', default: 'on', note: 'Column visibility toggle for updateReportConfigPending.' },
+    { key: 'password', label: 'Password', default: 'off', note: 'Keep off in local UI and screenshots.' },
+    { key: 'name', label: 'Name', default: 'on' },
+    { key: 'timeAccepted', label: 'Time Accepted', default: 'on' },
+    { key: 'timeScheduled', label: 'Time Scheduled', default: 'on' },
+    { key: 'type', label: 'Type', default: 'on' },
+    { key: 'print', label: 'Print', default: 'on' },
+    { key: 'delete', label: 'Delete', default: 'off' },
+    { key: 'custTotal', label: 'Customer Total', default: 'off' },
   ],
   betTypes: [
     { value: '-1', label: 'All' },

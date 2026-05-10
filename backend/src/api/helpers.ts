@@ -4,10 +4,12 @@
 
 export class ApiError extends Error {
   status: number;
+  code: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code || defaultErrorCode(status, message);
   }
 }
 
@@ -41,7 +43,7 @@ export function requireAdminTokenIfConfigured(request: Request): Response | null
     || bearerToken(request.headers.get('authorization'));
   if (provided === expected) return null;
   return new Response(
-    JSON.stringify({ error: 'Admin token required' }),
+    JSON.stringify({ error: 'Admin token required', code: 'ADMIN_TOKEN_REQUIRED' }),
     { status: 403, headers: corsHeaders }
   );
 }
@@ -233,8 +235,10 @@ export function handleAsync(
     .catch((error) => {
       console.error('API error:', error);
       const status = error instanceof ApiError ? error.status : 500;
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      const code = error instanceof ApiError ? error.code : defaultErrorCode(status, message);
       return new Response(
-        JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
+        JSON.stringify({ error: message, code }),
         { status, headers }
       );
     });
@@ -243,7 +247,7 @@ export function handleAsync(
 export const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Admin-Token',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Admin-Token, X-API-Key',
   'Content-Type': 'application/json',
 };
 
@@ -252,4 +256,24 @@ export const corsHeaders = CORS_HEADERS;
 function bearerToken(value: string | null): string | null {
   if (!value?.startsWith('Bearer ')) return null;
   return value.slice('Bearer '.length).trim();
+}
+
+function defaultErrorCode(status: number, message: string): string {
+  const text = message.toLowerCase();
+  if (text.includes('malformed json')) return 'MALFORMED_JSON';
+  if (text.includes('admin token')) return 'ADMIN_TOKEN_REQUIRED';
+  if (text.includes('login failed')) return 'BUCKEYE_AUTH_FAILED';
+  if (text.includes('not authenticated')) return 'BUCKEYE_NOT_AUTHENTICATED';
+  if (text.includes('customerid required')) return 'CUSTOMER_ID_REQUIRED';
+  if (text.includes('agentid') && text.includes('required')) return 'AGENT_ID_REQUIRED';
+  if (text.includes('playerid') && text.includes('required')) return 'PLAYER_ID_REQUIRED';
+  if (text.includes('required')) return 'MISSING_REQUIRED_FIELD';
+  if (text.includes('invalid')) return 'INVALID_REQUEST';
+  if (text.includes('unknown operation')) return 'UNKNOWN_PROXY_OPERATION';
+  if (status === 400) return 'BAD_REQUEST';
+  if (status === 401) return 'UNAUTHORIZED';
+  if (status === 403) return 'FORBIDDEN';
+  if (status === 404) return 'NOT_FOUND';
+  if (status === 429) return 'RATE_LIMIT_EXCEEDED';
+  return 'INTERNAL_ERROR';
 }

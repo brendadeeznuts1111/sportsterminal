@@ -5,6 +5,108 @@
 
 ---
 
+## Public API Boundary
+
+The Sports Terminal backend on `http://localhost:3000` is the public API surface for the Trading Floor and any frontend application. Frontend code should call `3000` only.
+
+The standalone enhanced proxy on `http://localhost:3001` is internal/debug tooling for direct Buckeye diagnostics, endpoint discovery, cache testing, and isolated ticker experiments. Its routes are documented here for operators and maintainers, but they should not be treated as the frontend contract.
+
+When a frontend needs live Buckeye data, prefer a `3000` route that exposes an explicit live mode. Example:
+
+| Need | Public route on `3000` | Source |
+|------|-------------------------|--------|
+| Fast backfilled agent downline | `GET /api/agents/downline` | Local SQLite aggregate |
+| Live Buckeye agent downline | `GET /api/agents/downline?live=true` | Active Buckeye session via `Manager/getListAgenstByAgent` |
+
+### Authentication Matrix
+
+| Layer | Used By | Credential | Where It Appears |
+|-------|---------|------------|------------------|
+| Backend API (`3000`) | Main UI and integrations | Terminal JWT or dev-mode bypass; admin token for sensitive mutations when configured | `Authorization: Bearer <jwt>` or `X-Admin-Token` |
+| Backend Buckeye session | Backend polling and live read-through routes | Vaulted Buckeye token, password, and Cloudflare cookie | Stored by `BunSecretVault`; not exposed in frontend route contracts |
+| Standalone enhanced proxy (`3001`) | Internal diagnostics and direct proxy smoke tests | Optional proxy API key plus Buckeye token and `cf_clearance` | `X-API-Key`, JSON body, or stored proxy token row |
+| Upstream Buckeye | Backend/proxy internals only | Buckeye bearer token, `cf_clearance`, optional `__cf_bm` | Sent only from backend/proxy to `fantasy402.com` |
+
+### Common Pitfalls
+
+| Pitfall | Fix |
+|---------|-----|
+| Calling enhanced proxy aliases on `3000` | Supported for backend/internal use. The backend forwards `/api/proxy/{alias}` and `/api/proxy/taxonomy/{level}` to the internal proxy with `X-API-Key` and vaulted Buckeye credentials. Frontend features should still prefer explicit product routes such as `GET /api/agents/downline?live=true` when available. |
+| Building frontend code against `localhost:3001` | Add or use a `3000` backend route instead. |
+| Missing `X-API-Key` on a protected proxy diagnostic route | Set the configured proxy API key, or disable it only in local trusted testing. |
+| Expired `cf_clearance` | Refresh the Cloudflare cookie in browser DevTools and reconnect the Buckeye session. |
+
+## Canonical v3 Contract
+
+This is the production contract going forward:
+
+```text
+Frontend SPA -> Backend API (3000) -> Internal proxy (3001) -> Buckeye upstream
+```
+
+| Port | Role | Caller | Notes |
+|------|------|--------|-------|
+| `3000` | Public Sports Terminal API | Frontend and integrations | The only API surface the React SPA should call. |
+| `3001` | Internal enhanced proxy | Backend and operators debugging | Direct Buckeye diagnostics, cache tests, proxy WebSocket experiments. |
+| `443` | Buckeye upstream | Backend/proxy only | Never called directly by frontend code. |
+
+### Public Backend API (`3000`)
+
+These are the frontend-facing route families. Detailed request and response examples remain in the sections below.
+
+| Area | Routes |
+|------|--------|
+| Auth/session | `POST /api/connect`, `GET /api/buckeye/vault-status`, `DELETE /api/buckeye/vault-status` |
+| Health/observability | `GET /health`, `GET /api/health/system-status`, `GET /api/stats`, `GET /api/analytics/raw-logs`, `GET /api/betting/velocity`, `GET /api/betting/live-vs-pre`, `GET /api/logs/access`, `GET /api/master/history` |
+| Wagers | `GET /api/wagers`, `GET /api/wagers/alerts`, `GET /api/wagers/live` |
+| Agents/downline | `GET /api/agents`, `GET /api/agents/downline`, `GET /api/agents/downline?live=true`, `GET /api/agents/hierarchy`, `GET /api/agents/hierarchy/tree`, `GET /api/agents/access-logs`, `GET /api/agents/:agentId/performance`, `GET /api/agents/:agentId/exposure`, `GET /api/agents/:agentId/players`, `POST /api/agents/backfill/hierarchy` |
+| Players | `GET /api/players/search`, `GET /api/players/:playerId/details`, `GET /api/players/:playerId/wagers`, `GET /api/players/:playerId/pnl`, `GET /api/players/:playerId/profile`, `GET /api/players/:playerId/transactions`, `GET /api/freeplay/analysis`, `GET /api/cross-reference` |
+| Risk/exposure | `GET /api/risk/alerts`, `GET /api/exposure/sports`, `GET /api/exposure/agents` |
+| Odds/patterns | `GET /api/odds/live`, `GET /api/odds/events`, `GET /api/odds/events/:eventId`, `GET /api/odds/snapshots`, `GET /api/odds/movements`, `GET /api/books`, `GET /api/books/status`, `GET /api/patterns/catalog`, `GET /api/patterns/history`, `GET /api/patterns/summary`, `GET /api/patterns/agents` |
+| Performance/audit | `GET /api/performance/summary`, `GET /api/performance/details`, `GET /api/analytics/weekly-figures`, `GET /api/analytics/master-snapshots`, `GET /api/analytics/performance-trends`, `GET /api/analytics/wager-velocity`, `GET /api/health/data-pipeline` |
+| Webhooks | `GET /api/webhooks`, `POST /api/webhooks`, `GET /api/webhooks/:webhookId`, `PUT /api/webhooks/:webhookId`, `DELETE /api/webhooks/:webhookId`, `GET /api/webhooks/:webhookId/deliveries` |
+| CSV exports | `GET /api/export/wagers`, `GET /api/export/access-logs`, `GET /api/export/performance` |
+| Internal proxy bridge | `POST /api/proxy/:alias`, `POST /api/proxy/taxonomy/:level`, `POST /api/proxy/Manager/:operation`, `POST /api/proxy/System/:operation`, `POST /api/proxy/Log/:operation` |
+
+### Internal Proxy API (`3001`)
+
+These routes are not for frontend use. They are documented for backend developers and operators.
+
+| Area | Routes |
+|------|--------|
+| Health/config | `GET /`, `GET /features`, `GET /metrics`, `GET /ready`, `GET /health`, `POST /config` |
+| Auth/tokens | `POST /api/proxy/auth`, `POST /api/proxy/renewToken`, `GET /api/proxy/tokens?customerID=` |
+| Buckeye aliases | `POST /api/proxy/sportsLeagues`, `POST /api/proxy/leagueLines`, `POST /api/proxy/agentDownline`, `POST /api/proxy/agentBilling`, `POST /api/proxy/playerInfo`, `POST /api/proxy/dynamicLive`, `POST /api/proxy/gameVolume`, `POST /api/proxy/pending`, `POST /api/proxy/pendingReportConfig`, `POST /api/proxy/updatePendingReportConfig` |
+| Analytics | `POST /api/proxy/analytics/syndicates`, `GET /api/proxy/analytics/syndicates/stats`, `POST /api/proxy/analytics/sharp-money`, `POST /api/proxy/analytics/ev`, `POST /api/proxy/analytics/predictive-sharpness`, `POST /api/proxy/analytics/backtest` |
+| Risk/integrity | `GET/POST /api/proxy/risk/config`, `GET /api/proxy/risk/alerts`, `GET /api/proxy/risk/syndicates`, `GET/POST /api/proxy/line-rules`, `GET /api/proxy/line-adjustments/log`, `GET/POST /api/proxy/integrity/cases`, `PATCH /api/proxy/integrity/cases/:id` |
+| Logs | `GET /api/proxy/logs`, `GET /api/proxy/health`, `GET /api/proxy/endpoints` |
+
+### Quick Port Reference
+
+| Task | Port | Route | Intended Caller |
+|------|------|-------|-----------------|
+| Login user | `3000` | `POST /api/connect` | Frontend |
+| Get wager list | `3000` | `GET /api/wagers` | Frontend |
+| Get cached agent downline | `3000` | `GET /api/agents/downline` | Frontend |
+| Get live Buckeye downline | `3000` | `GET /api/agents/downline?live=true` | Frontend |
+| Live ticker UI | `3000` | `ws://localhost:3000` | Frontend |
+| Debug Buckeye auth | `3001` | `POST /api/proxy/auth` | Operator/backend |
+| Debug pending wagers | `3001` | `POST /api/proxy/pending` | Operator/backend |
+| Debug live events | `3001` | `POST /api/proxy/dynamicLive` | Operator/backend |
+| Debug syndicates | `3001` | `POST /api/proxy/analytics/syndicates` | Operator/backend |
+
+### Live Discovery Notes
+
+The backend currently exposes health through `GET /health` and system state through `GET /api/health/system-status`; it does not expose `GET /features` on `3000`. The enhanced proxy exposes `GET /features`, `GET /metrics`, `GET /openapi.json`, and `GET /api/proxy/endpoints` on `3001`.
+
+Backend-to-proxy internal calls are implemented in `backend/src/services/ProxyClient.ts`. The bridge reads active/vaulted Buckeye token and Cloudflare cookie material from `BuckeyeScraperManager`, forwards to `PROXY_INTERNAL_URL` (default `http://localhost:3001`), and adds `X-API-Key` from `PROXY_API_KEY`.
+
+Generate a backend OpenAPI snapshot from route registrations with:
+
+```powershell
+bun run generate:openapi
+```
+
 ## Table of Contents
 
 1. [Health & Status](#1-health--status)
@@ -13,14 +115,210 @@
 4. [Players](#4-players)
 5. [Risk & Exposure](#5-risk--exposure)
 6. [Odds & Patterns](#6-odds--patterns)
-7. [Buckeye Proxy](#7-buckeye-proxy)
+7. [Buckeye Routes & Internal Proxy](#7-buckeye-routes--internal-proxy)
 8. [Performance Cache](#8-performance-cache)
 9. [Webhooks](#9-webhooks)
 10. [Audit & Analytics](#10-audit--analytics)
 11. [CSV Exports](#11-csv-exports)
-12. [Error Handling & Recovery](#12-error-handling--recovery)
+12. [WebSocket Events](#websocket-events)
+13. [Error Handling & Recovery](#error-handling--recovery)
 
 ---
+
+## Route Coverage Audit
+
+This document should be checked against the router, Buckeye route metadata, and enhanced proxy catalog when routes move. Last reconciliation source files:
+
+| Surface | Source File | Route Count | Coverage Note |
+|---------|-------------|-------------|---------------|
+| Main backend router | `backend/src/api/router.ts` | 104 API-visible route patterns, 106 total registrations including CORS/static catch-all | Most routes have detailed sections below; compatibility/wildcard routes are summarized here to avoid repeating every Buckeye operation twice. |
+| Buckeye backend route handler | `backend/src/api/routes/buckeye.ts` | 20+ direct Buckeye helper routes plus limited `/api/proxy/*` compatibility routes on `3000` | Includes player probe routes, manager bootstrap, vault status, and compatibility manager/system/log operations. Alias routes such as `/api/proxy/agentDownline` belong to the standalone proxy, not the public backend. |
+| Standalone enhanced proxy | `proxy-enhanced.ts` + `endpoint-index.ts` | 68 catalog endpoints: 19 proxy/local + 49 Buckeye upstream | Internal/debug surface on `3001`. `TEST_SUMMARY.total` is 50 tested probes, not the catalog endpoint count. |
+
+Quick local audit command:
+
+```powershell
+@'
+const fs = require('fs');
+const router = fs.readFileSync('backend/src/api/router.ts', 'utf8');
+const docs = fs.readFileSync('docs/API_ENDPOINTS.md', 'utf8');
+const routes = [...router.matchAll(/router\.(get|post|put|patch|delete|options)\('([^']+)'/g)]
+  .map((m) => `${m[1].toUpperCase()} ${m[2]}`);
+console.log(routes.filter((route) => !docs.includes(route.split(' ')[1])).join('\n'));
+'@ | node
+```
+
+### Source-Generated Endpoint and Param Inventory
+
+Generated from `endpoint-index.ts`, `proxy-enhanced.ts`, and `backend/src/api/router.ts`.
+
+| Surface | Source | Endpoint Count | Param Count | Notes |
+|---------|--------|----------------|-------------|-------|
+| Backend router | `backend/src/api/router.ts` | 104 API-visible, 106 total registrations | 33 path-param occurrences | Query/body params are route-handler specific and not fully centralized in the router. |
+| Proxy catalog | `endpoint-index.ts` `PROXY` | 19 | 46 explicit params | Local proxy, analytics, risk, line-rule, and report-config routes. |
+| Buckeye catalog | `endpoint-index.ts` `BUCKEYE` | 49 | 209 explicit params | Source of truth for upstream Buckeye form params. |
+| Catalog total | `endpoint-index.ts` | 68 | 255 explicit params | This is the main documented endpoint inventory. |
+| Enhanced aliases | `proxy-enhanced.ts` `PROXY_ALIAS_PARAMS` | 9 aliases | 73 alias params | Convenience wrappers that add `token`, `cf_clearance`, and operator-friendly request bodies. |
+
+#### Common Buckeye 4-Param Shape
+
+The following 28 Buckeye catalog entries use exactly:
+
+```json
+{
+  "operation": "endpoint-specific-operation",
+  "agentID": "BILLY666",
+  "agentOwner": "BILLY666",
+  "agentSite": "1"
+}
+```
+
+`System/renewToken`, `Manager/getAccountInfoOwner`, `Manager/getNewEmailsCount`, `Manager/getMail`, `Manager/getAuthorizations`, `Manager/getCryptoInfo`, `Manager/getCryptoAvailable`, `Manager/getDynamicLive`, `Manager/getSportsTypesLive`, `Manager/getProps`, `Manager/getExtendedProps`, `Manager/getTeaserProfile`, `Manager/getListAgenstByAgent`, `Manager/getAgentBilling`, `Manager/getAgentManagement`, `Manager/getListVip`, `Manager/getSportsCustomerAdmin`, `Manager/getSportsVigSetup`, `Manager/getSportsMaxWager`, `Manager/getColorsSelections`, `Manager/getStores`, `Manager/getCircleLimits`, `Manager/getSportsType`, `Manager/getBetTicker`, `Manager/getBetTickerConfig`, `Manager/getOpenBets`, `Manager/getMessage`, `Manager/getConfigWebReports`.
+
+#### Buckeye Catalog Exceptions
+
+These are the Buckeye endpoints that do not use the exact common 4-param body.
+
+| Endpoint | Count | Params |
+|----------|------:|--------|
+| `System/authenticateCustomer` | 3 | `customerID`, `password`, `cf_clearance` |
+| `Log/write` | 5 | `operation`, `agentID`, `agentOwner`, `agentSite`, `msg` |
+| `Manager/getInfoPlayer` | 5 | `operation`, `playerLogin`, `agentID`, `agentOwner`, `agentSite` |
+| `League/Get_SportsLeagues` | 2 | `operation`, `RRO` |
+| `Lines/Get_LeagueLines2` | 3 | `league`, `sport`, `RRO` |
+| `Manager/getGames` | 3 | `operation`, `sport`, `RRO` |
+| `Manager/getGameVolume` | 3 | `operation`, `gameId`, `RRO` |
+| `Lines/getBuyPointsGroup` | 2 | `operation`, `RRO` |
+| `Limit/getAmountLimitGroup` | 2 | `operation`, `RRO` |
+| `Manager/getPeriodsBySport` | 3 | `operation`, `sport`, `RRO` |
+| `Provider/getLinesPlusData` | 1 | `RRO` |
+| `Report/getScoresLiveDynamic` | 1 | `RRO` |
+| `Provider/getPropBuilderGameScheduleURL` | 2 | `operation`, `RRO` |
+| `Manager/getAgentPerformance` | 9 | `operation`, `agentID`, `agentOwner`, `agentSite`, `startDate`, `endDate`, `type`, `freePlay`, `RRO` |
+| `Manager/getReportPlayerAnalysis` | 5 | `operation`, `playerLogin`, `agentID`, `agentOwner`, `agentSite` |
+| `Manager/getEnterTransactions` | 5 | `operation`, `playerLogin`, `agentID`, `agentOwner`, `agentSite` |
+| `Manager/getPending` | 10 | `operation`, `date`, `wagerType`, `amount`, `sort`, `typeSort`, `week`, `customerID`, `agentOwner`, `agentSite` |
+| `Manager/getConfigWebReportsPending` | 5 | `operation`, `agentID`, `agentOwner`, `agentSite`, `RRO` |
+| `Manager/updateReportConfigPending` | 14 | `operation`, `agentID`, `agent`, `customerID`, `password`, `name`, `timeAccepted`, `timeScheduled`, `type`, `print`, `delete`, `custTotal`, `agentOwner`, `agentSite` |
+| `Manager/getWebLog` | 8 | `operation`, `agentID`, `customerID`, `start`, `end`, `type`, `actions`, `RRO` |
+| `Manager/getWeeklyFigureByAgentLite` | 6 | `operation`, `agentID`, `agentOwner`, `agentSite`, `startDate`, `endDate` |
+
+#### Pending Report Select Mappings
+
+`Manager/getPending` uses Buckeye's native select values:
+
+```json
+{
+  "wagerType": {
+    "": "All Types",
+    "S": "Straight",
+    "P": "Parlay",
+    "I": "If Bets",
+    "T": "Teaser",
+    "G": "Racebook",
+    "A": "Manual Plays",
+    "C": "Contest",
+    "N": "Live/Props"
+  },
+  "week": {
+    "730": "All",
+    "0": "Today",
+    "3": "3 Days",
+    "7": "7 days",
+    "14": "14 days"
+  }
+}
+```
+
+#### Proxy Catalog Params
+
+These rows describe the standalone enhanced proxy catalog on `3001`, not the frontend contract. The main backend on `3000` only exposes a limited proxy-compatible namespace (`/api/proxy/Manager/:operation`, `/api/proxy/System/:operation`, `/api/proxy/Log/:operation`, and status helpers). Prefer first-class `3000` routes for frontend work.
+
+| Endpoint | Count | Params |
+|----------|------:|--------|
+| `/` | 0 | none |
+| `/api/proxy/status?customerID=` | 0 | none in catalog metadata |
+| `/api/proxy/endpoints` | 0 | none |
+| `/api/proxy/logs` | 0 | none |
+| `/api/proxy/tokens?customerID=` | 0 | none in catalog metadata |
+| `/api/proxy/renewToken` | 1 | `customerID` |
+| `/api/proxy/analytics/syndicates` | 4 | `agentID`, `lookbackHours`, `minBettors`, `minStake` |
+| `/api/proxy/analytics/sharp-money` | 3 | `agentID`, `gameId`, `minutesBefore` |
+| `/api/proxy/analytics/ev-simulation` | 4 | `agentID`, `bettorID`, `modelType`, `lookbackDays` |
+| `/api/proxy/analytics/predictive-sharpness` | 3 | `agentID`, `bettorID`, `lookbackDays` |
+| `/api/proxy/analytics/backtest` | 3 | `agentID`, `days`, `rules` |
+| `/api/proxy/risk/alerts` | 3 | `agentID`, `thresholds`, `webhookUrl` |
+| `/api/proxy/risk/config` | 1 | `agentID` |
+| `/api/proxy/risk/syndicates` | 2 | `agentID`, `since` |
+| `/api/proxy/line-rules` | 1 | `agentID` |
+| `/api/proxy/line-adjustments/log` | 3 | `gameId`, `since`, `limit` |
+| `/api/proxy/pendingReportConfig` | 3 | `agentID`, `agentOwner`, `agentSite` |
+| `/api/proxy/updatePendingReportConfig` | 13 | `agentID`, `agent`, `customerID`, `password`, `name`, `timeAccepted`, `timeScheduled`, `type`, `print`, `delete`, `custTotal`, `agentOwner`, `agentSite` |
+| `/api/proxy/agent/heatmap` | 2 | `agentID`, `days` |
+
+#### Enhanced Alias Params
+
+Aliases are curl-friendly wrappers implemented by `proxy-enhanced.ts` on `3001`. For frontend use, add a backend route on `3000` that calls Buckeye internally or reads from the local database.
+
+| Alias | Required | Optional | Total |
+|-------|----------|----------|------:|
+| `sportsLeagues` | `token`, `cf_clearance` | `agentID`, `customerID` | 4 |
+| `leagueLines` | `token`, `cf_clearance`, `league`, `sport` | `agentID`, `customerID`, `period`, `live`, `gameId` | 9 |
+| `agentDownline` | `token`, `cf_clearance`, `agentID` | `customerID`, `agentType`, `agentOwner`, `agentSite` | 7 |
+| `agentBilling` | `token`, `cf_clearance`, `agentID` | `customerID`, `agentSite`, `week`, `startDate`, `endDate` | 8 |
+| `playerInfo` | `token`, `cf_clearance`, `playerID` | `agentID`, `customerID`, `bettorID`, `startDate`, `endDate` | 8 |
+| `dynamicLive` | `token`, `cf_clearance` | `agentID`, `customerID`, `sport`, `league`, `live` | 7 |
+| `gameVolume` | `token`, `cf_clearance`, `gameId` | `agentID`, `customerID`, `sport`, `league`, `GameID` | 8 |
+| `pendingReportConfig` | `token`, `cf_clearance`, `agentID` | `agentOwner`, `agentSite`, `__cf_bm` | 6 |
+| `updatePendingReportConfig` | `token`, `cf_clearance`, `agentID` | `agent`, `customerID`, `password`, `name`, `timeAccepted`, `timeScheduled`, `type`, `print`, `delete`, `custTotal`, `agentOwner`, `agentSite`, `__cf_bm` | 16 |
+
+Routes that are registered and should remain visible in this document, even when their full response examples live in deeper docs:
+
+| Area | Method | Route | Source Handler | Key Params / Body | Response Summary | Notes |
+|------|--------|-------|----------------|-------------------|------------------|-------|
+| Agents | GET | `/api/agents/hierarchy/tree` | `registerCachedAgentHierarchyTreeRoutes` | none | Cached recursive hierarchy tree plus flat agents | Distinct from `/api/agents/hierarchy`, optimized for sidebar/tree canvas. |
+| Agents | POST | `/api/agents/refresh` | `registerAgentRefreshRoutes` | `{ "agentId": "BILLY666" }` | Refresh acknowledgement | Sensitive mutation; guarded by `ADMIN_API_TOKEN` when configured. |
+| Agents | GET | `/api/agents/:agentId/players` | `registerAgentPlayersRoutes` | path `agentId` | Players under one agent | Local archive/downline projection. |
+| Players | GET | `/api/players/search` | `registerPlayerSearchRoutes` | `q`, `agent`, `limit`, `offset` | Search results and agent filters | Canonical local search route. |
+| Players | GET | `/api/players/:playerId/profile` | `registerPlayerProfileRoutes` | path `playerId` | Player 360 profile | Canonical route for Player Detail profile. |
+| Players | GET | `/api/players/:playerId/agent-context` | `registerPlayerAgentContextRoutes` | path `playerId` | Assigned agent and lineage context | Used by investigation panels. |
+| Players | GET | `/api/players/:playerId/intelligence-map` | `registerPlayerIntelligenceMapRoutes` | path `playerId` | Source coverage, freshness, gaps | Explains which Player 360 sources are live, stale, probe, missing, or error. |
+| Players | GET | `/api/players/:playerId/deposits` | `registerPlayerDepositsRoutes` | path `playerId` | Deposit candidates | Local-only normalized deposit/transaction view. |
+| Players | GET | `/api/players/:playerId/transactions` | `registerPlayerTransactionsRoutes` | `category`, `from`, `to`, `limit` | Transaction ledger | Supports `category=freeplay`. |
+| Players | GET | `/api/players/:playerId/account-snapshots` | `registerPlayerAccountSnapshotsRoutes` | path `playerId` | Account/profile snapshots | Snapshot history from confirmed Buckeye probes. |
+| Players | GET | `/api/players/:playerId/links` | `registerPlayerLinksRoutes` | path `playerId` | Linked player/account evidence | Used by cross-reference and multi-account review. |
+| Players | POST | `/api/players/:playerId/links/check` | `registerPlayerLinkCheckRoutes` | `{ "otherPlayerId": "..." }` | Link-check result | Sensitive mutation when persisted. |
+| Players | GET/POST | `/api/players/:playerId/flags` | `registerPlayerFlagsRoutes`, `registerPlayerFlagCreateRoutes` | flag create body | Player flags | POST is a mutation; guarded when admin token is configured. |
+| Players | POST | `/api/players/:playerId/flags/:flagId/resolve` | `registerPlayerFlagResolveRoutes` | path `flagId` | Resolve acknowledgement | Closes one player flag. |
+| Players | GET/POST | `/api/players/:playerId/notes` | `registerPlayerNotesRoutes`, `registerPlayerNoteCreateRoutes` | note create body | Operator notes | POST is a mutation. |
+| Players | GET | `/api/players/:playerId/export/wagers` | `registerPlayerExportRoutes` | path `playerId` | CSV wager export | Player-scoped CSV. |
+| Players | GET | `/api/players/:playerId/export/access-logs` | `registerPlayerExportRoutes` | path `playerId` | CSV access-log export | Player-scoped CSV. |
+| Free Play | GET | `/api/freeplay/analysis` | `registerFreePlayAnalysisRoutes` | `playerId`, `agentId`, `from`, `to`, `groupBy` | Free-play totals and confidence | Canonical local route. |
+| Cross Reference | GET | `/api/cross-reference` | `registerCrossReferenceRoutes` | `playerId`, `agentId` | Local investigation graph | Canonical local route. |
+| Buckeye probes | GET/POST | `/api/buckeye/player-performance` | `registerBuckeyeRoutes` | `agentId`, `playerId`, date params | Player performance probe | Calls active Buckeye agent; stores/normalizes only proven fields. |
+| Buckeye probes | GET/POST | `/api/buckeye/player-info` | `registerBuckeyeRoutes` | `agentId`, `playerId` | Player info probe | Profile/account source candidate. |
+| Buckeye probes | GET/POST | `/api/buckeye/player-transactions` | `registerBuckeyeRoutes` | `agentId`, `playerId`, date params | Player ledger probe | Used for Player 360 transaction refresh. |
+| Backend proxy compatibility | GET | `/api/proxy/status` | `handleProxyCompatibleRoute` | optional `customerID` | Proxy-compatible backend status | Public only as a compatibility/status helper; separate from standalone proxy `/api/proxy/status`. |
+| Backend proxy compatibility | POST | `/api/proxy/renewToken` | `handleProxyCompatibleRoute` | `customerID` or stored token context | Renewed token payload | Backend-compatible renew route. |
+| Backend proxy compatibility | POST | `/api/proxy/Manager/:operation` | `handleProxyCompatibleRoute` | operation-specific form body | Buckeye manager operation result | Covers operations listed in `/api/proxy/endpoints`. |
+| Backend proxy compatibility | POST | `/api/proxy/System/:operation` | `handleProxyCompatibleRoute` | operation-specific form body | Buckeye system operation result | Primarily `renewToken`. |
+| Backend proxy compatibility | POST | `/api/proxy/Log/:operation` | `handleProxyCompatibleRoute` | log payload | Buckeye log operation result | Primarily activity/log writes. |
+
+Do not confuse these backend compatibility routes with the enhanced proxy aliases. For example, `GET /api/agents/downline?live=true` is the public `3000` route for live downline data; `/api/proxy/agentDownline` is a `3001` diagnostic alias.
+
+Canonical Player 360 route flow:
+
+```mermaid
+flowchart LR
+  Search["/api/players/search"] --> Profile["/api/players/:playerId/profile"]
+  Profile --> Context["/api/players/:playerId/agent-context"]
+  Profile --> Intel["/api/players/:playerId/intelligence-map"]
+  Profile --> Tx["/api/players/:playerId/transactions"]
+  Tx --> FreePlay["/api/freeplay/analysis"]
+  Profile --> Links["/api/players/:playerId/links"]
+  Links --> CrossRef["/api/cross-reference"]
+  Profile --> Exports["/api/players/:playerId/export/*"]
+```
 
 ## 1. Health & Status
 
@@ -58,13 +356,46 @@ Server health check with uptime and active agent info.
 
 ### `GET /api/health/system-status`
 
-Consolidated System Status issue feed for operator bug/risk tracking. Rolls up scraper errors, action queue backlog, recent raw API failures, grouped Player 360 source errors, offline odds books, and critical/high patterns. Repeated Player 360 failures caused by an expired Buckeye session are grouped into one agent-level issue so operators can distinguish session/upstream failures from parser or database bugs.
+Consolidated System Status issue feed for operator bug/risk tracking. Rolls up scraper errors, action queue backlog, recent raw API failures, grouped Player 360 source errors, offline odds books, enhanced proxy readiness, and critical/high patterns. Repeated Player 360 failures caused by an expired Buckeye session are grouped into one agent-level issue so operators can distinguish session/upstream failures from parser or database bugs.
+
+Risk is intentionally split from operations:
+
+| Field | Meaning |
+|-------|---------|
+| `status` | Overall rollup: critical risk or critical ops make the system critical; degraded proxy readiness makes the rollup warning. |
+| `operationalStatus` | Backend, ingestion, queue, database, odds-book, Player 360, data-flow, and proxy readiness state. Values: `ok`, `degraded`, `warning`, `critical`. |
+| `patternRiskStatus` | Recent pattern risk state from `detected_patterns` in the last hour. Values: `ok`, `warning`, `critical`. |
+| `criticalPatternRiskByType` | Critical pattern counts by `detected_patterns.type` for the last hour. |
+| `warningPatternRiskByType` | Warning pattern counts by `detected_patterns.type` for the last hour. |
+| `patternRiskExpiresAt` | The natural auto-reset time, computed as latest recent pattern risk detection plus one hour. `null` when pattern risk is clear. |
+| `enhancedProxyHealth` | Internal enhanced proxy readiness from `PROXY_INTERNAL_URL` `/ready`: `ok`, `degraded`, or `critical`. |
+| `riskStatus`, `riskBreakdown`, `riskWarningBreakdown`, `riskStatusExpiresAt`, `proxyHealth` | Compatibility aliases for the initial health integration. New code should use the explicit `patternRisk*`, `*PatternRiskByType`, and `enhancedProxyHealth` names. |
+| `details.staleOddsBooks` | Book health rows whose `last_seen` is older than 12 hours. |
+| `details.enhancedProxy` | Structured enhanced proxy readiness object with `status`, `ready`, `statusCode`, `checkedAt`, and raw `/ready` `details`. |
+| `details.proxyDetails` | Compatibility alias for the raw enhanced proxy `/ready` body. |
 
 ```json
 {
   "status": "warning",
-  "operationalStatus": "ok",
-  "riskStatus": "warning",
+  "operationalStatus": "degraded",
+  "patternRiskStatus": "critical",
+  "criticalPatternRiskByType": {
+    "steam_chase": 2
+  },
+  "warningPatternRiskByType": {
+    "line_velocity": 3
+  },
+  "patternRiskExpiresAt": "2026-05-10T01:30:00.000Z",
+  "enhancedProxyHealth": "degraded",
+  "riskStatus": "critical",
+  "riskBreakdown": {
+    "steam_chase": 2
+  },
+  "riskWarningBreakdown": {
+    "line_velocity": 3
+  },
+  "riskStatusExpiresAt": "2026-05-10T01:30:00.000Z",
+  "proxyHealth": "degraded",
   "generatedAt": "2026-05-09T23:35:00.000Z",
   "summary": {
     "activeAgents": 1,
@@ -72,7 +403,12 @@ Consolidated System Status issue feed for operator bug/risk tracking. Rolls up s
     "playerSourceErrors": 0,
     "issues": 0,
     "critical": 0,
-    "warning": 0
+    "warning": 0,
+    "patternRiskCritical1h": 2,
+    "patternRiskWarning1h": 3,
+    "riskCritical1h": 2,
+    "riskWarning1h": 3,
+    "staleOddsBooks": 1
   },
   "dataFlows": {
     "liveWagers": {"status": "live", "rowCount": 25654, "lastSeen": "2026-05-10T00:33:23.905Z"},
@@ -84,11 +420,44 @@ Consolidated System Status issue feed for operator bug/risk tracking. Rolls up s
     "exposureInputs": {"status": "live", "rowCount": 25654, "sportCount": 26, "agentCount": 485},
     "crossReferences": {"status": "live", "rowCount": 58491, "playerAgentRows": 56028, "accessRows": 2102, "uniqueIps": 422, "playerLinkRows": 94, "patternAgentRows": 267}
   },
-  "issues": []
+  "issues": [],
+  "details": {
+    "staleOddsBooks": [
+      {
+        "book_name": "Pinnacle",
+        "status": "offline",
+        "last_updated_at": "2026-05-09T08:00:00.000Z",
+        "last_error": "provider timeout"
+      }
+    ],
+    "enhancedProxy": {
+      "status": "degraded",
+      "ready": false,
+      "statusCode": 503,
+      "checkedAt": "2026-05-10T00:35:00.000Z",
+      "details": {
+        "ready": false,
+        "database": true,
+        "buckeye": true,
+        "hasUsableToken": false
+      }
+    },
+    "proxy": "degraded",
+    "proxyReady": false,
+    "proxyStatusCode": 503,
+    "proxyCheckedAt": "2026-05-10T00:35:00.000Z",
+    "proxyDetails": {
+      "ready": false,
+      "database": true,
+      "buckeye": true,
+      "hasUsableToken": false
+    },
+    "lastRiskRefresh": "2026-05-10T00:35:00.000Z"
+  }
 }
 ```
 
-`status` is the overall operator status. `operationalStatus` excludes pattern/risk detections so a healthy data pipeline is distinguishable from a high-risk betting day. `dataFlows` is computed from local tables only and is safe to poll from the Status page. `crossReferences` is a cheap readiness row for Player 360 investigation links; it combines player-agent maps, access logs, player links, and pattern-agent links.
+`status` is the overall operator status. `operationalStatus` excludes pattern-risk detections so a healthy data pipeline is distinguishable from a high-risk betting day. `dataFlows` is computed from local tables only and is safe to poll from the Status page. `crossReferences` is a cheap readiness row for Player 360 investigation links; it combines player-agent maps, access logs, player links, and pattern-agent links.
 
 ### `GET /api/stats`
 
@@ -319,15 +688,85 @@ All wagers for a specific player (last 200).
 
 Daily P&L history over N days (default 7).
 
-### `GET /api/v1/players/:playerId/profile`
+### `GET /api/players/:playerId/profile`
 
 Player 360 profile from local archive tables. The response includes `agent`, `allAgents`, `agentContext`, and `freePlaySummary` when those records are available.
 
-### `GET /api/v1/players/:playerId/transactions?category=freeplay`
+### `GET /api/players/:playerId/agent-context`
+
+Agent assignment and hierarchy context for a player. This is local-only and does not call Buckeye.
+
+### `GET /api/players/:playerId/intelligence-map`
+
+Source coverage map for Player 360. Returns source state (`fresh`, `live`, `derived`, `probe`, `stale`, `missing`, or `error`), TTL, last attempt, next refresh, and expected routes.
+
+### `GET /api/players/:playerId/deposits`
+
+Deposit candidates from normalized transaction rows. Wager wins/losses are not promoted into deposits.
+
+### `GET /api/players/:playerId/transactions?category=freeplay`
 
 Player transaction ledger filtered to free-play categories when `category=freeplay` is provided.
 
-### `GET /api/v1/freeplay/analysis`
+### `GET /api/players/:playerId/account-snapshots`
+
+Historical account/profile snapshots captured from confirmed Buckeye player probes.
+
+### `GET /api/players/:playerId/links`
+
+Stored player-link evidence for multi-account review.
+
+### `POST /api/players/:playerId/links/check`
+
+Check and optionally persist relationship evidence between two players.
+
+### `GET /api/players/:playerId/flags`
+
+Open and resolved operator flags for one player.
+
+### `POST /api/players/:playerId/flags`
+
+Create an operator flag.
+
+```json
+{
+  "flag_type": "multi_account",
+  "severity": "warning",
+  "label": "Shared Device",
+  "details": "Matched access pattern",
+  "created_by": "terminal"
+}
+```
+
+### `POST /api/players/:playerId/flags/:flagId/resolve`
+
+Resolve a player flag.
+
+### `GET /api/players/:playerId/notes`
+
+Operator notes for one player.
+
+### `POST /api/players/:playerId/notes`
+
+Create an operator note.
+
+```json
+{
+  "note_type": "review",
+  "body": "Reviewed shared-IP evidence.",
+  "created_by": "terminal"
+}
+```
+
+### `GET /api/players/:playerId/export/wagers`
+
+Player-scoped wager CSV.
+
+### `GET /api/players/:playerId/export/access-logs`
+
+Player-scoped access-log CSV.
+
+### `GET /api/freeplay/analysis`
 
 Aggregates free-play rows from `player_transactions`.
 
@@ -337,7 +776,7 @@ Response totals include `issued`, `redeemed`, `expired`, `adjustments`, `outstan
 
 `sourceConfidence` is computed at response time from `tranType`, `description`, and `rawJson`; it is not stored as a `player_transactions` column. Rows with explicit `free play`, `freeplay`, or `bonus play` text are `confirmed`; broader promotional/free-play candidates remain `candidate`.
 
-### `GET /api/v1/cross-reference?playerId=&agentId=`
+### `GET /api/cross-reference?playerId=&agentId=`
 
 Read-only local context graph for operator investigations. It does not call Buckeye. It joins the selected player or agent across player-agent maps, agent hierarchy, wager archive, access logs, free-play ledger rows, source status, player links, and detected patterns.
 
@@ -459,7 +898,12 @@ Patterns grouped by agent.
 
 ---
 
-## 7. Buckeye Proxy
+## 7. Buckeye Routes & Internal Proxy
+
+This section has two parts:
+
+1. First-class backend Buckeye routes on `3000`, which are safe for frontend callers when documented below.
+2. Standalone enhanced proxy routes on `3001`, which are internal/debug tooling unless a backend route explicitly wraps them.
 
 ### `GET /api/buckeye/vault-status`
 
@@ -488,6 +932,18 @@ Agent performance report.
 ### `GET /api/buckeye/agent-performance/options`
 
 Available performance report options.
+
+### `GET|POST /api/buckeye/player-performance`
+
+Player-specific performance report probe. Use this when validating Buckeye player performance payloads before promoting fields into Player 360.
+
+### `GET|POST /api/buckeye/player-info`
+
+Player info/profile probe. This is separate from local `/api/players/:playerId/profile`; the Buckeye probe can call upstream and should be treated as a source candidate until fields are confirmed.
+
+### `GET|POST /api/buckeye/player-transactions`
+
+Player transaction probe for ledger refresh. The normalized local ledger is exposed through `/api/players/:playerId/transactions`.
 
 ### `GET /api/buckeye/access-logs`
 
@@ -518,37 +974,160 @@ Live player/customer list from Buckeye (`getPlayers`). Returns `LIST` array with
 
 Authenticate and start polling for a Buckeye agent.
 
-### Standalone enhanced proxy
+### Standalone Enhanced Proxy (`3001`, Internal/Debug)
 
-The standalone proxy runs through `bun run enhanced-proxy.ts` and is separate from the main backend API. It is useful for isolated Buckeye proxy diagnostics, cache tests, and WebSocket ticker experiments.
+The standalone proxy runs through `bun run proxy:dev` or `bun run proxy:start` and is separate from the main backend API. It is useful for isolated Buckeye proxy diagnostics, cache tests, and WebSocket ticker experiments.
 
-| Route | Method | Description |
-|-------|--------|-------------|
-| `/` | GET | Service metadata and enabled runtime features |
-| `/features` | GET | Feature flags and tunables as loaded from environment variables |
-| `/metrics` | GET | Runtime memory, CPU, JSC stats, request counts, latency samples, token count, and subscriber count when `ENABLE_METRICS=true` |
-| `/ready` | GET | Readiness probe; returns 200 only when a usable stored token exists |
-| `/config` | POST | Reload environment-backed config for the running proxy |
-| `/ws` | WebSocket | Subscribe to live ticker events with `{ "type": "subscribe", "customerID", "token", "cf_clearance" }` |
-| `/api/proxy/auth` | POST | Authenticate against Buckeye and persist an auth-code/token row |
-| `/api/proxy/:endpoint` | POST | Proxy a Buckeye endpoint with optional cache, stream mode, retry, idempotency, and rate limiting |
-| `/api/proxy/taxonomy/:level` | POST | Zone 1 sportsbook taxonomy proxy for `sports`, `leagues`, `schedule`, `lines`, `periods`, and `gametypes`; responses are normalized and cached |
-| `/api/proxy/tokens?customerID=...` | GET | Stored token status for one customer |
-| `/api/proxy/logs?limit=50` | GET | Recent enhanced-proxy request log rows |
-| `/api/proxy/health?cf_clearance=...` | GET | Buckeye and SQLite dependency check |
+Frontend applications should not call these routes directly. If a feature needs one of these capabilities, expose it through the backend on `3000` with a clear route contract.
+
+| Route | Method | Auth / Guard | Upstream or Table | Cache / Feature Gate | Description |
+|-------|--------|--------------|-------------------|----------------------|-------------|
+| `/` | GET | none | runtime config | none | Service metadata and enabled runtime features |
+| `/ping` | GET | none | none | none | Ultra-lightweight liveness probe; returns plain-text `pong` and does not touch SQLite or Buckeye |
+| `/features` | GET | none | runtime config | none | Feature flags and tunables as loaded from environment variables |
+| `/demo/status` | GET | none | runtime config | `DEMO_MODE` | Shows whether demo mode is active and lists endpoints with local mock payloads |
+| `/metrics` | GET | none | process/JSC/server stats | `ENABLE_METRICS=true` | Runtime memory, CPU, `bun:jsc` heap stats, Bun server pending request/WebSocket counts, request counters, latency samples, token count, and subscriber count |
+| `/ready` | GET | none | SQLite token table + Buckeye HEAD | none | Readiness probe; returns 200 only when a usable stored token exists |
+| `/health` | GET | none | Buckeye HEAD + SQLite | none | Dependency health check |
+| `/config` | POST | API key when configured | runtime config | none | Reload environment-backed config for the running proxy |
+| `/openapi.json` | GET | none | endpoint catalog | none | OpenAPI document generated from proxy metadata |
+| `/dashboard` | GET | none | static proxy dashboard | none | Minimal ticker/metrics dashboard |
+| `/ws` | WebSocket | Buckeye token/cookie in subscribe payload | `Manager/getBetTicker` | WS feature flags | Subscribe to live ticker events with `{ "type": "subscribe", "customerID", "token", "cf_clearance" }` |
+| `/api/proxy/auth` | POST | Cloudflare cookie | `System/authenticateCustomer` | no cache | Authenticate against Buckeye and persist an auth-code/token row |
+| `/api/proxy/:endpoint` | POST | API key when configured + Buckeye token/cookie or stored customer token | any `ENDPOINT_MAP` path or explicit Buckeye path | endpoint TTL, SWR, retry, idempotency | Generic proxy with optional cache, stream mode, retry, idempotency, and rate limiting |
+| `/api/proxy/{endpointKey}` | POST | same as generic proxy | `ENDPOINT_MAP[endpointKey]` | endpoint TTL | Friendly-key variant of the generic proxy route |
+| `/api/proxy/taxonomy/:level` | POST | Buckeye token/cookie or stored customer token | taxonomy endpoints | taxonomy TTL + memory cache | Zone 1 sportsbook taxonomy proxy for `sports`, `leagues`, `schedule`, `lines`, `periods`, and `gametypes` |
+| `/api/proxy/sportsLeagues` | POST | Buckeye token/cookie | `Manager/getSportsType` fallback chain | alias fallback | Curl-friendly sports/league seed payload |
+| `/api/proxy/leagueLines` | POST | Buckeye token/cookie | `Manager/getLines`, `Manager/getSchedule` | alias fallback | League lines with `sport` and `league` body fields |
+| `/api/proxy/agentDownline` | POST | Buckeye token/cookie | `Manager/getListAgenstByAgent` | alias fallback | Agent/player downline; upstream typo is intentional |
+| `/api/proxy/agentBilling` | POST | Buckeye token/cookie | `Manager/getAgentBilling` | alias fallback | Agent billing figures |
+| `/api/proxy/playerInfo` | POST | Buckeye token/cookie | player activity/detail candidates | alias fallback | Player info alias using Buckeye player activity/detail candidates |
+| `/api/proxy/dynamicLive` | POST | Buckeye token/cookie | dynamic/live/ticker candidates | alias fallback | Live events alias with ticker fallback |
+| `/api/proxy/scoresLive` | POST | Buckeye token/cookie | `Report/getScoresLiveDynamic` | endpoint TTL | Live score data |
+| `/api/proxy/sportsTypesLive` | POST | Buckeye token/cookie | `Manager/getSportsTypesLive` | endpoint TTL | Live sports type list |
+| `/api/proxy/liveGame` | POST | Buckeye token/cookie | `Manager/getGames` with live key override | endpoint TTL | Live game detail |
+| `/api/proxy/gameVolume` | POST | Buckeye token/cookie | game volume/exposure candidates | alias fallback | Game exposure/volume |
+| `/api/proxy/pending` | POST | Buckeye token/cookie | `Manager/getPending` | 15s TTL | Real pending wagers grouped by `TicketNumber` + `WagerNumber`; supports `week`, `wagerType`, and `amount` |
+| `/api/proxy/pendingReportConfig` | POST | Buckeye token/cookie | `Manager/getConfigWebReportsPending` | 300s TTL | Read Pending report column visibility |
+| `/api/proxy/updatePendingReportConfig` | POST | Buckeye token/cookie | `Manager/updateReportConfigPending` | no cache | Update Pending report column toggles |
+| `/api/proxy/agent/heatmap` | POST | API key when configured | access logs + wager analytics | analytics | 7x24 agent activity heatmap |
+| `/api/proxy/agents` | GET/POST | Buckeye token/cookie | agent list/management candidates | no cache | Agent list and hierarchy candidates |
+| `/api/proxy/agent/performance` | POST | Buckeye token/cookie | `Manager/getAgentPerformance` | report limits | Agent performance report proxy |
+| `/api/proxy/bettor/details` | POST | Buckeye token/cookie | bettor/player analysis candidates | no cache | Bettor detail probe |
+| `/api/proxy/analytics/syndicates` | POST | API key when configured | `wager_analytics`, Buckeye wager fetch | `ENABLE_ANALYTICS` | Detect same-game, same-line clusters across bettors |
+| `/api/proxy/analytics/syndicates/stats` | GET | API key when configured | `syndicate_cache`, `integrity_cases` | `ENABLE_ANALYTICS` | Summarize syndicate detections and case status counts |
+| `/api/proxy/analytics/sharp-money` | POST | API key when configured | `line_history`, `wager_analytics` | `ENABLE_ANALYTICS` | Correlate wagers with line movement |
+| `/api/proxy/analytics/ev` | POST | API key when configured | `wager_analytics`, Buckeye wager fetch | `ENABLE_ANALYTICS` | Compute bettor EV, implied probability, ROI, and edge |
+| `/api/proxy/analytics/ev-simulation` | POST | API key when configured | `wager_analytics` | `ENABLE_ANALYTICS` | Expected-value simulation endpoint from endpoint catalog |
+| `/api/proxy/analytics/predictive-sharpness` | POST | API key when configured | `wager_analytics`, `sharpness_history` | `ENABLE_ANALYTICS` | Predictive sharpness score |
+| `/api/proxy/analytics/backtest` | POST | API key when configured | line rules + wager/line history | `ENABLE_ANALYTICS` | Backtest line adjustment rules |
+| `/api/proxy/integrity/cases` | GET/POST | API key when configured | `integrity_cases` | analytics | List or create integrity review cases |
+| `/api/proxy/integrity/cases/:id` | PATCH | API key when configured | `integrity_cases` | analytics | Update case status, priority, reviewer, notes, or evidence |
+| `/api/proxy/risk/alerts` | GET/POST | API key when configured | `risk_config` | `ENABLE_RISK_ENGINE` | Risk alert threshold compatibility route |
+| `/api/proxy/risk/config` | GET/POST/DELETE | API key when configured | `risk_config` | `ENABLE_RISK_ENGINE` | Read, save, or delete risk thresholds and webhook delivery |
+| `/api/proxy/risk/syndicates` | GET | API key when configured | `syndicate_cache` | analytics | Cached syndicate detections |
+| `/api/proxy/line-rules` | GET/POST/PUT/DELETE | API key when configured | `line_adjustment_rules` | analytics | Auto line adjustment rule CRUD |
+| `/api/proxy/line-adjustments/log` | GET | API key when configured | `line_adjustment_log` | analytics | Line adjustment audit log |
+| `/api/proxy/tokens?customerID=...` | GET/POST | API key for POST | `tokens` | none | Stored token status for one customer |
+| `/api/proxy/logs?limit=50` | GET | API key when configured | `request_log` | none | Recent enhanced-proxy request log rows |
+| `/api/proxy/health?cf_clearance=...` | GET | none | Buckeye + SQLite | none | Buckeye and SQLite dependency check |
+| `/api/proxy/status?customerID=...` | GET | none | request counters + tokens | none | Proxy status and optional token expiry summary |
+| `/api/proxy/endpoints` | GET | none | endpoint catalog | none | Structured route, alias, analytics, and endpoint-map inventory |
+| `/api/proxy/renewToken` | POST | API key when configured | `System/renewToken` | no cache | Renew and store Buckeye token |
+| `/admin/rate-limit` | GET/POST/DELETE | admin key when configured | `rate_limit_overrides` | none | Admin rate-limit override CRUD |
+
+`/api/proxy/endpoints` includes a structured `aliases` object for these curl-friendly routes. Each alias lists `params.required`, `params.optional`, an example body, and the upstream Buckeye candidates tried in order.
+
+Enhanced proxy request flow:
+
+```mermaid
+flowchart TD
+  Client["Client / Static UI"] --> Route["enhanced proxy route"]
+  Route --> Demo{"DEMO_MODE mock for endpoint?"}
+  Demo -- "yes" --> DemoResponse["local demo JSON data"]
+  Demo -- "no" --> Auth{"Token + cf_clearance in body?"}
+  Auth -- "yes" --> Rate["rate limit / idempotency / request id"]
+  Auth -- "no, customerID present" --> Token["lookup stored token row"]
+  Token --> Rate
+  Rate --> Alias{"Alias, taxonomy, analytics, or generic?"}
+  Alias -- "alias" --> Fallback["try candidate Buckeye endpoints in order"]
+  Alias -- "taxonomy" --> TaxCache["memory + SQLite taxonomy cache"]
+  Alias -- "analytics" --> LocalSql["SQLite analytics tables"]
+  Alias -- "generic" --> Swr["SWR cache / retry / circuit breaker"]
+  Fallback --> Normalize["normalizeResponse / alias normalizer"]
+  TaxCache --> Normalize
+  LocalSql --> Normalize
+  Swr --> Normalize
+  Normalize --> Response["JSON + X-Request-ID"]
+```
+
+Generic proxy diagnostic example (`3001` only):
+
+```powershell
+Invoke-RestMethod `
+  -Method POST `
+  -Uri http://localhost:3001/api/proxy/pending `
+  -Headers @{ 'X-API-Key' = 'dev-key-123' } `
+  -ContentType 'application/json' `
+  -Body '{
+    "customerID": "BILLY666",
+    "token": "...",
+    "cf_clearance": "...",
+    "agentID": "BILLY666",
+    "date": "2026-05-10",
+    "week": "3",
+    "wagerType": "S",
+    "amount": "100"
+  }'
+```
+
+The static Trading Floor also includes a Zone 1 taxonomy navigator above the odds matrix. It reads `proxyBaseUrl`, `buckeye_token`, `cf_clearance`, optional `__cf_bm`, and optional `proxyApiKey` from browser storage, then calls `/api/proxy/taxonomy/{level}` for sports, leagues, schedule, and lines.
+
+That browser-storage proxy mode is legacy diagnostic behavior. Production-facing frontend work should route live taxonomy and downline needs through `3000` so credentials and proxy topology stay server-side.
+
+The Patterns tab includes a Syndicate Intelligence panel backed by `/api/proxy/analytics/syndicates`. It is read-only evidence tooling: it highlights same-selection clusters, member accounts, stake concentration, time-window signals, and confidence/risk score. Operators can promote a cluster into the Integrity Case Queue, then move that case through `open`, `reviewing`, `escalated`, `closed`, or `false_positive` without changing wagers or lines.
 
 Feature flags are documented in `docs/DATA_DICTIONARY.md`. The most common smoke-test set is:
 
 ```powershell
+$env:PROXY_PORT='3001'
 $env:ENABLE_METRICS='true'
 $env:ENABLE_RESPONSE_COMPRESSION='true'
 $env:ENABLE_RETRY='true'
 $env:ENABLE_WS_COMPRESSION='true'
 $env:ENABLE_PER_CUSTOMER_RATE_LIMIT='true'
-bun run enhanced-proxy.ts
-Invoke-RestMethod http://localhost:3001/features
-Invoke-RestMethod http://localhost:3001/metrics
+$env:DEMO_MODE='false'
+bun run proxy:dev
 ```
+
+In another shell:
+
+```powershell
+bun run smoke:proxy
+```
+
+The proxy smoke test is a contract smoke, not only a reachability check. It verifies:
+
+| Check Area | What It Guards |
+|------------|----------------|
+| Endpoint catalog | `/api/proxy/endpoints` keeps `proxy` and `buckeye` as description maps, `endpointMap` as endpoint metadata, and `aliases` as request-param metadata. |
+| Alias params | Each alias exposes `params.required`, `params.optional`, `params.example`, and upstream `candidates` separately from response `data`. |
+| Pending/report params | `pending` distinguishes filter params such as `wagerType`, `week`, and player-filter `customerID`; `updatePendingReportConfig` distinguishes `customerID=on|off` as a report-column toggle. |
+| OpenAPI split | Request path/body params stay in `parameters`/`requestBody`; response payloads stay in `responses`. |
+| Required params | Alias requests such as `leagueLines` fail fast with a missing-parameter JSON error before any Buckeye call. |
+| Auth guards | Missing Buckeye token/cookie returns an error object and does not accidentally look like a successful `data` payload. |
+| Demo/data mode | `/demo/status` reports the mocked endpoint list. When `DEMO_MODE=true`, smoke also verifies a mock endpoint returns `source: "demo"` data without real Buckeye credentials. |
+
+Direct probes:
+
+```powershell
+Invoke-RestMethod http://localhost:3001/features
+Invoke-RestMethod http://localhost:3001/demo/status
+Invoke-RestMethod http://localhost:3001/metrics
+Invoke-RestMethod http://localhost:3001/openapi.json
+```
+
+Development uses `bun --watch` for hot reload. Production should set `PROXY_PRODUCTION=true`; the enhanced proxy then passes `development: false` to `Bun.serve` for faster routing. Environment variables are read from `Bun.env` and validated with Zod in `config.ts`. SQLite-backed cache, analytics, tokens, and backfilled data remain on Bun's native `bun:sqlite`.
 
 Taxonomy smoke test:
 
@@ -559,6 +1138,18 @@ Invoke-RestMethod `
   -Headers @{ 'X-API-Key' = 'dev-key-123' } `
   -ContentType 'application/json' `
   -Body '{ "customerID": "BILLY666" }'
+```
+
+Analytics smoke tests:
+
+```powershell
+Invoke-RestMethod -Method POST -Uri http://localhost:3001/api/proxy/risk/config `
+  -Headers @{ 'X-API-Key' = 'dev-key-123' } -ContentType 'application/json' `
+  -Body '{ "agentID": "BILLY666", "thresholds": { "maxDailyLoss": 5000, "maxBet": 2500 } }'
+
+Invoke-RestMethod -Method POST -Uri http://localhost:3001/api/proxy/analytics/ev `
+  -Headers @{ 'X-API-Key' = 'dev-key-123' } -ContentType 'application/json' `
+  -Body '{ "bettorID": "BILLY666", "token": "...", "cf_clearance": "...", "days": 365 }'
 ```
 
 ---
@@ -917,6 +1508,12 @@ Deep-dive performance detail for a single agent.
 
 All CSV endpoints return `Content-Type: text/csv` with `Content-Disposition: attachment`.
 
+Example header:
+
+```http
+Content-Disposition: attachment; filename="wagers_2026-05-10.csv"
+```
+
 ### `GET /api/export/wagers`
 
 Full wager archive as CSV.
@@ -950,30 +1547,210 @@ id,agent_id,week_start_date,sport,handle,win_loss,wager_type,raw_json,ingested_a
 
 ## WebSocket Events
 
-The server broadcasts real-time events to authenticated WebSocket clients.
+Sports Terminal has two WebSocket surfaces:
+
+| Surface | URL | Purpose | Auth Model | Primary Frontend Consumer |
+|---------|-----|---------|------------|---------------------------|
+| Backend app socket | `ws://localhost:3000?token=<jwt>` | Main terminal session, Buckeye auth, live wagers, alerts, odds, patterns, player subscriptions, queued bet actions | Optional JWT query token plus an `auth` message for Buckeye session startup/resume | `frontend/public/js/ws-client.js` |
+| Enhanced proxy socket | `ws://localhost:3001/ws` | Isolated Buckeye ticker experiments, ticker history replay, per-subscriber batching, live score flash pushes | `subscribe` message with `customerID`, Buckeye token, and `cf_clearance`; optional `X-API-Key` for HTTP routes | `proxy-enhanced.ts` dashboard and diagnostics |
+
+The backend app socket is the normal UI path. The enhanced proxy socket is useful when testing Buckeye connectivity, ticker batching, or proxy-only features without starting the full backend polling stack.
+
+### When To Use Which Socket
+
+Use `ws://localhost:3000` for the Trading Floor, Player Detail, live wager updates, alerts, odds, patterns, and authenticated Buckeye polling. Use `ws://localhost:3001/ws` only for proxy diagnostics, raw ticker experiments, replay/batching tests, or direct Buckeye connectivity checks.
 
 ### Connection
 
-```
-ws://localhost:3000?token=<jwt>
+```text
+ws://localhost:3000?token=<terminal-jwt>
+ws://localhost:3001/ws
 ```
 
-### Authentication
+### Backend Authentication
+
+The browser connects first, then sends an `auth` message. If a Buckeye token is present, the backend attempts session resume before falling back to password login. Passwords and Cloudflare cookies must not be logged or committed.
 
 ```json
-{"type": "auth", "agentId": "BILLY666", "password": "***", "cfCookie": "cf_clearance=..."}
+{
+  "type": "auth",
+  "agentId": "BILLY666",
+  "password": "***",
+  "cfCookie": "cf_clearance=...",
+  "token": "<optional-existing-buckeye-token>"
+}
 ```
 
-### Events
+**Success response:**
 
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `wager.new` | `{ wager_number, agent_id, login, amount_wagered, ... }` | New wager detected |
-| `wager.alert` | `{ wager_number, rule_name, severity, message }` | Alert triggered |
-| `exposure.update` | `{}` | Exposure recalculated |
-| `auth_response` | `{ success, message, token }` | Auth result |
-| `auth_failed` | `{ agentId, message }` | Session expired |
-| `agentPerformance.update` | `{ agentId, rows, totals }` | Performance refresh |
+```json
+{
+  "type": "auth_response",
+  "success": true,
+  "message": "Authenticated",
+  "token": "<terminal-jwt-for-reconnect>"
+}
+```
+
+### Backend Client Messages
+
+| Message Type | Required Fields | Optional Fields | Success Event | Failure Event | Notes |
+|--------------|-----------------|-----------------|---------------|---------------|-------|
+| `auth` | `agentId` and either `password` or resumable `token` | `cfCookie`, `baseUrl` | `auth_response` | `auth_response` with `success=false` | Starts Buckeye polling for the agent. |
+| `request_data` | `agentId` | none | `data_response` | `data_error` | One-shot snapshot of current agent data. |
+| `player.subscribe` | `playerId` | `customerId`, `login` aliases | `player.subscribed` | `error` | Filters `wager.new` broadcasts down to the subscribed player while Player Detail is open. |
+| `player.unsubscribe` | `playerId` | `customerId`, `login` aliases | `player.unsubscribed` | none | Removes one player subscription for this socket. |
+| `refresh` | `agentId` | none | `refresh_initiated` | none | Forces a poll refresh for the agent. |
+| `betAction` | `agentId`, `wagerNumber`, `action` | `amount`, `reason` | `betAction_queued` | `betAction_error` | `action` must be `accept` or `decline`; requires authenticated socket agent match. |
+| `token_refresh` | none | none | `token_refreshed` | `token_refresh_error` | Refreshes the local terminal JWT, not the upstream Buckeye bearer token. |
+
+**Queued bet action example:**
+
+```json
+{
+  "type": "betAction",
+  "agentId": "BILLY666",
+  "wagerNumber": 750054624,
+  "action": "decline",
+  "reason": "Operator review"
+}
+```
+
+### Backend Broadcast Events
+
+| Event | Producer | Payload Shape | Trigger | UI / Operational Use |
+|-------|----------|---------------|---------|----------------------|
+| `auth_response` | `backend/src/index.ts` | `{ success, message, token? }` | Auth or resume completes | Settings/connect status and session persistence. |
+| `auth_failed` | `ScraperManager` | `{ agentId, message, timestamp }` | Polling session expires after retry budget | Shows reconnect prompt and stops stale polling. |
+| `data_response` | `backend/src/index.ts` | `{ agentId, data }` | `request_data` succeeds | Initial or manual dashboard hydration. |
+| `data_error` | `backend/src/index.ts` | `{ agentId, message }` | `request_data` fails | Non-fatal load warning. |
+| `wager.new` | `ScraperManager.pollAgent()` | `{ timestamp, payload: Wager }` | New Buckeye ticker row detected | Buckeye feed, positions, Player Detail deltas, alert evaluation. |
+| `wager.alert` | `ScraperManager.pollAgent()` | `{ timestamp, payload: Alert }` | AlertEngine flags a new wager | Alerts tab, toast, webhook dispatch evidence. |
+| `exposure.update` | `ScraperManager.pollAgent()` | `{ timestamp, payload: {} }` | New wager batch changes exposure | Positions and exposure panels refresh. |
+| `odds.update` | `OddsPoller` | `{ timestamp, payload: { events } }` | Odds provider poll completes | Trading Floor refresh indicator. |
+| `odds.movement` | `OddsPoller` | `{ timestamp, payload: LineMovement }` | Spread/total/moneyline value changes | Movement arrows, line history, pattern detection. |
+| `pattern.detected` | `OddsPoller` and `PatternService` | `{ timestamp, payload: Pattern }` | Pattern rule persists a new finding | Patterns tab, toasts, evidence review. |
+| `patternUpdate` | `PatternService` | `{ timestamp, payload: { agentLogin, increment, severity, type } }` | Pattern is attributed to one or more agents | Agent-level pattern counters. |
+| `agentUpdate` | `ScraperManager` | `{ timestamp, payload }` | Agent hierarchy or live tree changes | Agent Network refreshes. |
+| `agentPerformance.update` | `ScraperManager` | `{ agentId, rows, totals, ... }` | Agent performance report refresh completes | Performance matrix and report widgets. |
+| `weeklyFigure.new` | `ScraperManager` | `{ agentId, report, ... }` | Weekly figure archive refresh | Weekly/accounting dashboards. |
+| `masterSnapshot.new` | `ScraperManager` | `{ agentId, snapshot, ... }` | Manager bootstrap snapshot captured | System and manager config freshness. |
+| `access_log.new` | `ScraperManager` | `{ agentId, rows, ... }` | Web/IP log rows are pulled | IP tracker, access heatmaps, shared-IP patterns. |
+| `player360.update` | `ScraperManager` | `{ playerId, source, ... }` | Player 360 source refresh completes | Player Detail freshness badges. |
+| `betAction_queued` | `backend/src/index.ts` | `{ actionId, agentId, wagerNumber, action }` | `betAction` accepted into the action queue | Operator feedback before external action execution. |
+| `betAction` | `ActionQueue` | `{ actionId, status, ... }` | Queued action progresses or finishes | Action status timeline. |
+| `token_refreshed` | `backend/src/index.ts` | `{ token }` | `token_refresh` succeeds | Browser stores a fresh terminal JWT. |
+| `error` | `backend/src/index.ts` | `{ message }` | Malformed JSON or invalid message | Toast/log warning; socket can usually stay open. |
+
+### Enhanced Proxy Messages
+
+The enhanced proxy socket is subscription based. It can replay recent ticker history and can batch frequent ticks to reduce browser work.
+
+**Subscribe:**
+
+```json
+{
+  "type": "subscribe",
+  "customerID": "BILLY666",
+  "token": "<buckeye-bearer-token>",
+  "cf_clearance": "<cloudflare-cookie-value>",
+  "batchMs": 1000
+}
+```
+
+| Message Type | Direction | Payload Shape | Trigger / Meaning |
+|--------------|-----------|---------------|-------------------|
+| `subscribe` | Client to proxy | `{ customerID, token, cf_clearance, batchMs? }` | Starts Buckeye ticker polling for the subscriber. |
+| `subscribe-persistent` | Client to proxy | `{ customerID, token?, cf_clearance? }` | Starts ticker polling and can use stored token material when present. |
+| `unsubscribe` | Client to proxy | `{}` | Stops this socket's ticker subscription. |
+| `ping` | Client to proxy | `{ t? }` | Health check; proxy replies with `pong`. |
+| `subscribed` | Proxy to client | `{ id, message }` | Subscription accepted. |
+| `unsubscribed` | Proxy to client | `{}` | Subscription stopped. |
+| `history` | Proxy to client | `{ data: [{ timestamp, data }] }` | Last ticker messages replayed on subscribe when history replay is enabled. |
+| `tick` | Proxy to client | `{ timestamp, data }` | Single live ticker payload. |
+| `batch` | Proxy to client | `{ count, ticks }` | Batched ticker payload when WebSocket batching is enabled. |
+| `live_flash` | Proxy to client | `{ event, timestamp }` | Score or live-game state change detected while proxying live endpoints. |
+| `sharp_money` | Proxy to client | `{ alert, timestamp }` | Analytics correlation finds wagers ahead of line movement. |
+| `risk_alert` | Proxy to client | `{ alerts, metrics }` | Risk engine threshold breach for the subscribed customer. |
+| `shutdown` | Proxy to client | `{ reason, delayMs }` | Graceful proxy shutdown is underway. |
+| `pong` | Proxy to client | `{ t }` | Response to `ping`. |
+| `error` | Proxy to client | `{ message }` | Invalid JSON, invalid type, missing auth, expired token, or upstream error. |
+
+### Event Flow
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Browser as "Browser UI"
+  participant WS as "Backend WebSocket"
+  participant Manager as "ScraperManager"
+  participant Buckeye as "Buckeye API"
+  participant Odds as "OddsPoller"
+  participant Patterns as "PatternService"
+
+  Browser->>WS: auth(agentId, password/cfCookie or token)
+  WS->>Manager: startAgent() or resumeAgent()
+  Manager->>Buckeye: authenticateCustomer / getBetTicker
+  WS-->>Browser: auth_response(success, token)
+  Manager->>Buckeye: poll getBetTicker every interval
+  Manager-->>Browser: wager.new(payload)
+  Manager-->>Browser: wager.alert(payload) when AlertEngine matches
+  Manager-->>Browser: exposure.update()
+  Odds-->>Browser: odds.update(events)
+  Odds-->>Patterns: persist line movement patterns
+  Patterns-->>Browser: pattern.detected(payload)
+```
+
+### Browser Smoke Test
+
+Run this in DevTools on the local app after the backend is running. Use redacted placeholder values for docs, never real credentials.
+
+```js
+const ws = new WebSocket('ws://localhost:3000');
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({
+    type: 'auth',
+    agentId: 'BILLY666',
+    password: '***',
+    cfCookie: 'cf_clearance=...'
+  }));
+};
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  console.log('[SportsTerminal WS]', msg.type, msg);
+};
+```
+
+Enhanced proxy ticker smoke:
+
+```js
+const proxyWs = new WebSocket('ws://localhost:3001/ws');
+
+proxyWs.onopen = () => {
+  proxyWs.send(JSON.stringify({
+    type: 'subscribe',
+    customerID: 'BILLY666',
+    token: localStorage.getItem('buckeye_token'),
+    cf_clearance: localStorage.getItem('cf_clearance'),
+    batchMs: 1000
+  }));
+};
+
+proxyWs.onmessage = (event) => console.log('[Proxy WS]', JSON.parse(event.data));
+```
+
+### Recovery Notes
+
+| Failure | Event / Symptom | Expected Client Behavior |
+|---------|------------------|--------------------------|
+| Invalid JSON | `error` | Keep socket open, show diagnostic toast, ignore malformed message. |
+| Missing Buckeye credentials | `auth_response` with `success=false` or proxy `error` | Prompt for password and fresh `cf_clearance`. |
+| Expired Buckeye session | `auth_failed` | Stop assuming live data; ask user to reconnect. |
+| Local JWT near expiry | `token_refreshed` or `token_refresh_error` | Store refreshed token when present; otherwise reconnect. |
+| Upstream/polling errors | No immediate close; counters increase and backoff applies | UI can stay open while backend retries with exponential backoff. |
+| Proxy shutdown | `shutdown` | Stop ticker UI, close socket after `delayMs`, reconnect after server returns. |
 
 ---
 
@@ -985,15 +1762,63 @@ ws://localhost:3000?token=<jwt>
 | 204 | No content (CORS preflight) |
 | 400 | Bad request (missing params, malformed JSON) |
 | 401 | Unauthorized (missing/invalid JWT) |
+| 403 | Forbidden (admin token, API key, or upstream Cloudflare/Buckeye block) |
 | 404 | Route not found |
 | 429 | Rate limit exceeded |
 | 500 | Internal server error |
+| 502 | Upstream/proxy dependency failed |
+| 503 | Service unavailable, dependency not ready, or circuit breaker open |
+| 504 | Upstream timeout |
+
+### Error Code Envelope
+
+Backend routes on `3000` return a backward-compatible error envelope:
+
+```json
+{
+  "error": "Human-readable error message",
+  "code": "MISSING_REQUIRED_FIELD"
+}
+```
+
+Existing clients may continue reading `error`; new clients should branch on `code`. Proxy routes on `3001` should be treated the same way when they include a code, but some older proxy paths still return only `{ "error": "..." }`. If `code` is missing, clients should derive behavior from HTTP status and endpoint context.
+
+### Canonical Error Codes
+
+| Code | HTTP | Layer | Meaning | Client / Operator Action |
+|------|-----:|-------|---------|--------------------------|
+| `BAD_REQUEST` | 400 | Backend/proxy | Generic invalid request. | Validate request shape and params. |
+| `MALFORMED_JSON` | 400 | Backend/proxy | Request body is not valid JSON. | Rebuild body with `Content-Type: application/json`. |
+| `MISSING_REQUIRED_FIELD` | 400 | Backend/proxy | Required query/body/path field is absent. | Add the field named in `error`. |
+| `CUSTOMER_ID_REQUIRED` | 400 | Backend/proxy | `customerID` is required for token lookup or Buckeye operation. | Send `customerID` or use an authenticated session. |
+| `AGENT_ID_REQUIRED` | 400 | Backend/proxy | `agentID`/`agentId` is required. | Send the active agent id, usually `BILLY666`. |
+| `PLAYER_ID_REQUIRED` | 400 | Backend | Player route was called without a player id. | Use `/api/players/:playerId/...`. |
+| `INVALID_REQUEST` | 400 | Backend/proxy | Field value is malformed, out of range, or invalid. | Correct the specific field. |
+| `UNKNOWN_PROXY_OPERATION` | 400 | Backend proxy compatibility | `/api/proxy/Manager/:operation` or System/Log operation is unknown. | Check `/api/proxy/endpoints` or the internal proxy catalog. |
+| `UNAUTHORIZED` | 401 | Backend | Missing/invalid frontend JWT in production. | Re-auth with `/api/connect` or refresh the terminal JWT. |
+| `ADMIN_TOKEN_REQUIRED` | 403 | Backend | Sensitive mutation/export requires `ADMIN_API_TOKEN`. | Send `X-Admin-Token` or `Authorization: Bearer`. |
+| `FORBIDDEN` | 403 | Backend/proxy | Generic forbidden request. | Check auth and route permissions. |
+| `BUCKEYE_AUTH_FAILED` | 401/500 | Backend/proxy/upstream | Buckeye rejected credentials or login failed. | Refresh password/token/cookies and reconnect. |
+| `BUCKEYE_NOT_AUTHENTICATED` | 401 | Backend/proxy/upstream | Active Buckeye API object has no valid session. | Resume session or run `/api/connect`. |
+| `MISSING_TOKEN` | 400/401 | Proxy | No Buckeye bearer token available. | Renew token or authenticate again. |
+| `MISSING_CF_CLEARANCE` | 400/403 | Proxy/upstream | No Cloudflare clearance cookie available. | Extract fresh `cf_clearance` from browser. |
+| `CF_BLOCKED` | 403 | Proxy/upstream | Buckeye returned Cloudflare challenge/block. | Refresh cookies; do not retry in a tight loop. |
+| `RATE_LIMIT_EXCEEDED` | 429 | Backend/proxy | Request rate exceeded. | Honor `Retry-After`; reduce polling. |
+| `ENDPOINT_RATE_LIMIT` | 429 | Proxy | Per-customer/per-endpoint proxy limit exceeded. | Back off that endpoint/customer. |
+| `NOT_FOUND` | 404 | Backend/proxy | Route or entity not found. | Verify route spelling and ids. |
+| `PROXY_NOT_READY` | 503 | Proxy/backend health | Internal proxy has no usable token or readiness failed. | Authenticate proxy first or check `/ready`. |
+| `PROXY_FAILED` | 502/500 | Backend/proxy | Internal proxy returned an error or invalid payload. | Inspect proxy logs and retry with backoff. |
+| `CIRCUIT_BREAKER_OPEN` | 503 | Proxy | Proxy stopped Buckeye calls after repeated dependency failures. | Wait for next attempt; verify Buckeye/Cloudflare health. |
+| `UPSTREAM_TIMEOUT` | 504 | Backend/proxy/upstream | Buckeye or provider timed out. | Retry after exponential backoff. |
+| `INTERNAL_ERROR` | 500 | Backend/proxy | Unclassified server failure. | Check logs and request id if present. |
 
 ---
 
 ## Rate Limiting
 
-All `/api/*` routes are rate-limited. Default: **100 requests per minute** per IP.
+Backend routes on `3000` use IP-based rate limiting in production. Default: **100 requests per minute** per IP.
+
+The standalone enhanced proxy on `3001` uses its own rate limiting model. Depending on feature flags and configuration, it can rate-limit by customer, endpoint, API key, and circuit-breaker state. Do not assume a `3000` rate-limit response and a `3001` rate-limit response have the same retry window or identity key.
 
 Headers returned on limit:
 ```
@@ -1018,13 +1843,16 @@ Guarded mutation surfaces include Buckeye connection/session mutation, Buckeye p
 
 ### Error Response Format
 
-All errors follow a consistent JSON envelope:
+Backend errors follow a consistent JSON envelope:
 
 ```json
 {
-  "error": "Human-readable error message"
+  "error": "Human-readable error message",
+  "code": "STABLE_MACHINE_CODE"
 }
 ```
+
+The `error` field is for display/logging. The `code` field is for client behavior. Frontend code should not parse English error text.
 
 Errors are generated by `handleAsync()` in `src/api/helpers.ts`:
 
@@ -1035,13 +1863,42 @@ export function handleAsync(handler, headers) {
     .catch((error) => {
       console.error('API error:', error);
       const status = error instanceof ApiError ? error.status : 500;
+      const code = error instanceof ApiError ? error.code : 'INTERNAL_ERROR';
       return new Response(
-        JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
+        JSON.stringify({
+          error: error instanceof Error ? error.message : 'Unknown error',
+          code
+        }),
         { status, headers }
       );
     });
 }
 ```
+
+### Auth Error Handling
+
+| Scenario | Route / Surface | HTTP / Event | Code | Recovery |
+|----------|-----------------|--------------|------|----------|
+| Frontend JWT missing/expired in production | `3000 /api/*` | 401 | `UNAUTHORIZED` | Re-authenticate through `/api/connect`; refresh stored terminal JWT. |
+| Admin mutation/export without token | `3000` sensitive routes | 403 | `ADMIN_TOKEN_REQUIRED` | Send `X-Admin-Token` or `Authorization: Bearer <ADMIN_API_TOKEN>`. |
+| WebSocket auth rejected | `ws://localhost:3000` | `auth_response` success false | `BUCKEYE_AUTH_FAILED` conceptually | Prompt user for password and fresh Cloudflare cookie. |
+| Buckeye session expired during polling | Backend poller | `auth_failed` event | `BUCKEYE_NOT_AUTHENTICATED` conceptually | Stop trusting live data and reconnect the agent. |
+| Proxy API key missing | `3001 /api/proxy/*` protected routes | 401/403 | `FORBIDDEN` or proxy-specific auth error | Send `X-API-Key` from `PROXY_API_KEY`. |
+| Buckeye bearer token missing | `3001` Buckeye aliases | 400/401 | `MISSING_TOKEN` | Use stored token row, renew token, or authenticate again. |
+| Cloudflare cookie missing/expired | `3001` Buckeye aliases / upstream | 400/403 | `MISSING_CF_CLEARANCE` or `CF_BLOCKED` | Extract fresh `cf_clearance` and `__cf_bm`; avoid tight retries. |
+
+### Endpoint-Specific Error Rules
+
+| Endpoint Family | Common Codes | Notes |
+|-----------------|--------------|-------|
+| `/api/connect` | `BUCKEYE_AUTH_FAILED`, `MISSING_CF_CLEARANCE`, `BAD_REQUEST` | Login failures are operational/session issues, not data corruption. |
+| `/api/wagers*` | `UNAUTHORIZED`, `RATE_LIMIT_EXCEEDED`, `INTERNAL_ERROR` | Local DB-backed reads should not require Buckeye to be online. |
+| `/api/agents/downline` | `UNAUTHORIZED`, `INTERNAL_ERROR` | Fast local read. |
+| `/api/agents/downline?live=true` | `BUCKEYE_NOT_AUTHENTICATED`, `BUCKEYE_AUTH_FAILED`, `UPSTREAM_TIMEOUT` | Live Buckeye read-through; fall back to `/api/agents/downline` for cached data. |
+| `/api/players/:id/*` | `PLAYER_ID_REQUIRED`, `NOT_FOUND`, `INTERNAL_ERROR` | Player 360 sources may be partial; check `intelligence-map` for missing source detail. |
+| `/api/proxy/Manager/:operation` on `3000` | `CUSTOMER_ID_REQUIRED`, `UNKNOWN_PROXY_OPERATION`, `BUCKEYE_NOT_AUTHENTICATED` | Compatibility route; prefer first-class `3000` routes where available. |
+| `/api/proxy/*` on `3001` | `MISSING_TOKEN`, `MISSING_CF_CLEARANCE`, `ENDPOINT_RATE_LIMIT`, `CIRCUIT_BREAKER_OPEN`, `PROXY_FAILED` | Internal/debug proxy only. |
+| `/api/export/*` | `ADMIN_TOKEN_REQUIRED`, `INTERNAL_ERROR` | Exports may be large; use streaming/download UI behavior. |
 
 ### Error Types & Recovery Matrix
 
@@ -1060,6 +1917,32 @@ export function handleAsync(handler, headers) {
 | **RawApiLogger Failure** | — | `RawApiLogger.log()` | Fire-and-forget. Errors caught and logged to console only — never propagated. Queue flushes every 250ms or 25 items. | ✅ Yes (silent) |
 | **Poller Concurrent Guard** | — | `ScraperManager.pollAgent()` | Skips poll if previous poll still running. Logs warning. | ✅ Yes |
 | **OddsPoller Provider Null** | — | `OddsPoller.poll()` | Logs error, continues running. No provider configured = no crash. | ✅ Yes (graceful) |
+
+### Proxy-Specific Errors (`3001`)
+
+These apply to the standalone enhanced proxy, not the public backend contract.
+
+| Code | HTTP Status / Symptom | Source | Recovery |
+|------|------------------------|--------|----------|
+| `MISSING_TOKEN` | 400/401 | Proxy alias/generic route | Provide fresh Buckeye token, renew token, or use a stored token row for `customerID`. |
+| `MISSING_CF_CLEARANCE` | 400/403 | Proxy alias/generic route | Provide fresh Cloudflare cookie material. |
+| `FORBIDDEN` | 401/403 | Proxy API-key guard | Add `X-API-Key` when configured. |
+| `ENDPOINT_RATE_LIMIT` | 429 with `Retry-After` | Enhanced proxy limiter | Wait for the retry window; reduce polling or batching frequency. |
+| `CIRCUIT_BREAKER_OPEN` | 503-style dependency failure | Enhanced proxy Buckeye dependency guard | Stop retry storms, wait for next allowed attempt, verify Buckeye/Cloudflare health. |
+| `CF_BLOCKED` | Buckeye 403 or HTML challenge body | Upstream Buckeye | Refresh `cf_clearance` and `__cf_bm`; reconnect. |
+| `PROXY_FAILED` | 500/502 | Alias normalizer/fallback chain | Check required params and verify the upstream endpoint is still active. |
+| `PROXY_NOT_READY` | 503 | `/ready` or backend proxy health | Authenticate the proxy first, then check token store/readiness. |
+
+### Retry Policy
+
+| Code | Retry? | Backoff |
+|------|--------|---------|
+| `MALFORMED_JSON`, `MISSING_REQUIRED_FIELD`, `INVALID_REQUEST`, `UNKNOWN_PROXY_OPERATION` | No | Fix request. |
+| `UNAUTHORIZED`, `ADMIN_TOKEN_REQUIRED`, `MISSING_TOKEN`, `MISSING_CF_CLEARANCE`, `CF_BLOCKED` | No automatic loop | Refresh credentials/session first. |
+| `RATE_LIMIT_EXCEEDED`, `ENDPOINT_RATE_LIMIT` | Yes, after header | Honor `Retry-After`. |
+| `UPSTREAM_TIMEOUT`, `PROXY_FAILED` | Yes | Exponential backoff: 5s, 10s, 20s, 40s, max 60s. |
+| `CIRCUIT_BREAKER_OPEN`, `PROXY_NOT_READY` | Yes, slowly | Wait for readiness/circuit half-open; do not fan out requests. |
+| `INTERNAL_ERROR` | Conditional | Retry once only for idempotent GETs; otherwise inspect logs. |
 
 ### Poller Backoff Strategy
 
@@ -1152,3 +2035,4 @@ Buckeye API Error
 |------|--------|---------|
 | 2026-05-09 | System | Initial document — all endpoints captured from live server |
 | 2026-05-09 | System | Added Error Handling & Recovery section with real error types, backoff strategy, watermark recovery, and recovery flow diagram |
+| 2026-05-10 | Codex | v3 canonical boundary: `3000` is the public frontend API, `3001` is internal/debug proxy; added authentication, port, WebSocket, rate-limit, proxy-error, and CSV filename guidance. |
