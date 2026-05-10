@@ -402,10 +402,14 @@ async function buildDataFlowSummary(db: any): Promise<any> {
       ),
       {
         playerAgentRows: Number(crossReferences?.player_agent_rows || 0),
+        playerAgentLastSeen: crossReferences?.player_agent_last_seen || null,
         accessRows: Number(crossReferences?.access_rows || 0),
+        accessLastSeen: crossReferences?.access_last_seen || null,
         uniqueIps: Number(crossReferences?.unique_ips || 0),
         playerLinkRows: Number(crossReferences?.player_link_rows || 0),
+        playerLinkLastSeen: crossReferences?.player_link_last_seen || null,
         patternAgentRows: Number(crossReferences?.pattern_agent_rows || 0),
+        patternAgentLastSeen: crossReferences?.pattern_agent_last_seen || null,
       }
     ),
   };

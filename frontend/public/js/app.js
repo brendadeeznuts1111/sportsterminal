@@ -3860,7 +3860,12 @@ function renderStatusDataFlowStrip(dataFlows) {
     ['Wagers', dataFlows.wagerArchive || dataFlows.liveWagers],
     ['Players', dataFlows.playerAgentMap],
     ['Agents', dataFlows.agentHierarchy],
-    ['Access Logs', { ...(dataFlows.crossReferences || {}), rowCount: dataFlows.crossReferences?.accessRows, lastSeen: dataFlows.crossReferences?.lastSeen }],
+    ['Access Logs', {
+      ...(dataFlows.crossReferences || {}),
+      rowCount: dataFlows.crossReferences?.accessRows,
+      lastSeen: dataFlows.crossReferences?.accessLastSeen,
+      status: Number(dataFlows.crossReferences?.accessRows || 0) > 0 ? 'live' : 'empty',
+    }],
     ['Free-Play', dataFlows.playerTransactions],
     ['Patterns', dataFlows.patterns],
     ['Cross-Refs', dataFlows.crossReferences],
@@ -6706,7 +6711,7 @@ function renderCrossReferencePanel(profile) {
     </div>
     <div class="intel-kv-list">
       ${intelKvRow('Agent Lineage', lineage)}
-      ${intelKvRow('Shared IPs', `${Number(access.sharedIpCount || 0).toLocaleString()} clusters · ${escapeHtml(latestIp)}`)}
+      ${intelKvRow('Shared IPs', `${Number(access.sharedIpCount || 0).toLocaleString()} clusters · ${latestIp}`)}
       ${intelKvRow('Latest Geo', latestGeo)}
       ${intelKvRow('Free-Play', `${formatCompactDollars(freePlay.outstandingEstimate || 0)} outstanding · ${freePlay.sourceConfidence || 'confirmed'}`)}
       ${intelKvRow('Patterns', `${Number(patterns.total || 0).toLocaleString()} linked · ${Number(patterns.critical || 0)} critical`)}

@@ -166,8 +166,11 @@ describe('system status health route', () => {
     expect(body.dataFlows.patterns.last24h).toBe(12);
     expect(body.dataFlows.exposureInputs.sportCount).toBe(4);
     expect(body.dataFlows.crossReferences.playerAgentRows).toBe(56019);
+    expect(body.dataFlows.crossReferences.playerAgentLastSeen).toBe('2026-05-09T20:24:00Z');
     expect(body.dataFlows.crossReferences.uniqueIps).toBe(42);
+    expect(body.dataFlows.crossReferences.accessLastSeen).toBe('2026-05-09T20:26:00Z');
     expect(body.dataFlows.crossReferences.patternAgentRows).toBe(12);
+    expect(body.dataFlows.crossReferences.patternAgentLastSeen).toBe('2026-05-09T20:28:00Z');
     expect(body.status).toBe('ok');
   });
 });

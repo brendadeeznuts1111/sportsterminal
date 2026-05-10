@@ -6,7 +6,36 @@ export interface CrossReferenceFilters {
   agentId?: string;
 }
 
+interface AgentSummary {
+  agentId: string;
+  login: string;
+  displayName?: string | null;
+  parentAgentId?: string | null;
+  level?: number | null;
+  agentType?: string | null;
+  playerCount?: number | null;
+  headCountRateM?: number | null;
+  inetHeadCountRateM?: number | null;
+  casinoHeadCountRateM?: number | null;
+  liveBettingRateM?: number | null;
+  propBuilderRateM?: number | null;
+  lastRefreshed?: string | null;
+}
+
+interface FreePlayContext {
+  issued: number;
+  redeemed: number;
+  expired: number;
+  adjustments: number;
+  outstandingEstimate: number;
+  transactionCount: number;
+  sourceConfidence: 'confirmed' | 'candidate';
+  recent: any[];
+}
+
 export class CrossReferenceService {
+  private readonly tableCache = new Map<string, Promise<boolean>>();
+
   constructor(private readonly db: Database) {}
 
   async getSummary(filters: CrossReferenceFilters): Promise<any> {
@@ -95,7 +124,7 @@ export class CrossReferenceService {
     if (!agentId || !(await this.hasTable('agent_hierarchy'))) {
       return { assigned: null, lineage: [], playerCount: 0 };
     }
-    const assigned = await this.db.get<any>(
+    const assigned = await this.db.get<AgentSummary>(
       `SELECT agent_id AS agentId, login, display_name AS displayName, parent_agent_id AS parentAgentId,
               level, agent_type AS agentType, player_count AS playerCount,
               head_count_rate_m AS headCountRateM, inet_head_count_rate_m AS inetHeadCountRateM,
@@ -106,14 +135,14 @@ export class CrossReferenceService {
        LIMIT 1`,
       [agentId, agentId]
     );
-    const lineage = [];
+    const lineage: AgentSummary[] = [];
     let current = assigned;
     const seen = new Set<string>();
     while (current && !seen.has(current.agentId)) {
       seen.add(current.agentId);
       lineage.unshift(current);
       if (!current.parentAgentId) break;
-      current = await this.db.get<any>(
+      current = await this.db.get<AgentSummary>(
         `SELECT agent_id AS agentId, login, display_name AS displayName, parent_agent_id AS parentAgentId,
                 level, agent_type AS agentType, player_count AS playerCount
          FROM agent_hierarchy
@@ -262,7 +291,7 @@ export class CrossReferenceService {
     };
   }
 
-  private async getFreePlayContext(playerId: string, agentId: string): Promise<any> {
+  private async getFreePlayContext(playerId: string, agentId: string): Promise<FreePlayContext> {
     if (!(await this.hasTable('player_transactions'))) {
       return { ...summarizeFreePlay([]), transactionCount: 0, recent: [] };
     }
@@ -375,11 +404,15 @@ export class CrossReferenceService {
   }
 
   private async hasTable(name: string): Promise<boolean> {
-    const row = await this.db.get<any>(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name = ?`,
-      [name]
-    );
-    return Boolean(row);
+    let cached = this.tableCache.get(name);
+    if (!cached) {
+      cached = this.db.get<any>(
+        `SELECT name FROM sqlite_master WHERE type='table' AND name = ?`,
+        [name]
+      ).then(Boolean);
+      this.tableCache.set(name, cached);
+    }
+    return cached;
   }
 }
 
