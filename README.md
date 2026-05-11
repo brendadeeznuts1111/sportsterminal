@@ -21,6 +21,11 @@ Implemented:
 - Alert rules, alert history, toast toggle, webhook CRUD, retry, and delivery logging.
 - System Status sidebar page for backend, vault, book, and pattern health.
 - Player 360 profile contracts with real API-only hydration, live source coverage, field-level mapping, mismatch tracking, and Status/Docs panels.
+- **Risk Command Center** — unified risk surface with position lifecycle, violation dedup, P&L timeseries, player detail, and webhook circuit breaker.
+- **Webhook Circuit Breaker** — in-memory per-URL circuit breaker (closed/degraded/open) integrated into alert dispatch.
+- **SSE live stream** — `StreamHub` with ring-buffer replay for wagers, positions, alerts, and heartbeat.
+- **Shadow A/B testing** — Kimi-powered risk analysis with background Web Worker.
+- **Frontend module architecture** — state store, render scheduler, SSE client, buckeye integration, odds matrix, agent network, performance analytics, webhooks modals.
 - Bun install security scanner configured with `@bun-security-scanner/osv`.
 
 Player 360 data lineage lives in `docs/PLAYER_360_DATA_MAP.md`; the live modal Docs/Status panels render the same contract from `/api/v1/players/:playerId/intelligence-map`.
@@ -30,6 +35,9 @@ Partial or planned:
 - Real odds require `ODDS_API_KEY`; without it, odds polling is disabled. Synthetic odds require explicit `ODDS_DEMO_MODE=true` and are not used by Buckeye views.
 - Polymarket, Kalshi, Ace Per Head, Metallic, heatmap, candlestick, and bet builder remain placeholders.
 - The local raw Buckeye exports are intentionally ignored and should be treated as sensitive source material, not app source.
+- Future: persist webhook circuit breaker state across restarts (SQLite table).
+- Future: FTS5 search for player names and wager descriptions at scale >100k rows.
+- Future: hourly granularity for P&L timeseries (currently daily buckets).
 
 ## Requirements
 
@@ -90,6 +98,7 @@ JWT_SECRET=change-me-in-production-min-32-chars
 DATABASE_URL=sqlite:./data/terminal.db
 RATE_LIMIT_MAX=100
 RATE_LIMIT_WINDOW_MS=60000
+TERMINAL_BASE_URL=http://localhost:3000  # Used for player detail links in webhook alerts
 ```
 
 `DATABASE_URL` can be a SQLite URL or path. Examples:

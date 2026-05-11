@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 
 const isWin = process.platform === "win32";
 
-function findPidsOnPort(port: number): string[] {
+function findPidsOnPort(port) {
   try {
     if (isWin) {
       const out = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: "utf-8" });
@@ -15,7 +15,7 @@ function findPidsOnPort(port: number): string[] {
   }
 }
 
-function killPids(pids: string[]) {
+function killPids(pids) {
   for (const pid of pids) {
     try {
       if (isWin) execSync(`taskkill /F /PID ${pid}`, { stdio: "ignore" });

@@ -75,6 +75,18 @@ odds/                  OddsPoller + providers (DemoOddsProvider, TheOddsApiProvi
 patterns/             Pattern detection and persistence
 player360/            Player 360 deep-dive logic
 risk/AlertEngine.ts   Alert detection rules
+services/CommandCenterCron.ts      Managed scheduler for risk background jobs
+services/CommandCenterDashboard.ts Dashboard data aggregation
+services/CommandCenterStatusService.ts Live status with table counts + stream metrics
+services/LiveFeatureService.ts     Real-time feature extraction with heuristic fallback
+services/PositionService.ts        Risk position lifecycle (generate, execute, override, expire)
+services/RiskAlertService.ts       Webhook alert dispatch with circuit breaker integration
+services/RiskCommandCenter.ts      Unified risk surface: summary, violations, timeseries, player detail
+services/ShadowAgentService.ts     Kimi-powered A/B risk analysis with DB persistence
+services/StreamHub.ts              Bun-native SSE pub/sub with ring buffer replay
+services/WebhookCircuitBreaker.ts  In-memory per-URL circuit breaker (closed/degraded/open)
+workers/shadowAgentWorker.ts       Web Worker for background shadow A/B comparison
+config/commandCenterMap.ts         Centralized constants: endpoints, schedules, SSE events, error codes
 types/                Shared TypeScript interfaces
 utils/                Shared utilities
 ```
@@ -176,10 +188,12 @@ runRiskEngine()                      — Background task (30s interval)
 
 ## Where to find things
 
-- **All API routes**: `backend/src/api/router.ts` — 105+ routes via `UrlPatternRouter`
+- **All API routes**: `backend/src/api/router.ts` — 112+ routes via `UrlPatternRouter`
 - **Route handlers**: `backend/src/api/routes/` — one file per domain
 - **Frontend entry**: `frontend/public/index.html` → `js/app.js`
 - **Frontend WS**: `frontend/public/js/ws-client.js`
+- **Frontend SSE**: `frontend/public/js/sse-client.js` — EventSource wrapper with auto-reconnect
+- **Frontend modules**: `frontend/public/js/modules/` — state, render-scheduler, buckeye-integration, odds-matrix, agent-network, performance-analytics, webhooks-modals
 - **Database schema**: `backend/src/database.ts` — all table definitions and migrations
 - **Buckeye API client**: `backend/src/scrapers/BuckeyeAPI.ts` — auth, wager, access-log, performance calls
 - **Env validation**: `backend/src/config/env.ts` — all env vars and their constraints
@@ -196,6 +210,9 @@ runRiskEngine()                      — Background task (30s interval)
 - `risk/alerts` POST now validates `thresholds` with `asTaxonomyRecord()`, consistent with `risk/config`
 - All prepared statements (48 total) are finalized on shutdown
 - Inline `db.prepare()` calls replaced with pre-prepared statements (`deleteRiskConfig`, `deleteRateLimitOverrideInline`)
+- **Risk Command Center**: `backend/src/services/RiskCommandCenter.ts` — summary, violations, timeseries, player detail
+- **Webhook Circuit Breaker**: `backend/src/services/WebhookCircuitBreaker.ts` — per-URL delivery protection
+- **Risk API routes**: `/api/risk/summary`, `/api/risk/positions`, `/api/risk/violations`, `/api/risk/timeseries`, `/api/risk/players/:id`, `/api/risk/webhooks/health`
 
 ## Frontend Component Matrix
 

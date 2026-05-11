@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 
 const isWin = process.platform === "win32";
 
-function findPidsOnPort(port: number): { pid: string; name: string }[] {
+function findPidsOnPort(port) {
   try {
     if (isWin) {
       const out = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: "utf-8" });
@@ -18,7 +18,7 @@ function findPidsOnPort(port: number): { pid: string; name: string }[] {
   }
 }
 
-function findBunProcesses(): { pid: string; name: string }[] {
+function findBunProcesses() {
   try {
     if (isWin) {
       const out = execSync("tasklist | findstr bun", { encoding: "utf-8" });
