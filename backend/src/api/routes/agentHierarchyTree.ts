@@ -36,13 +36,27 @@ export interface AgentHierarchyTree {
   };
 }
 
-export async function getAgentHierarchyTree(db: Database): Promise<AgentHierarchyTree> {
+export async function getAgentHierarchyTree(db: Database, agentId?: string): Promise<AgentHierarchyTree> {
   await syncAgentProjectionTables(db, 'read_through');
+  const scopedAgentId = String(agentId || '').trim();
   const rows = await db.all<AgentHierarchyRow>(
-    `SELECT *
-     FROM agent_hierarchy
-     WHERE provider = 'buckeye'
-     ORDER BY COALESCE(seq_number, 999999999), COALESCE(level, 99), login`
+    scopedAgentId
+      ? `SELECT ah.*
+         FROM agent_hierarchy ah
+         JOIN agent_closure ac
+          ON ac.provider = ah.provider
+         AND ac.descendant = ah.agent_id
+         JOIN agent_hierarchy root
+          ON root.provider = ac.provider
+         AND root.agent_id = ac.ancestor
+         WHERE ah.provider = 'buckeye'
+          AND (root.agent_id = ? OR root.login = ?)
+         ORDER BY ac.depth, COALESCE(ah.seq_number, 999999999), COALESCE(ah.level, 99), ah.login`
+      : `SELECT *
+         FROM agent_hierarchy
+         WHERE provider = 'buckeye'
+         ORDER BY COALESCE(seq_number, 999999999), COALESCE(level, 99), login`,
+    scopedAgentId ? [scopedAgentId, scopedAgentId] : []
   );
   const nodes = rows.map(formatAgentNode);
   const byId = new Map<string, AgentTreeNode>(

@@ -95,15 +95,32 @@ type BuckeyeLocalExport = {
   PLAYERS?: LocalAgentExportRow[];
 };
 
+export interface ParseAgentHierarchyOptions {
+  agentPaths?: string[];
+  playerPaths?: string[];
+}
+
 /**
  * Load and parse local Buckeye agent export files (docs/agentobject.md or docs/agentslistharz.md).
  * Enriches agents with player counts and computed parent/child relationships.
  */
-export async function parseAgentHierarchyAndPlayers(): Promise<ParsedLocalAgentExport> {
-  const agentCandidates = ['docs/agentobject.md', '../docs/agentobject.md'];
+export async function parseAgentHierarchyAndPlayers(options: ParseAgentHierarchyOptions = {}): Promise<ParsedLocalAgentExport> {
+  const agentCandidates = [
+    ...normalizePathList(options.agentPaths),
+    ...normalizePathList(process.env.BUCKEYE_AGENT_EXPORT_PATH),
+    'docs/agentobject.md',
+    '../docs/agentobject.md',
+  ];
+  const playerCandidates = [
+    ...normalizePathList(options.playerPaths),
+    ...normalizePathList(process.env.BUCKEYE_PLAYER_EXPORT_PATH),
+  ];
   const combinedCandidates = ['docs/agentslistharz.md', '../docs/agentslistharz.md'];
 
   const combined = await loadLocalAgentExport(combinedCandidates);
+  const explicitPlayers = await loadLocalPlayers(playerCandidates);
+  const playerRows = explicitPlayers.players.length > 0 ? explicitPlayers.players : combined.players;
+  const playerSource = explicitPlayers.players.length > 0 ? explicitPlayers.source : null;
   for (const path of agentCandidates) {
     try {
       const file = Bun.file(path);
@@ -112,7 +129,7 @@ export async function parseAgentHierarchyAndPlayers(): Promise<ParsedLocalAgentE
       const parsed = parseLocalJsonPrefix(text) as BuckeyeLocalExport | LocalAgentExportRow[];
       const agents = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.GENERAL) ? parsed.GENERAL : [];
       if (agents.length > 0) {
-        return buildParsedLocalAgentExport(agents, combined.players, 'docs/agentobject.md');
+        return buildParsedLocalAgentExport(agents, playerRows, playerSource ? `${path};${playerSource}` : path);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -121,7 +138,7 @@ export async function parseAgentHierarchyAndPlayers(): Promise<ParsedLocalAgentE
   }
 
   if (combined.agents.length > 0) {
-    return buildParsedLocalAgentExport(combined.agents, combined.players, 'docs/agentslistharz.md');
+    return buildParsedLocalAgentExport(combined.agents, playerRows.length > 0 ? playerRows : combined.players, playerSource ? `docs/agentslistharz.md;${playerSource}` : 'docs/agentslistharz.md');
   }
 
   return {
@@ -175,13 +192,37 @@ async function loadLocalAgentExport(
   return { agents: [], players: [] };
 }
 
+async function loadLocalPlayers(candidates: string[]): Promise<{ players: LocalAgentExportRow[]; source: string | null }> {
+  for (const path of candidates) {
+    try {
+      const file = Bun.file(path);
+      if ((await file.size) === 0) continue;
+      const parsed = parseLocalJsonPrefix(await file.text()) as BuckeyeLocalExport | LocalAgentExportRow[];
+      const rows = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.PLAYERS) ? parsed.PLAYERS : [];
+      if (rows.length > 0) return { players: rows, source: path };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.debug(`[Helpers] Failed to load player export from ${path}: ${msg}`);
+    }
+  }
+  return { players: [], source: null };
+}
+
 function parseLocalJsonPrefix(text: string): unknown {
+  const trimmed = text.trim();
   try {
-    return JSON.parse(text);
+    return JSON.parse(trimmed);
   } catch {
     const harBoundary = text.indexOf('}{\r\n  "log"');
     if (harBoundary > 0) {
       return JSON.parse(text.slice(0, harBoundary + 1));
+    }
+    const arrayStart = text.indexOf('[');
+    const objectStart = text.indexOf('{');
+    const starts = [arrayStart, objectStart].filter((index) => index >= 0);
+    const jsonStart = starts.length > 0 ? Math.min(...starts) : -1;
+    if (jsonStart >= 0) {
+      return JSON.parse(text.slice(jsonStart).trim());
     }
     throw new Error('Unable to parse local agent export');
   }
@@ -194,6 +235,7 @@ function buildParsedLocalAgentExport(
 ): ParsedLocalAgentExport {
   const playerCounts = new Map<string, number>();
   const sanitizedPlayers = [];
+  const hasPlayerPasswords = players.some((player) => Object.prototype.hasOwnProperty.call(player, 'Password'));
   for (const player of players) {
     const agent = String(player?.Agent || '').trim();
     const login = String(player?.Login || player?.customerID || '').trim();
@@ -213,6 +255,7 @@ function buildParsedLocalAgentExport(
   const sortedAgents = [...agents].sort((a, b) => {
     return (Number(a?.SeqNumber) || 0) - (Number(b?.SeqNumber) || 0);
   });
+  const hasExplicitParentIds = sortedAgents.some((agent) => String(agent?.ParentAgentID || '').trim() !== '');
   const stack: Array<{ level: number; agentId: string }> = [];
   const childCounts = new Map<string, number>();
 
@@ -220,10 +263,13 @@ function buildParsedLocalAgentExport(
     const login = String(agent?.Login || agent?.AgentID || '').trim();
     const agentId = String(agent?.AgentID || login).trim();
     const level = Number(agent?.Level) || 1;
-    while (stack.length > 0 && stack[stack.length - 1].level >= level) {
-      stack.pop();
+    let parentAgentId = String(agent?.ParentAgentID || '').trim();
+    if (!parentAgentId) {
+      while (stack.length > 0 && stack[stack.length - 1].level >= level) {
+        stack.pop();
+      }
+      parentAgentId = stack[stack.length - 1]?.agentId || '';
     }
-    const parentAgentId = stack[stack.length - 1]?.agentId || '';
     if (parentAgentId) {
       childCounts.set(parentAgentId, (childCounts.get(parentAgentId) || 0) + 1);
     }
@@ -251,10 +297,16 @@ function buildParsedLocalAgentExport(
       agentCount: enrichedWithCounts.length,
       playerCount: sanitizedPlayers.length,
       linkedPlayerAgents: playerCounts.size,
-      hasExplicitParentIds: true,
-      hasPlayerPasswords: false,
+      hasExplicitParentIds,
+      hasPlayerPasswords,
     },
   };
+}
+
+function normalizePathList(value: string | string[] | undefined): string[] {
+  if (!value) return [];
+  const raw = Array.isArray(value) ? value : value.split(';');
+  return raw.map((path) => path.trim()).filter(Boolean);
 }
 
 /**

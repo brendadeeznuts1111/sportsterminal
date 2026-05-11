@@ -13,6 +13,7 @@ import {
   getAgentHierarchyTree,
   getCachedAgentHierarchyTree,
 } from './agentHierarchyTree';
+import { AgentAnalyticsService } from '../../services/AgentAnalyticsService';
 
 export const registerAgentRoutes = createRouteHandler('/api/agents', async (_url, _req, scraperManager) => {
   logRequest('GET', '/api/agents');
@@ -47,6 +48,17 @@ export const registerAgentDownlineRoutes = createRouteHandler('/api/agents/downl
       source: 'live_buckeye',
       endpoint: 'Manager/getListAgenstByAgent',
       agentId: agentId || null,
+    };
+  }
+  const scopedAgentId = url.searchParams.get('agentId') || url.searchParams.get('agent') || '';
+  if (scopedAgentId) {
+    const tree = await getAgentHierarchyTree(scraperManager.getDatabase(), scopedAgentId);
+    return {
+      agentId: scopedAgentId,
+      agents: tree.agents,
+      tree: tree.tree,
+      meta: tree.meta,
+      source: 'agent_closure',
     };
   }
   return scraperManager.getAgentDownline();
@@ -137,9 +149,9 @@ export const registerAgentRefreshRoutes = createMethodRouteHandler(
   }
 );
 
-export const registerAgentHierarchyTreeRoutes = createRouteHandler('/api/agents/hierarchy/tree', async (_url, _req, scraperManager) => {
+export const registerAgentHierarchyTreeRoutes = createRouteHandler('/api/agents/hierarchy/tree', async (url, _req, scraperManager) => {
   logRequest('GET', '/api/agents/hierarchy/tree');
-  return getAgentHierarchyTree(scraperManager.getDatabase());
+  return getAgentHierarchyTree(scraperManager.getDatabase(), url.searchParams.get('agentId') || undefined);
 });
 
 export async function registerCachedAgentHierarchyTreeRoutes(
@@ -149,6 +161,12 @@ export async function registerCachedAgentHierarchyTreeRoutes(
 ): Promise<Response | null> {
   if (url.pathname !== '/api/agents/hierarchy/tree') return null;
   logRequest('GET', '/api/agents/hierarchy/tree');
+  const scopedAgentId = url.searchParams.get('agentId');
+  if (scopedAgentId) {
+    return new Response(JSON.stringify(await getAgentHierarchyTree(scraperManager.getDatabase(), scopedAgentId)), {
+      headers: corsHeaders,
+    });
+  }
   const payload = await getCachedAgentHierarchyTree(scraperManager.getDatabase());
   const headers = new Headers(corsHeaders);
   headers.set('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
@@ -274,6 +292,12 @@ async function getAgentProfile(db: Database, agentId: string): Promise<{
     },
   };
 }
+
+export const registerAgentAnalyticsRoutes = createRouteHandler('/api/agents/analytics', async (_url, _req, scraperManager) => {
+  logRequest('GET', '/api/agents/analytics');
+  const service = new AgentAnalyticsService(scraperManager.getDatabase());
+  return service.getAnalytics();
+});
 
 function withTimeout<T extends object>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   return new Promise((resolve) => {

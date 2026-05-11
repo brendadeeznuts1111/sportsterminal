@@ -14,6 +14,7 @@ import { requireAuth } from './middleware/auth';
 import { RateLimiter } from './rateLimiter';
 import {
   registerAgentAccessLogRoutes,
+  registerAgentAnalyticsRoutes,
   registerAgentBackfillRoutes,
   registerAgentDownlineRoutes,
   registerAgentExposureRoutes,
@@ -31,6 +32,7 @@ import { registerCommandCenterRoutes } from './routes/command-center';
 import { registerCrossReferenceRoutes } from './routes/cross-reference';
 import { registerFreePlayAnalysisRoutes } from './routes/freeplay';
 import { registerHealthRoutes } from './routes/health';
+import { registerHierarchyRoutes } from './routes/hierarchy';
 import { registerOddsRoutes } from './routes/odds';
 import { registerPerformanceRoutes } from './routes/performance';
 import {
@@ -166,8 +168,52 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
     return registerAgentAccessLogRoutes(url, request, deps.scraperManager);
   });
 
+  router.get('/api/agents/analytics', async (url, request) => {
+    return registerAgentAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
   router.get('/api/agents/risk-summary', async (url, request) => {
     return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/hierarchy/stats', async (url, request) => {
+    return registerHierarchyRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/hierarchy/search', async (url, request) => {
+    return registerHierarchyRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/hierarchy/hubs', async (url, request) => {
+    return registerHierarchyRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/hierarchy/hub', async (url, request) => {
+    return registerHierarchyRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/hierarchy/risk', async (url, request) => {
+    return registerHierarchyRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/hierarchy/tests', async (url, request) => {
+    return registerHierarchyRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/hierarchy/zero-commission', async (url, request) => {
+    return registerHierarchyRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/hierarchy/import', async (url, request) => {
+    return registerHierarchyRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/hierarchy/sync-status', async (url, request) => {
+    return registerHierarchyRoutes(url, request, deps.scraperManager);
+  });
+
+  router.put('/api/hierarchy/sync-config', async (url, request) => {
+    return registerHierarchyRoutes(url, request, deps.scraperManager);
   });
 
   router.get('/api/agents/:agentId/performance', async (url, request) => {
@@ -450,6 +496,14 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
   router.post('/api/proxy/renewToken', async (url, request) => {
     return registerBuckeyeRoutes(url, request, deps.scraperManager, deps.secretVault);
   });
+  router.post('/api/proxy/downline', async (url, request) => {
+    const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+    const agentId = String(body.agentId || body.agentID || url.searchParams.get('agentId') || '').trim() || undefined;
+    return new Response(
+      JSON.stringify(await deps.scraperManager.runHierarchyImport('proxy_downline', agentId)),
+      { headers: corsHeaders }
+    );
+  });
   // Enhanced proxy aliases bridged from backend port 3000 to the internal
   // standalone proxy on port 3001.
   router.post('/api/proxy/taxonomy/:level', async (url, request) => {
@@ -717,6 +771,10 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
   });
 
   router.get('/api/export/performance', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/data/export-parquet', async (url, request) => {
     return registerAnalyticsRoutes(url, request, deps.scraperManager);
   });
 
@@ -1024,6 +1082,7 @@ function isSensitiveMutation(method: string, pathname: string): boolean {
     return isSensitiveMutation(method, normalizedPath);
   }
   return pathname.startsWith('/api/buckeye/')
+    || pathname.startsWith('/api/data/')
     || pathname.startsWith('/api/webhooks')
     || pathname.startsWith('/api/players/')
     || pathname.startsWith('/api/agents/')

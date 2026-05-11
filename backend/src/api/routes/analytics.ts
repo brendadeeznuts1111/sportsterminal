@@ -3,7 +3,10 @@
  * Provides endpoints for audit analytics, performance metrics, and CSV export.
  */
 
+import { mkdir } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { ApiError, clampInt, corsHeaders, handleAsync, requireAdminTokenIfConfigured } from '../helpers';
+import { normalizeDatabasePath } from '../../database';
 import { logDebug } from '../../utils/logger';
 import { IPTracker } from '../../services/IPTracker';
 import { deleteRule, listRules, upsertRule, type RuleInput } from '../../services/RulesEngine';
@@ -528,7 +531,108 @@ export function registerAnalyticsRoutes(
     );
   }
 
+  if (url.pathname === '/api/data/export-parquet' && request.method === 'POST') {
+    const denied = requireAdminTokenIfConfigured(request);
+    if (denied) return denied;
+    return exportEnrichedWagersParquet(db);
+  }
+
   return null;
+}
+
+async function exportEnrichedWagersParquet(db: Database): Promise<Response> {
+  const duckdb = process.env.DUCKDB_BIN || 'duckdb';
+  if (!await isDuckDbAvailable(duckdb)) {
+    return new Response(
+      JSON.stringify({ error: 'DuckDB CLI is required for Parquet export', code: 'DUCKDB_UNAVAILABLE' }),
+      { status: 503, headers: corsHeaders }
+    );
+  }
+
+  const exportDir = resolve(process.cwd().endsWith('backend') ? 'data/exports' : 'backend/data/exports');
+  await mkdir(exportDir, { recursive: true });
+  const generatedAt = new Date().toISOString();
+  const safeTimestamp = generatedAt.replace(/[:.]/g, '-');
+  const outputPath = join(exportDir, `wagers-enriched-${safeTimestamp}.parquet`);
+  const dbPath = normalizeDatabasePath(process.env.DATABASE_URL || './data/terminal.db');
+  const row = await db.get<{ count: number }>('SELECT COUNT(*) AS count FROM wager_archive');
+  const query = `
+    SELECT
+      wa.wager_number,
+      wa.agent_id,
+      wa.customer_id,
+      wa.login,
+      wa.wager_type,
+      wa.amount_wagered,
+      wa.to_win_amount,
+      wa.volume_amount,
+      wa.insert_date_time,
+      wa.ticket_writer,
+      wa.short_desc_raw,
+      wa.vip,
+      wa.agent_login,
+      wa.sport,
+      wa.league,
+      wa.price,
+      wa.agent_level,
+      wa.agent_type,
+      wa.parent_agent_id,
+      wa.mapped_agent_id,
+      wa.mapped_agent_login,
+      wa.agent_path_json,
+      wa.hierarchy_source,
+      pam.player_id AS mapped_player_id,
+      pam.player_login AS mapped_player_login,
+      ah.child_count AS mapped_agent_child_count,
+      ah.player_count AS mapped_agent_player_count,
+      wa.ingested_at
+    FROM wager_archive wa
+    LEFT JOIN player_agent_map pam
+      ON pam.provider = 'buckeye'
+     AND (pam.player_id = wa.customer_id OR pam.player_login = wa.login)
+    LEFT JOIN agent_hierarchy ah
+      ON ah.provider = 'buckeye'
+     AND ah.agent_id = COALESCE(wa.mapped_agent_id, pam.agent_id, wa.agent_id)
+    ORDER BY wa.insert_date_time DESC
+  `;
+  const sql = `COPY (${query}) TO ${sqlString(outputPath)} (FORMAT PARQUET);`;
+  const proc = Bun.spawn([duckdb, dbPath, '-c', sql], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const [exitCode, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stderr).text(),
+  ]);
+  if (exitCode !== 0) {
+    return new Response(
+      JSON.stringify({ error: stderr.trim() || 'Parquet export failed', code: 'PARQUET_EXPORT_FAILED' }),
+      { status: 500, headers: corsHeaders }
+    );
+  }
+
+  return new Response(
+    JSON.stringify({
+      success: true,
+      path: outputPath,
+      rowCount: Number(row?.count || 0),
+      generatedAt,
+    }),
+    { headers: corsHeaders }
+  );
+}
+
+async function isDuckDbAvailable(duckdb: string): Promise<boolean> {
+  try {
+    const proc = Bun.spawn([duckdb, '--version'], { stdout: 'pipe', stderr: 'pipe' });
+    return await proc.exited === 0;
+  } catch {
+    return false;
+  }
+}
+
+function sqlString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
 }
 
 async function handleIpExport(
