@@ -2,7 +2,7 @@ import type { Database } from '../database';
 import type { EnrichedWager, Severity } from '../risk/AlertEngine';
 import type { ClvResult } from './CLV';
 
-export type RuleConditionType = 'ipShared' | 'clvBeater' | 'failedLogin' | 'velocity' | 'accountChange';
+export type RuleConditionType = 'ipShared' | 'clvBeater' | 'failedLogin' | 'velocity' | 'accountChange' | 'featureThreshold';
 export type RuleAction = 'flag' | 'block' | 'alert' | 'adjustLimit';
 export type RuleSeverity = 'low' | 'medium' | 'high' | 'critical';
 
@@ -10,6 +10,9 @@ export interface RuleCondition {
   type: RuleConditionType;
   threshold: number;
   windowMins?: number;
+  feature?: string;
+  op?: '>=' | '>' | '<=' | '<' | '==' | '!=';
+  value?: number;
 }
 
 export interface Rule {
@@ -98,7 +101,7 @@ export async function deleteRule(db: Database, id: number): Promise<boolean> {
 export async function evaluateRules(
   db: Database,
   wager: EnrichedWager,
-  _playerSnapshot: unknown,
+  playerSnapshot: unknown,
   ipStats: Record<string, unknown> | null,
   clvResult: ClvResult
 ): Promise<Rule[]> {
@@ -135,6 +138,12 @@ export async function evaluateRules(
       case 'accountChange': {
         const changes = await countRecent(db, 'account_change_logs', 'player', wager.Login || wager.CustomerID, condition.windowMins || 60);
         meets = changes >= condition.threshold;
+        break;
+      }
+      case 'featureThreshold': {
+        const featureValue = getSnapshotFeatureValue(playerSnapshot, condition.feature);
+        const expected = Number(condition.value ?? condition.threshold);
+        meets = featureValue !== null && compareFeature(featureValue, condition.op || '>=', expected);
         break;
       }
       default:
@@ -221,6 +230,9 @@ function parseCondition(value: unknown): RuleCondition {
     type,
     threshold: Number.isFinite(Number(condition.threshold)) ? Number(condition.threshold) : defaultThreshold(type),
     ...(condition.windowMins ? { windowMins: Math.max(1, Number(condition.windowMins)) } : {}),
+    ...(typeof condition.feature === 'string' && condition.feature.trim() ? { feature: condition.feature.trim() } : {}),
+    ...(normalizeOp(condition.op) ? { op: normalizeOp(condition.op) } : {}),
+    ...(condition.value !== undefined && Number.isFinite(Number(condition.value)) ? { value: Number(condition.value) } : {}),
   };
 }
 
@@ -229,9 +241,16 @@ function normalizeConditionType(value: unknown): RuleConditionType {
     || value === 'failedLogin'
     || value === 'velocity'
     || value === 'accountChange'
+    || value === 'featureThreshold'
     || value === 'ipShared'
     ? value
     : 'ipShared';
+}
+
+function normalizeOp(value: unknown): RuleCondition['op'] | undefined {
+  return value === '>=' || value === '>' || value === '<=' || value === '<' || value === '==' || value === '!='
+    ? value
+    : undefined;
 }
 
 function normalizeAction(value: unknown): RuleAction {
@@ -251,7 +270,34 @@ function defaultThreshold(type: RuleConditionType): number {
   if (type === 'failedLogin') return 5;
   if (type === 'velocity') return 5;
   if (type === 'accountChange') return 1;
+  if (type === 'featureThreshold') return 1;
   return 3;
+}
+
+function getSnapshotFeatureValue(playerSnapshot: unknown, feature: string | undefined): number | null {
+  if (!feature || !playerSnapshot || typeof playerSnapshot !== 'object') return null;
+  const snapshot = playerSnapshot as Record<string, unknown>;
+  const behavioral = snapshot.behavioralFeatures && typeof snapshot.behavioralFeatures === 'object'
+    ? snapshot.behavioralFeatures as Record<string, unknown>
+    : snapshot.features && typeof snapshot.features === 'object'
+      ? snapshot.features as Record<string, unknown>
+      : {};
+  const value = behavioral[feature];
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function compareFeature(actual: number, op: NonNullable<RuleCondition['op']>, expected: number): boolean {
+  switch (op) {
+    case '>': return actual > expected;
+    case '<=': return actual <= expected;
+    case '<': return actual < expected;
+    case '==': return actual === expected;
+    case '!=': return actual !== expected;
+    case '>=':
+    default:
+      return actual >= expected;
+  }
 }
 
 function toAlertSeverity(severity: RuleSeverity): Severity {

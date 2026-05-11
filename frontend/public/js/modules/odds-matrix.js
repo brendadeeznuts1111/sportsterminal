@@ -5,7 +5,7 @@
  * book settings modal, and consensus modal.
  */
 
-import { getApiBaseUrl } from '../api.js';
+import { getApiBaseUrl } from '../api.js?v=5.32.14';
 import { escapeHtml, escapeJs, formatShortDateTime } from '../utils.js';
 import { get, set } from './state.js';
 

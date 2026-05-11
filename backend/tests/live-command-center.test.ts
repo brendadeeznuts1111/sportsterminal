@@ -3,7 +3,7 @@ import { initDatabase, type Database } from '../src/database';
 import { COMMAND_CENTER_MAP } from '../src/config/commandCenterMap';
 import type { BuckeyeScraperManager } from '../src/scrapers/ScraperManager';
 import { CommandCenterStatusService } from '../src/services/CommandCenterStatusService';
-import { LiveFeatureService } from '../src/services/LiveFeatureService';
+import { classifyArchetype, LiveFeatureService, parseFeatureJson } from '../src/services/LiveFeatureService';
 import { riskLevelToLimits } from '../src/services/PositionService';
 import { StreamHub } from '../src/services/StreamHub';
 
@@ -31,6 +31,12 @@ describe('live command center', () => {
     expect(features.lifetime_wagers).toBe(12);
     expect(features.avg_wager_size).toBe(150);
     expect(features.sport_diversity_score).toBeGreaterThan(0);
+    expect(features.feature_version).toBeGreaterThanOrEqual(2);
+    const featureJson = parseFeatureJson(features);
+    expect(featureJson.total_wagers_90d).toBe(12);
+    expect(featureJson.avg_stake).toBe(150);
+    expect(featureJson.max_wagers_1h).toBeGreaterThan(0);
+    expect(classifyArchetype(featureJson)).toBe(features.archetype);
   });
 
   test('analyzes live customer with heuristic fallback and creates a position', async () => {

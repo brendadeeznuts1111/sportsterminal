@@ -295,6 +295,7 @@ export function registerAnalyticsRoutes(
     return handleAsync(async () => {
       const agentId = url.searchParams.get('agent') || undefined;
       const ip = url.searchParams.get('ip') || undefined;
+      const login = url.searchParams.get('login') || url.searchParams.get('customer_id') || url.searchParams.get('customerId') || url.searchParams.get('playerId') || undefined;
       const limit = clampInt(url.searchParams.get('limit'), 100, 1, 500);
       const where: string[] = [];
       const params: unknown[] = [];
@@ -306,6 +307,10 @@ export function registerAnalyticsRoutes(
       if (ip) {
         where.push('ip_address = ?');
         params.push(ip);
+      }
+      if (login) {
+        where.push('(login_id = ? OR data LIKE ? OR raw_json LIKE ?)');
+        params.push(login, `%${login}%`, `%${login}%`);
       }
 
       params.push(limit);

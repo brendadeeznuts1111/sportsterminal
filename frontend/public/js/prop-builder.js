@@ -1,6 +1,6 @@
 // frontend/public/js/prop-builder.js — Zone 3 Prop Builder Module
 // Fetches getProps + getExtendedProps via /api/live/* backend routes
-import { fetchPost } from './api.js';
+import { fetchPost } from './api.js?v=5.32.14';
 
 let propCache = [];
 let propSlipSelections = [];

@@ -3,6 +3,7 @@ import { initDatabase, type Database } from '../src/database';
 import { RiskCommandCenter } from '../src/services/RiskCommandCenter';
 import { WebhookCircuitBreaker, webhookCircuitBreaker } from '../src/services/WebhookCircuitBreaker';
 import { PositionService } from '../src/services/PositionService';
+import { EnforcementQueueService } from '../src/services/EnforcementQueueService';
 
 describe('RiskCommandCenter', () => {
   let db: Database | null = null;
@@ -53,6 +54,52 @@ describe('RiskCommandCenter', () => {
     const third = await rcc.recordViolation(1001, 'CUST1', 'sharp_activity', { limit: 5000 });
     expect(third.isNew).toBe(true);
     expect(third.id).not.toBe(first.id);
+  });
+
+  test('queues manual enforcement when a risk position is generated', async () => {
+    await db!.run(
+      `INSERT INTO ai_risk_flags (customer_id, risk_level, confidence, summary, max_exposure)
+       VALUES (?, ?, ?, ?, ?)`,
+      ['CUSTQ', 'RED', 0.91, 'Manual review needed', 500]
+    );
+
+    const positions = new PositionService(db!);
+    const generated = await positions.generatePosition({ customer_id: 'CUSTQ' });
+    expect(generated.auto_applied).toBe(false);
+
+    const queue = new EnforcementQueueService(db!);
+    const result = await queue.list({ status: 'pending' });
+    expect(result.count).toBe(1);
+    expect(result.queue[0]?.position_id).toBe(generated.position_id);
+    expect(result.queue[0]?.buckeye_admin_url).toContain('CUSTQ');
+  });
+
+  test('marks manual enforcement applied and updates parent position', async () => {
+    await db!.run(
+      `INSERT INTO risk_positions (customer_id, risk_level, suggested_action, suggested_max_exposure, suggested_wager_limit, status)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ['CUSTA', 'RED', 'review', 500, 250, 'pending']
+    );
+    const row = await db!.get<{ id: number }>(`SELECT id FROM risk_positions WHERE customer_id = ?`, ['CUSTA']);
+    const queue = new EnforcementQueueService(db!);
+    const enqueued = await queue.enqueuePosition(row!.id);
+    expect(enqueued.queued).toBe(true);
+
+    const applied = await queue.markApplied({
+      id: enqueued.id!,
+      traderName: 'desk1',
+      actualMaxExposure: 400,
+      actualWagerLimit: 200,
+    });
+    expect(applied.ok).toBe(true);
+
+    const parent = await db!.get<{ status: string; executed_by: string; executed_wager_limit: number }>(
+      `SELECT status, executed_by, executed_wager_limit FROM risk_positions WHERE id = ?`,
+      [row!.id]
+    );
+    expect(parent?.status).toBe('applied');
+    expect(parent?.executed_by).toBe('desk1');
+    expect(parent?.executed_wager_limit).toBe(200);
   });
 
   test('gets violations for customer', async () => {

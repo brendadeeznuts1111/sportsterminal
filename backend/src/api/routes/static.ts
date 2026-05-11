@@ -20,10 +20,11 @@ export async function registerStaticRoutes(url: URL): Promise<Response | null> {
     };
     const ext = staticPath.slice(staticPath.lastIndexOf('.'));
     const isHtml = ext === '.html';
+    const isJavaScript = ext === '.js';
     return new Response(file, {
       headers: {
         'Content-Type': mimeTypes[ext] || 'application/octet-stream',
-        'Cache-Control': isHtml
+        'Cache-Control': isHtml || isJavaScript
           ? 'no-cache, no-store, must-revalidate'
           : 'public, max-age=3600',
       },

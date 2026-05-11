@@ -1,10 +1,27 @@
 import { BUCKEYE_ARCHIVE_LIMIT } from './state.js';
 
 const DEFAULT_TIMEOUT_MS = 30000;
+const TOKEN_STORAGE_KEYS = ['apiToken', 'wsToken'];
 
 export function getApiBaseUrl() {
   if (window.location.protocol === 'file:') return 'http://localhost:3000';
   return `${window.location.protocol}//${window.location.host}`;
+}
+
+export function getApiToken() {
+  for (const key of TOKEN_STORAGE_KEYS) {
+    const token = localStorage.getItem(key);
+    if (token) return token;
+  }
+  return '';
+}
+
+export function getApiHeaders(headers = {}) {
+  const token = getApiToken();
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...headers,
+  };
 }
 
 /**
@@ -15,7 +32,11 @@ export async function fetchWithTimeout(url, options = {}) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { ...fetchOptions, signal: controller.signal });
+    const res = await fetch(url, {
+      ...fetchOptions,
+      headers: getApiHeaders(fetchOptions.headers || {}),
+      signal: controller.signal,
+    });
     return res;
   } catch (err) {
     if (err.name === 'AbortError') {

@@ -72,6 +72,7 @@ export interface ProxyConfig {
   jwtSecret: string;
   jwtAuthEnabled: boolean;
   demoMode: boolean;
+  corsOrigin?: string;
   features: FeatureFlags;
   wsBatchIntervalMs: number;
   maxRetries: number;
@@ -112,6 +113,7 @@ function buildConfig(env: ParsedEnv = parseProxyEnv(Bun.env)): ProxyConfig {
     jwtSecret: env.JWT_SECRET || env.BACKEND_JWT_SECRET || "",
     jwtAuthEnabled: env.ENABLE_JWT_AUTH,
     demoMode,
+    corsOrigin: env.CORS_ORIGIN,
 
     features: {
       wsCompression: env.ENABLE_WS_COMPRESSION,

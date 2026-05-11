@@ -5,7 +5,7 @@
  * proxy secrets, vault status, and connection management.
  */
 
-import { getApiBaseUrl } from '../api.js';
+import { getApiBaseUrl } from '../api.js?v=5.32.14';
 import { escapeHtml } from '../utils.js';
 import { get } from './state.js';
 

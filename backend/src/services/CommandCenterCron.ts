@@ -8,6 +8,7 @@ import type { Database } from '../database';
 import { COMMAND_CENTER_MAP } from '../config/commandCenterMap';
 import { createManagedInterval, type ManagedIntervalTask } from './Scheduler';
 import { AutoEnforcementService } from './AutoEnforcementService';
+import { EnforcementQueueService } from './EnforcementQueueService';
 import { LiveFeatureService } from './LiveFeatureService';
 import { PositionService } from './PositionService';
 import { RiskAlertService } from './RiskAlertService';
@@ -28,6 +29,7 @@ export class CommandCenterCron {
   private tasks: ManagedIntervalTask[] = [];
   private readonly positionService: PositionService;
   private readonly enforcement: AutoEnforcementService;
+  private readonly enforcementQueue: EnforcementQueueService;
   private readonly liveFeatures: LiveFeatureService;
   private readonly riskAlerts: RiskAlertService;
   private readonly rcc: RiskCommandCenter;
@@ -35,6 +37,7 @@ export class CommandCenterCron {
   constructor(private readonly db: Database, private readonly opts: CommandCenterCronOptions = {}) {
     this.positionService = new PositionService(db);
     this.enforcement = new AutoEnforcementService(db);
+    this.enforcementQueue = new EnforcementQueueService(db);
     this.liveFeatures = new LiveFeatureService(db);
     this.riskAlerts = new RiskAlertService(db);
     this.rcc = new RiskCommandCenter(db);
@@ -85,11 +88,13 @@ export class CommandCenterCron {
       positionExpiryMs,
       async () => {
         const expired = await this.rcc.expireStalePositions();
-        if (expired > 0) {
-          console.log(`[${COMMAND_CENTER_MAP.logEvents.positionExpiry}] expired=${expired}`);
+        const expiredQueue = await this.enforcementQueue.expirePending();
+        const reminders = await this.enforcementQueue.sendUrgentReminders();
+        if (expired > 0 || expiredQueue > 0 || reminders > 0) {
+          console.log(`[${COMMAND_CENTER_MAP.logEvents.positionExpiry}] expired=${expired} queueExpired=${expiredQueue} reminders=${reminders}`);
           streamHub.publish('positions', {
             event: COMMAND_CENTER_MAP.sse.events.position,
-            data: { type: 'position_expiry', expired, at: Date.now() },
+            data: { type: 'position_expiry', expired, queue_expired: expiredQueue, reminders, at: Date.now() },
           });
         }
       },

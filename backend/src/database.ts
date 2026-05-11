@@ -958,6 +958,7 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
       archetype TEXT NOT NULL DEFAULT 'unknown',
       risk_tier TEXT NOT NULL DEFAULT 'UNKNOWN',
       clv REAL NOT NULL DEFAULT 0,
+      feature_json TEXT NOT NULL DEFAULT '{}',
       source_json TEXT NOT NULL DEFAULT '{}'
     );
 
@@ -1008,6 +1009,33 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
 
     CREATE INDEX IF NOT EXISTS idx_positions_customer ON risk_positions(customer_id, status);
     CREATE INDEX IF NOT EXISTS idx_positions_pending ON risk_positions(status, created_at);
+
+    -- Manual enforcement queue: local operator workflow while Buckeye writes are unmapped.
+    CREATE TABLE IF NOT EXISTS enforcement_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      position_id INTEGER NOT NULL UNIQUE,
+      customer_id TEXT NOT NULL,
+      risk_level TEXT NOT NULL,
+      suggested_max_exposure REAL,
+      suggested_wager_limit REAL,
+      suggested_action TEXT,
+      ai_confidence REAL,
+      ai_summary TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      viewed_at TEXT,
+      viewed_by TEXT,
+      applied_at TEXT,
+      applied_by TEXT,
+      buckeye_admin_url TEXT,
+      reminder_count INTEGER NOT NULL DEFAULT 0,
+      last_reminder_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expires_at TEXT NOT NULL DEFAULT (datetime('now', '+30 minutes')),
+      FOREIGN KEY (position_id) REFERENCES risk_positions(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_enforcement_pending ON enforcement_queue(status, risk_level, created_at);
+    CREATE INDEX IF NOT EXISTS idx_enforcement_customer ON enforcement_queue(customer_id, status);
 
     -- Risk Command Center: alert dispatch log
     CREATE TABLE IF NOT EXISTS risk_alert_log (
@@ -1544,8 +1572,37 @@ export async function migrateDatabase(db: Database) {
       await db.exec(`ALTER TABLE customer_features ADD COLUMN clv REAL NOT NULL DEFAULT 0`);
       console.log('📊 Migration: added clv to customer_features');
     }
+    if (!featureColumnNames.has('feature_json')) {
+      await db.exec(`ALTER TABLE customer_features ADD COLUMN feature_json TEXT NOT NULL DEFAULT '{}'`);
+      console.log('📊 Migration: added feature_json to customer_features');
+    }
 
     await db.exec(`
+      CREATE TABLE IF NOT EXISTS enforcement_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        position_id INTEGER NOT NULL UNIQUE,
+        customer_id TEXT NOT NULL,
+        risk_level TEXT NOT NULL,
+        suggested_max_exposure REAL,
+        suggested_wager_limit REAL,
+        suggested_action TEXT,
+        ai_confidence REAL,
+        ai_summary TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        viewed_at TEXT,
+        viewed_by TEXT,
+        applied_at TEXT,
+        applied_by TEXT,
+        buckeye_admin_url TEXT,
+        reminder_count INTEGER NOT NULL DEFAULT 0,
+        last_reminder_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        expires_at TEXT NOT NULL DEFAULT (datetime('now', '+30 minutes')),
+        FOREIGN KEY (position_id) REFERENCES risk_positions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_enforcement_pending ON enforcement_queue(status, risk_level, created_at);
+      CREATE INDEX IF NOT EXISTS idx_enforcement_customer ON enforcement_queue(customer_id, status);
+
       CREATE TABLE IF NOT EXISTS wager_violations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         wager_id INTEGER NOT NULL,

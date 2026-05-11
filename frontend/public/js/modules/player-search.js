@@ -5,7 +5,7 @@
  * FactoryWager integration, and player detail rendering.
  */
 
-import { fetchJson, getApiBaseUrl } from '../api.js';
+import { fetchJson, fetchWithTimeout, getApiBaseUrl } from '../api.js?v=5.32.14';
 import { escapeHtml, escapeJs, formatCompactDollars, formatShortDateTime, timeAgo } from '../utils.js';
 import { get, set } from './state.js';
 
@@ -361,7 +361,10 @@ export async function fetchBuckeyePlayerTransactions(playerId, timeoutMs = 15000
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${getApiBaseUrl()}/api/buckeye/player-transactions?customerId=${encodeURIComponent(playerId)}`, { signal: controller.signal });
+    const res = await fetchWithTimeout(
+      `${getApiBaseUrl()}/api/buckeye/player-transactions?customerId=${encodeURIComponent(playerId)}`,
+      { signal: controller.signal, timeoutMs }
+    );
     clearTimeout(timeout);
     if (!res.ok) return null;
     return await res.json();
@@ -1490,6 +1493,28 @@ export function renderGeoDistribution(profile) {
   }).join('')}</div>`;
 }
 
+export function profileStatusChip(status) {
+  const normalized = String(status || 'missing').toLowerCase();
+  const labels = { fresh: 'Fresh', live: 'Live', derived: 'Derived', manual: 'Manual', probe: 'Probe', stale: 'Stale', error: 'Error', missing: 'Missing' };
+  return `<span class="profile-status-chip ${normalized}">${escapeHtml(labels[normalized] || normalized)}</span>`;
+}
+
+export function profileEmptyRow(message, colspan) {
+  return `<tr><td colspan="${colspan}" class="text-center" style="color:var(--text-dim);">${escapeHtml(message)}</td></tr>`;
+}
+
+export function destroyPlayerProfileChart(key) {
+  const playerProfileState = get('playerProfileState');
+  if (playerProfileState.charts[key]) {
+    playerProfileState.charts[key].destroy();
+    delete playerProfileState.charts[key];
+  }
+}
+
+export function destroyPlayerProfileCharts() {
+  Object.keys(get('playerProfileState').charts).forEach(destroyPlayerProfileChart);
+}
+
 export function focusPlayerFlagComposer() {
   setPlayerProfileTab('notes');
   setTimeout(() => document.getElementById('playerFlagLabel')?.focus(), 0);
@@ -1499,3 +1524,9 @@ export function focusPlayerNoteComposer() {
   setPlayerProfileTab('notes');
   setTimeout(() => document.getElementById('playerNoteBody')?.focus(), 0);
 }
+
+// ==================== WINDOW EXPORTS ====================
+window.profileStatusChip = profileStatusChip;
+window.profileEmptyRow = profileEmptyRow;
+window.destroyPlayerProfileChart = destroyPlayerProfileChart;
+window.destroyPlayerProfileCharts = destroyPlayerProfileCharts;

@@ -5,7 +5,7 @@
  * zone2 performance/billing, and agent search.
  */
 
-import { fetchJson, getApiBaseUrl } from '../api.js';
+import { fetchJson, getApiBaseUrl } from '../api.js?v=5.32.14';
 import { escapeHtml, formatCompactDollars, money, setText } from '../utils.js';
 import { get, set } from './state.js';
 

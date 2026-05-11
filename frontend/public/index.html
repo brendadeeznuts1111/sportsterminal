@@ -2288,6 +2288,27 @@
           </div>
         </div>
 
+        <!-- Manual Enforcement Queue -->
+        <div class="rounded-lg border p-4 mb-4" style="background:var(--panel);border-color:var(--border);">
+          <div class="flex items-center justify-between gap-3 mb-3">
+            <div>
+              <h3 class="text-sm font-semibold">Manual Enforcement Queue <span id="ccEnforcementCount" class="px-2 py-0.5 rounded text-xs" style="background:var(--accent);color:#fff;">0</span></h3>
+              <p class="text-xs mt-0.5" style="color:var(--text-dim);">Local audit queue for BLACK/RED/YELLOW actions until Buckeye write endpoints are confirmed.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="ccQueueFilterAll" onclick="ccSetEnforcementFilter('all')" class="px-2 py-1 rounded text-xs font-medium"
+                style="background:var(--accent);border:1px solid var(--border);color:#fff;">All</button>
+              <button id="ccQueueFilterBlack" onclick="ccSetEnforcementFilter('BLACK')" class="px-2 py-1 rounded text-xs font-medium"
+                style="background:var(--panel);border:1px solid var(--border);color:var(--text);">BLACK</button>
+              <button id="ccQueueFilterRed" onclick="ccSetEnforcementFilter('RED')" class="px-2 py-1 rounded text-xs font-medium"
+                style="background:var(--panel);border:1px solid var(--border);color:var(--text);">RED</button>
+            </div>
+          </div>
+          <div id="ccEnforcementQueue" class="grid grid-cols-1 xl:grid-cols-2 gap-3 text-xs">
+            <div class="text-center py-4" style="color:var(--text-dim);">Loading enforcement queue...</div>
+          </div>
+        </div>
+
         <!-- Player Search + Book Exposure side by side -->
         <div class="grid grid-cols-3 gap-4 mb-4">
           <div class="rounded-lg border p-4 col-span-1" style="background:var(--panel);border-color:var(--border);">
@@ -3001,8 +3022,8 @@
     <div class="tooltip-content" id="globalTooltipContent"></div>
   </div>
 
-  <script type="module" src="/js/app.js?v=5.32.12"></script>
-  <script type="module" src="/js/live.js?v=5.32.12"></script>
+  <script type="module" src="/js/app.js?v=5.33.1"></script>
+  <script type="module" src="/js/live.js?v=5.32.14"></script>
   <script type="module" src="/js/sse-client.js?v=1.0.0"></script>
 </body>
 

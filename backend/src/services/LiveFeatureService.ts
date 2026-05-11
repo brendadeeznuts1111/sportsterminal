@@ -23,8 +23,12 @@ export interface CustomerFeatureVector {
   chase_flag: number;
   archetype: string;
   risk_tier: RiskLevel;
+  clv: number;
+  feature_json: string;
   source_json: string;
 }
+
+export type BehavioralFeatureVector = Record<string, number>;
 
 export interface LiveRiskAnalysis {
   risk_level: RiskLevel;
@@ -43,12 +47,16 @@ interface WagerFeatureRow {
   customer_id: string;
   login: string | null;
   agent_login: string | null;
+  wager_type: string | null;
   amount_wagered: number;
   to_win_amount: number;
   volume_amount: number;
   insert_datetime: string;
   sport: string | null;
   short_desc: string | null;
+  parsed_game: string | null;
+  parsed_market: string | null;
+  parsed_side: string | null;
   parsed_price: number | null;
   raw_json: string | null;
 }
@@ -65,7 +73,7 @@ interface PlayerRow {
   status: string | null;
 }
 
-const FEATURE_VERSION = 1;
+const FEATURE_VERSION = 2;
 const KIMI_TIMEOUT_MS = 15_000;
 
 export class LiveFeatureService {
@@ -136,6 +144,13 @@ export class LiveFeatureService {
     );
   }
 
+  async getOrExtractFeatures(customerId: string, forceRefresh = false): Promise<CustomerFeatureVector> {
+    if (forceRefresh) return this.extractFeaturesForCustomer(customerId);
+    const existing = await this.getLatestFeatures(customerId);
+    if (existing && !needsFeatureRefresh(existing)) return existing;
+    return this.extractFeaturesForCustomer(customerId);
+  }
+
   async extractFeaturesForCustomer(customerId: string): Promise<CustomerFeatureVector> {
     const [wagers, player] = await Promise.all([
       this.getCustomerWagers(customerId, 5000),
@@ -143,27 +158,21 @@ export class LiveFeatureService {
     ]);
 
     const now = Date.now();
-    const amounts = wagers.map((w) => centsToDollars(w.amount_wagered)).filter((n) => Number.isFinite(n));
-    const lifetimeWagers = wagers.length;
-    const avgWagerSize = lifetimeWagers > 0 ? sum(amounts) / lifetimeWagers : 0;
-    const maxWagerSize = amounts.length ? Math.max(...amounts) : 0;
+    const behavioralFeatures = await this.computeBehavioralFeatures(customerId, wagers, player, now);
+    const lifetimeWagers = behavioralFeatures.total_wagers_90d;
+    const avgWagerSize = behavioralFeatures.avg_stake;
+    const maxWagerSize = behavioralFeatures.max_stake;
     const sports = new Set(wagers.map((w) => (w.sport || inferSport(w.short_desc || '')).trim()).filter(Boolean));
-    const lastWagerAt = latestTime(wagers.map((w) => w.insert_datetime));
-    const daysSinceLastWager = lastWagerAt ? (now - lastWagerAt.getTime()) / 86_400_000 : null;
+    const daysSinceLastWager = Number.isFinite(behavioralFeatures.days_since_last_wager)
+      ? behavioralFeatures.days_since_last_wager
+      : null;
     const winLoss = countWinsLosses(wagers);
-    const winRate = winLoss.total > 0 ? winLoss.wins / winLoss.total : estimateWinRate(player, wagers);
-    const sharpScore = computeSharpScore(wagers);
-    const chaseFlag = detectChasePattern(wagers, player) ? 1 : 0;
+    const winRate = behavioralFeatures.win_rate;
+    const sharpScore = computeSharpScoreFromFeatures(behavioralFeatures);
+    const chaseFlag = behavioralFeatures.chase_flag;
     const sportDiversityScore = Math.min(sports.size / 5, 1);
-    const bonusDependency = detectBonusDependency(wagers);
-    const archetype = classifyArchetype({
-      lifetimeWagers,
-      avgWagerSize,
-      winRate,
-      sharpScore,
-      chaseFlag,
-      sportDiversityScore,
-    });
+    const bonusDependency = behavioralFeatures.bonus_ratio;
+    const archetype = classifyArchetype(behavioralFeatures);
     const riskTier = computeRiskTier({
       lifetimeWagers,
       avgWagerSize,
@@ -179,6 +188,7 @@ export class LiveFeatureService {
       recent_wager_numbers: wagers.slice(0, 10).map((w) => w.wager_number),
       sports: [...sports],
       win_loss_observations: winLoss,
+      behavioral_features: behavioralFeatures,
     };
 
     await this.db.run(
@@ -186,8 +196,8 @@ export class LiveFeatureService {
         customer_id, extracted_at, feature_version, lifetime_wagers,
         avg_wager_size, max_wager_size, win_rate, days_since_last_wager,
         sport_diversity_score, deposit_velocity_30d, withdrawal_ratio,
-        bonus_dependency, sharp_score, chase_flag, archetype, risk_tier, source_json
-      ) VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        bonus_dependency, sharp_score, chase_flag, archetype, risk_tier, clv, feature_json, source_json
+      ) VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(customer_id) DO UPDATE SET
         extracted_at = excluded.extracted_at,
         feature_version = excluded.feature_version,
@@ -204,6 +214,8 @@ export class LiveFeatureService {
         chase_flag = excluded.chase_flag,
         archetype = excluded.archetype,
         risk_tier = excluded.risk_tier,
+        clv = excluded.clv,
+        feature_json = excluded.feature_json,
         source_json = excluded.source_json`,
       [
         customerId,
@@ -221,6 +233,8 @@ export class LiveFeatureService {
         chaseFlag,
         archetype,
         riskTier,
+        behavioralFeatures.avg_clv,
+        JSON.stringify(behavioralFeatures),
         JSON.stringify(source),
       ]
     );
@@ -241,9 +255,7 @@ export class LiveFeatureService {
     const customerId = input.customer_id.trim();
     if (!customerId) throw new Error(COMMAND_CENTER_MAP.errors.customerIdRequired.message);
 
-    const features = input.forceRefresh
-      ? await this.extractFeaturesForCustomer(customerId)
-      : ((await this.getLatestFeatures(customerId)) || await this.extractFeaturesForCustomer(customerId));
+    const features = await this.getOrExtractFeatures(customerId, Boolean(input.forceRefresh));
     const recentWagers = await this.getCustomerWagers(customerId, 10);
     const analysis = await this.analyzeWithKimiOrHeuristic(features, recentWagers);
 
@@ -306,6 +318,239 @@ export class LiveFeatureService {
     };
   }
 
+  async buildPlayerSnapshot(customerId: string, forceRefresh = false): Promise<{
+    customer_id: string;
+    features: CustomerFeatureVector;
+    behavioralFeatures: BehavioralFeatureVector;
+    recent_wagers: Array<Record<string, unknown>>;
+    player: PlayerRow | null;
+  }> {
+    const features = await this.getOrExtractFeatures(customerId, forceRefresh);
+    const recentWagers = await this.getCustomerWagers(customerId, 10);
+    return {
+      customer_id: customerId,
+      features,
+      behavioralFeatures: parseFeatureJson(features),
+      recent_wagers: recentWagers.map((w) => ({
+        wager_number: w.wager_number,
+        amount: centsToDollars(w.amount_wagered),
+        to_win: centsToDollars(w.to_win_amount),
+        sport: w.sport || inferSport(w.short_desc || ''),
+        market: inferMarket(w),
+        price: w.parsed_price,
+        placed_at: w.insert_datetime,
+        description: w.short_desc,
+      })),
+      player: await this.getPlayer(customerId),
+    };
+  }
+
+  async getClvHistory(customerId: string, limit = 10): Promise<Array<{ bet_id: number; clvPercent: number; placed_at: string }>> {
+    const wagers = await this.getCustomerWagers(customerId, Math.max(1, Math.min(limit * 4, 100)));
+    const rows: Array<{ bet_id: number; clvPercent: number; placed_at: string }> = [];
+    for (const wager of wagers) {
+      const clv = await this.computeWagerClv(wager);
+      if (clv === null) continue;
+      rows.push({ bet_id: wager.wager_number, clvPercent: clv, placed_at: wager.insert_datetime });
+      if (rows.length >= limit) break;
+    }
+    return rows;
+  }
+
+  private async computeBehavioralFeatures(
+    customerId: string,
+    wagers: WagerFeatureRow[],
+    player: PlayerRow | null,
+    now: number
+  ): Promise<BehavioralFeatureVector> {
+    const recent90 = wagers.filter((w) => withinDays(w.insert_datetime, now, 90));
+    const recent7 = wagers.filter((w) => withinDays(w.insert_datetime, now, 7));
+    const amounts = recent90.map((w) => centsToDollars(w.amount_wagered)).filter((n) => Number.isFinite(n));
+    const totalWagers = recent90.length;
+    const activeDays = new Set(recent90.map((w) => dateKey(w.insert_datetime))).size;
+    const winLoss = countWinsLosses(recent90);
+    const marketCounts = countBy(recent90, inferMarket);
+    const sportCounts = countBy(recent90, (w) => w.sport || inferSport(w.short_desc || '') || 'unknown');
+    const timeBins = countBy(recent90, (w) => String(Math.floor(hourOfDay(w.insert_datetime) / 4)));
+    const dayBins = countBy(recent90, (w) => String(dayOfWeek(w.insert_datetime)));
+    const odds = recent90.map((w) => Number(w.parsed_price)).filter((n) => Number.isFinite(n) && n !== 0);
+    const clvValues = await this.computeClvValues(recent90);
+    const access = await this.getIpFeatureRows(customerId);
+    const transaction = await this.getTransactionFeatureRows(customerId);
+    const lastWagerAt = latestTime(wagers.map((w) => w.insert_datetime));
+    const firstWagerAt = earliestTime(wagers.map((w) => w.insert_datetime));
+    const avgStake = amounts.length ? sum(amounts) / amounts.length : 0;
+    const stakeStddev = stddev(amounts);
+    const straightPct = ratio(countMarket(marketCounts, ['straight', 'side', 'moneyline', 'total']), totalWagers);
+    const parlayPct = ratio(countMarket(marketCounts, ['parlay']), totalWagers);
+    const propsPct = ratio(countMarket(marketCounts, ['prop']), totalWagers);
+    const livePct = ratio(recent90.filter((w) => /live|\bin[-\s]?play\b/i.test(`${w.wager_type || ''} ${w.short_desc || ''}`)).length, totalWagers);
+    const freeplayRedeemed = transaction.freeplayRedeemed;
+    const bonusRatio = transaction.totalVolume > 0 ? transaction.bonusVolume / transaction.totalVolume : detectBonusDependency(recent90);
+    const sharedIpCount = access.sharedIpCount;
+    const failedLogins24h = await this.countFailedLogins(customerId);
+
+    return {
+      total_wagers_90d: totalWagers,
+      daily_avg_wagers: activeDays ? totalWagers / activeDays : 0,
+      max_wagers_1h: maxEventsInWindow(recent90, 60),
+      night_wager_ratio: ratio(recent90.filter((w) => hourOfDay(w.insert_datetime) <= 5).length, totalWagers),
+      weekend_wager_ratio: ratio(recent90.filter((w) => [0, 6].includes(dayOfWeek(w.insert_datetime))).length, totalWagers),
+      days_since_last_wager: lastWagerAt ? (now - lastWagerAt.getTime()) / 86_400_000 : 9999,
+      session_count_7d: countSessions(recent7, 30),
+      wager_velocity_5m: maxEventsInWindow(recent7, 5),
+      avg_stake: avgStake,
+      median_stake: median(amounts),
+      max_stake: amounts.length ? Math.max(...amounts) : 0,
+      stake_stddev: stakeStddev,
+      round_stake_pct: ratio(amounts.filter((n) => n % 100 === 0 || n % 1000 === 0).length, amounts.length),
+      stake_volatility: avgStake > 0 ? stakeStddev / avgStake : 0,
+      hhi_sport: hhi(sportCounts, totalWagers),
+      hhi_market: hhi(marketCounts, totalWagers),
+      top_sport_share: topShare(sportCounts, totalWagers),
+      straight_bet_pct: straightPct,
+      live_bet_pct: livePct,
+      parlay_pct: parlayPct,
+      props_pct: propsPct,
+      avg_odds: odds.length ? decimalToAmerican(sum(odds.map(americanToDecimal)) / odds.length) : 0,
+      steep_odds_count: odds.filter((price) => Math.abs(price) >= 5000).length,
+      min_odds: odds.length ? Math.min(...odds) : 0,
+      clv_beat_count: clvValues.filter((n) => n > 10).length,
+      avg_clv: clvValues.length ? sum(clvValues) / clvValues.length : 0,
+      chronic_beater: clvValues.filter((n) => n > 10).length >= 5 && (clvValues.length ? sum(clvValues) / clvValues.length : 0) > 8 ? 1 : 0,
+      odd_movement_within_1h: clvValues.some((n) => Math.abs(n) >= 5) ? 1 : 0,
+      unique_ips_90d: access.uniqueIps90d,
+      ip_switches_7d: access.ipSwitches7d,
+      shared_ip_bool: sharedIpCount > 1 ? 1 : 0,
+      shared_ip_count: sharedIpCount,
+      failed_logins_24h: failedLogins24h,
+      country_count: access.countryCount,
+      ip_entropy: entropy(access.ipCounts, access.totalIpRows),
+      is_vip: recent90.some((w) => String(w.raw_json || w.short_desc || '').toLowerCase().includes('vip') || String(player?.status || '').toLowerCase().includes('vip')) ? 1 : 0,
+      freeplay_redeemed: freeplayRedeemed,
+      bonus_ratio: bonusRatio,
+      freeplay_abuser_flag: bonusRatio > 0.3 || (freeplayRedeemed > 5000 && totalWagers < 50) ? 1 : 0,
+      time_entropy: entropy(timeBins, totalWagers),
+      day_entropy: entropy(dayBins, totalWagers),
+      avg_session_wagers: averageSessionSize(recent90, 30),
+      live_timing_proxy: livePct,
+      agent_tenure_days: firstWagerAt ? (now - firstWagerAt.getTime()) / 86_400_000 : 0,
+      agent_concentration: 1 - hhi(countBy(recent90, (w) => w.agent_login || 'unknown'), totalWagers),
+      agent_performance_trend: Number(player?.net_pnl ?? player?.ytd_pnl ?? 0),
+      win_rate: winLoss.total > 0 ? winLoss.wins / winLoss.total : estimateWinRate(player, recent90),
+      chase_flag: detectChasePattern(wagers, player) ? 1 : 0,
+      sport_diversity_score: Math.min(Object.keys(sportCounts).length / 5, 1),
+      sharp_score: Math.min(
+        100,
+        (clvValues.filter((n) => n > 10).length * 8)
+          + ((clvValues.length ? sum(clvValues) / clvValues.length : 0) > 5 ? 20 : 0)
+          + (straightPct > 0.7 ? 12 : 0)
+          + (avgStake > 500 ? 10 : 0)
+          + ((hhi(sportCounts, totalWagers) < 0.3 && totalWagers >= 20) ? 10 : 0)
+      ),
+    };
+  }
+
+  private async computeClvValues(wagers: WagerFeatureRow[]): Promise<number[]> {
+    const values: number[] = [];
+    const cache = new Map<string, number | null>();
+    for (const wager of wagers.slice(0, 500)) {
+      const key = clvKey(wager);
+      if (!key) continue;
+      if (!cache.has(key)) cache.set(key, await this.fetchClosingOdds(wager));
+      const closing = cache.get(key);
+      if (!closing || !wager.parsed_price) continue;
+      values.push(computeClvPercent(wager.parsed_price, closing));
+    }
+    return values;
+  }
+
+  private async computeWagerClv(wager: WagerFeatureRow): Promise<number | null> {
+    const closing = await this.fetchClosingOdds(wager);
+    if (!closing || !wager.parsed_price) return null;
+    return computeClvPercent(wager.parsed_price, closing);
+  }
+
+  private async fetchClosingOdds(wager: WagerFeatureRow): Promise<number | null> {
+    const parsed = parseWagerFields(wager);
+    if (!parsed.game || !parsed.market || !parsed.side) return null;
+    const row = await this.db.get<{ closing_odds: number }>(
+      `SELECT closing_odds FROM closing_lines WHERE game_id = ? AND market = ? AND side = ? LIMIT 1`,
+      [parsed.game, parsed.market, parsed.side]
+    );
+    return row ? Number(row.closing_odds) : null;
+  }
+
+  private async getIpFeatureRows(customerId: string): Promise<{
+    uniqueIps90d: number;
+    ipSwitches7d: number;
+    countryCount: number;
+    sharedIpCount: number;
+    ipCounts: Record<string, number>;
+    totalIpRows: number;
+  }> {
+    const rows = await this.db.all<{ ip_address: string; raw_json: string | null; access_datetime: string }>(
+      `SELECT ip_address, raw_json, access_datetime
+       FROM access_logs
+       WHERE login_id = ?
+         AND access_datetime >= datetime('now', '-90 days')
+       ORDER BY access_datetime ASC`,
+      [customerId]
+    );
+    const ipCounts = countBy(rows, (row) => row.ip_address || 'unknown');
+    const recent7 = rows.filter((row) => withinDays(row.access_datetime, Date.now(), 7));
+    const countries = new Set(rows.map((row) => extractCountry(row.raw_json || '')).filter(Boolean));
+    const shared = await this.db.get<{ cnt: number }>(
+      `SELECT COUNT(DISTINCT other.login_id) AS cnt
+       FROM access_logs mine
+       JOIN access_logs other ON other.ip_address = mine.ip_address
+       WHERE mine.login_id = ?
+         AND other.login_id <> mine.login_id
+         AND mine.access_datetime >= datetime('now', '-90 days')`,
+      [customerId]
+    );
+    return {
+      uniqueIps90d: Object.keys(ipCounts).length,
+      ipSwitches7d: countIpSwitches(recent7),
+      countryCount: countries.size,
+      sharedIpCount: Number(shared?.cnt || 0),
+      ipCounts,
+      totalIpRows: rows.length,
+    };
+  }
+
+  private async getTransactionFeatureRows(customerId: string): Promise<{ freeplayRedeemed: number; bonusVolume: number; totalVolume: number }> {
+    const rows = await this.db.all<{ amount: number; category: string | null; tran_type: string | null; description: string | null }>(
+      `SELECT amount, category, tran_type, description
+       FROM player_transactions
+       WHERE (customer_id = ? OR login = ?)
+         AND transaction_time >= datetime('now', '-90 days')`,
+      [customerId, customerId]
+    );
+    let freeplayRedeemed = 0;
+    let bonusVolume = 0;
+    let totalVolume = 0;
+    for (const row of rows) {
+      const amount = Math.abs(Number(row.amount || 0));
+      const text = `${row.category || ''} ${row.tran_type || ''} ${row.description || ''}`.toLowerCase();
+      totalVolume += amount;
+      if (/free\s*play|freeplay|\bfp\b/.test(text)) freeplayRedeemed += amount;
+      if (/bonus|promo|credit|free\s*play|freeplay/.test(text)) bonusVolume += amount;
+    }
+    return { freeplayRedeemed, bonusVolume, totalVolume };
+  }
+
+  private async countFailedLogins(customerId: string): Promise<number> {
+    const row = await this.db.get<{ cnt: number }>(
+      `SELECT COUNT(*) AS cnt
+       FROM failed_logins
+       WHERE player = ?
+         AND timestamp >= datetime('now', '-1 day')`,
+      [customerId]
+    );
+    return Number(row?.cnt || 0);
+  }
+
   private async getCustomerWagers(customerId: string, limit: number): Promise<WagerFeatureRow[]> {
     return this.db.all<WagerFeatureRow>(
       `SELECT
@@ -313,12 +558,16 @@ export class LiveFeatureService {
          customer_id,
          login,
          agent_login,
+         wager_type,
          amount_wagered,
          to_win_amount,
          volume_amount,
          insert_datetime,
          sport,
          short_desc,
+         parsed_game,
+         parsed_market,
+         parsed_side,
          parsed_price,
          NULL AS raw_json
        FROM wagers
@@ -329,12 +578,16 @@ export class LiveFeatureService {
          customer_id,
          login,
          agent_login,
+         wager_type,
          amount_wagered,
          to_win_amount,
          volume_amount,
          insert_date_time AS insert_datetime,
          sport,
          short_desc_raw AS short_desc,
+         NULL AS parsed_game,
+         NULL AS parsed_market,
+         NULL AS parsed_side,
          price AS parsed_price,
          raw_json
        FROM wager_archive
@@ -531,7 +784,238 @@ function featurePromptShape(features: CustomerFeatureVector): Record<string, unk
     chase_flag: Boolean(features.chase_flag),
     archetype: features.archetype,
     baseline_risk_tier: features.risk_tier,
+    behavioralFeatures: parseFeatureJson(features),
   };
+}
+
+export function parseFeatureJson(features: Pick<CustomerFeatureVector, 'feature_json'> | null): BehavioralFeatureVector {
+  if (!features?.feature_json) return {};
+  try {
+    const parsed = JSON.parse(features.feature_json) as Record<string, unknown>;
+    const normalized: BehavioralFeatureVector = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      const n = Number(value);
+      if (Number.isFinite(n)) normalized[key] = n;
+    }
+    return normalized;
+  } catch {
+    return {};
+  }
+}
+
+export function classifyArchetype(features: BehavioralFeatureVector | null | undefined): string {
+  if (!features || Object.keys(features).length === 0) return 'unknown';
+  if (
+    Number(features.clv_beat_count || 0) >= 5
+    || (
+      Number(features.avg_stake || 0) > 500
+      && Number(features.straight_bet_pct || 0) > 0.7
+      && Number(features.hhi_sport || 1) < 0.3
+    )
+  ) {
+    return 'Sharp Syndicate';
+  }
+  if (Number(features.bonus_ratio || 0) > 0.3 || Number(features.freeplay_redeemed || 0) > 5000) {
+    return 'Bonus Abuser';
+  }
+  if (Number(features.max_stake || 0) > 5000 && Number(features.total_wagers_90d || 0) < 50) {
+    return 'Whale';
+  }
+  if (Number(features.chase_flag || 0) === 1) return 'Chase Risk';
+  return 'Recreational';
+}
+
+function needsFeatureRefresh(features: CustomerFeatureVector): boolean {
+  return Number(features.feature_version || 0) < FEATURE_VERSION
+    || !features.feature_json
+    || features.feature_json === '{}';
+}
+
+function computeSharpScoreFromFeatures(features: BehavioralFeatureVector): number {
+  return Math.min(
+    100,
+    Number(features.sharp_score || 0)
+      + Number(features.clv_beat_count || 0) * 5
+      + (Number(features.chronic_beater || 0) ? 25 : 0)
+      + (Number(features.straight_bet_pct || 0) > 0.7 ? 8 : 0)
+  );
+}
+
+function withinDays(value: string, now: number, days: number): boolean {
+  const date = new Date(value);
+  return !Number.isNaN(date.getTime()) && now - date.getTime() <= days * 86_400_000;
+}
+
+function dateKey(value: string): string {
+  return value.slice(0, 10);
+}
+
+function hourOfDay(value: string): number {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 0 : date.getHours();
+}
+
+function dayOfWeek(value: string): number {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 0 : date.getDay();
+}
+
+function countBy<T>(rows: T[], keyFn: (row: T) => string): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const row of rows) {
+    const key = keyFn(row) || 'unknown';
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return counts;
+}
+
+function hhi(counts: Record<string, number>, total: number): number {
+  if (!total) return 0;
+  return Object.values(counts).reduce((acc, cnt) => {
+    const share = cnt / total;
+    return acc + share * share;
+  }, 0);
+}
+
+function topShare(counts: Record<string, number>, total: number): number {
+  if (!total) return 0;
+  return Math.max(0, ...Object.values(counts)) / total;
+}
+
+function entropy(counts: Record<string, number>, total: number): number {
+  if (!total) return 0;
+  return Object.values(counts).reduce((acc, cnt) => {
+    if (!cnt) return acc;
+    const p = cnt / total;
+    return acc - p * Math.log2(p);
+  }, 0);
+}
+
+function median(values: number[]): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? ((sorted[mid - 1] || 0) + (sorted[mid] || 0)) / 2 : sorted[mid] || 0;
+}
+
+function stddev(values: number[]): number {
+  if (values.length < 2) return 0;
+  const avg = sum(values) / values.length;
+  const variance = sum(values.map((n) => (n - avg) ** 2)) / values.length;
+  return Math.sqrt(variance);
+}
+
+function ratio(numerator: number, denominator: number): number {
+  return denominator > 0 ? numerator / denominator : 0;
+}
+
+function countMarket(counts: Record<string, number>, keys: string[]): number {
+  return Object.entries(counts).reduce((acc, [key, count]) => (
+    keys.some((needle) => key.toLowerCase().includes(needle)) ? acc + count : acc
+  ), 0);
+}
+
+function maxEventsInWindow(wagers: WagerFeatureRow[], minutes: number): number {
+  const times = wagers
+    .map((w) => new Date(w.insert_datetime).getTime())
+    .filter((time) => !Number.isNaN(time))
+    .sort((a, b) => a - b);
+  let max = 0;
+  let left = 0;
+  const windowMs = minutes * 60_000;
+  for (let right = 0; right < times.length; right++) {
+    while ((times[right] || 0) - (times[left] || 0) > windowMs) left++;
+    max = Math.max(max, right - left + 1);
+  }
+  return max;
+}
+
+function countSessions(wagers: WagerFeatureRow[], gapMinutes: number): number {
+  if (!wagers.length) return 0;
+  const times = wagers
+    .map((w) => new Date(w.insert_datetime).getTime())
+    .filter((time) => !Number.isNaN(time))
+    .sort((a, b) => a - b);
+  if (!times.length) return 0;
+  let sessions = 1;
+  const gapMs = gapMinutes * 60_000;
+  for (let i = 1; i < times.length; i++) {
+    if ((times[i] || 0) - (times[i - 1] || 0) > gapMs) sessions++;
+  }
+  return sessions;
+}
+
+function averageSessionSize(wagers: WagerFeatureRow[], gapMinutes: number): number {
+  const sessions = countSessions(wagers, gapMinutes);
+  return sessions ? wagers.length / sessions : 0;
+}
+
+function inferMarket(wager: WagerFeatureRow): string {
+  const explicit = wager.parsed_market?.trim();
+  if (explicit) return explicit.toLowerCase();
+  const text = `${wager.wager_type || ''} ${wager.short_desc || ''}`.toLowerCase();
+  if (/\bparlay\b|\bif bet\b/.test(text)) return 'parlay';
+  if (/\bprop\b|player/.test(text)) return 'prop';
+  if (/\btotal\b|over|under/.test(text)) return 'total';
+  if (/\bmoneyline\b|\bml\b/.test(text)) return 'moneyline';
+  if (/\bspread\b|point spread|side/.test(text)) return 'side';
+  return wager.wager_type || 'unknown';
+}
+
+function parseWagerFields(wager: WagerFeatureRow): { game: string | null; market: string | null; side: string | null } {
+  if (wager.parsed_game || wager.parsed_market || wager.parsed_side) {
+    return { game: wager.parsed_game, market: wager.parsed_market, side: wager.parsed_side };
+  }
+  const raw = safeParse(wager.raw_json || '{}');
+  return {
+    game: stringField(raw, ['game_id', 'GameID', 'parsed_game']),
+    market: stringField(raw, ['market', 'Market', 'parsed_market']),
+    side: stringField(raw, ['side', 'Side', 'parsed_side']),
+  };
+}
+
+function stringField(row: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = row[key];
+    if (value !== undefined && value !== null && String(value).trim()) return String(value);
+  }
+  return null;
+}
+
+function clvKey(wager: WagerFeatureRow): string | null {
+  const parsed = parseWagerFields(wager);
+  if (!parsed.game || !parsed.market || !parsed.side) return null;
+  return `${parsed.game}|${parsed.market}|${parsed.side}`;
+}
+
+function americanToDecimal(american: number): number {
+  if (american > 0) return american / 100 + 1;
+  return 100 / Math.abs(american) + 1;
+}
+
+function decimalToAmerican(decimal: number): number {
+  if (!Number.isFinite(decimal) || decimal <= 1) return 0;
+  return decimal >= 2 ? (decimal - 1) * 100 : -100 / (decimal - 1);
+}
+
+function computeClvPercent(wagerOdds: number, closingOdds: number): number {
+  const wagerDec = americanToDecimal(wagerOdds);
+  const closingDec = americanToDecimal(closingOdds);
+  return closingDec ? ((wagerDec - closingDec) / closingDec) * 100 : 0;
+}
+
+function extractCountry(raw: string): string {
+  const parsed = safeParse(raw);
+  return stringField(parsed, ['country', 'Country', 'country_code', 'countryCode']) || '';
+}
+
+function countIpSwitches(rows: Array<{ ip_address: string; access_datetime: string }>): number {
+  const sorted = [...rows].sort((a, b) => new Date(a.access_datetime).getTime() - new Date(b.access_datetime).getTime());
+  let switches = 0;
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i]?.ip_address && sorted[i - 1]?.ip_address && sorted[i]?.ip_address !== sorted[i - 1]?.ip_address) switches++;
+  }
+  return switches;
 }
 
 function countWinsLosses(wagers: WagerFeatureRow[]): { wins: number; losses: number; total: number } {
@@ -553,16 +1037,6 @@ function estimateWinRate(player: PlayerRow | null, wagers: WagerFeatureRow[]): n
   return 0.5;
 }
 
-function computeSharpScore(wagers: WagerFeatureRow[]): number {
-  const prices = wagers
-    .map((w) => Number(w.parsed_price))
-    .filter((price) => Number.isFinite(price) && price !== 0);
-  if (!prices.length) return 0;
-  const plusMoney = prices.filter((price) => price > 100).length / prices.length;
-  const marketBreadth = new Set(wagers.map((w) => w.sport || inferSport(w.short_desc || ''))).size;
-  return Math.min(100, plusMoney * 35 + Math.min(marketBreadth, 5) * 5);
-}
-
 function detectChasePattern(wagers: WagerFeatureRow[], player: PlayerRow | null): boolean {
   if (wagers.length < 5) return false;
   const recent = wagers.slice(0, 5).map((w) => centsToDollars(w.amount_wagered));
@@ -576,22 +1050,6 @@ function detectChasePattern(wagers: WagerFeatureRow[], player: PlayerRow | null)
 function detectBonusDependency(wagers: WagerFeatureRow[]): number {
   const bonusRows = wagers.filter((w) => /bonus|free\s*play|fp\b/i.test(`${w.raw_json || ''} ${w.short_desc || ''}`));
   return wagers.length ? bonusRows.length / wagers.length : 0;
-}
-
-function classifyArchetype(input: {
-  lifetimeWagers: number;
-  avgWagerSize: number;
-  winRate: number;
-  sharpScore: number;
-  chaseFlag: number;
-  sportDiversityScore: number;
-}): string {
-  if (input.sharpScore >= 25 && input.winRate > 0.53) return 'sharp';
-  if (input.lifetimeWagers > 200 && input.avgWagerSize > 1500) return 'whale';
-  if (input.chaseFlag) return 'chase_gambler';
-  if (input.lifetimeWagers < 10) return 'new';
-  if (input.sportDiversityScore > 0.75) return 'multi_sport';
-  return 'recreational';
 }
 
 function computeRiskTier(input: {
@@ -662,6 +1120,16 @@ function latestTime(values: string[]): Date | null {
   return latest;
 }
 
+function earliestTime(values: string[]): Date | null {
+  let earliest: Date | null = null;
+  for (const value of values) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) continue;
+    if (!earliest || date < earliest) earliest = date;
+  }
+  return earliest;
+}
+
 function inferSport(text: string): string {
   const lower = text.toLowerCase();
   if (lower.includes('nba') || lower.includes('basketball')) return 'Basketball';
@@ -699,5 +1167,7 @@ export const LIVE_RISK_SYSTEM_PROMPT = [
   'Return ONLY JSON with keys: risk_level, risk_score, confidence, summary, factors, suggested_action, max_exposure_usd.',
   'risk_level must be one of GREEN, YELLOW, RED, BLACK.',
   'Suggested action must be none, reduce, review, or block.',
+  'If behavioralFeatures is provided, interpret the key-value pairs as quantitative descriptors of long-term behavior.',
+  'High round_stake_pct, clv_beat_count, chronic_beater, shared_ip_bool, or bonus_ratio should refine risk; never invent missing features.',
   'Use the deterministic baseline as a guardrail, but correct it when live wager context is stronger.',
 ].join('\n');

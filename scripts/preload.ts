@@ -90,6 +90,9 @@ const EnvSchema = z.object({
   VITE_BACKEND_URL: z.string().url().default("http://localhost:3000"),
   VITE_WS_URL: z.string().default("ws://localhost:3000"),
 
+  // CORS
+  CORS_ORIGIN: z.string().optional(),
+
   // OTel
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
   OTEL_SERVICE_NAME: z.string().optional(),
@@ -262,7 +265,7 @@ export class StructuredLogger {
     if (!this.db || this.buffer.length === 0) return;
     const stmt = this.db.prepare("INSERT INTO logs (timestamp, level, source, message, meta) VALUES (?, ?, ?, ?, ?)");
     for (const entry of this.buffer) {
-      try { stmt.run(entry.timestamp, entry.level, entry.source, entry.message, JSON.stringify(entry.meta || {})); } catch {}
+      try { stmt.run(entry.timestamp, entry.level, entry.source, entry.message, JSON.stringify(entry.meta || {})); } catch { }
     }
     this.buffer = [];
   }

@@ -5,7 +5,7 @@
  * pattern catalog, and pattern detail drawer.
  */
 
-import { getApiBaseUrl } from '../api.js';
+import { getApiBaseUrl } from '../api.js?v=5.32.14';
 import { escapeHtml, escapeJs, money, timeAgo } from '../utils.js';
 import { state, get, set, update } from './state.js';
 import { schedule } from './render-scheduler.js';
@@ -491,6 +491,70 @@ export function severityToScore(severity) {
   return 45;
 }
 
+// ==================== PATTERN LOADING ====================
+let lastPatternRequestKey = '';
+let patternsLoading = false;
+
+export async function loadPatterns(force = false) {
+  const filters = getPatternFilters();
+  const requestKey = JSON.stringify(filters);
+
+  if (!force && typeof sectionCache !== 'undefined' && sectionCache?.patterns && (Date.now() - sectionCache.patterns.at < sectionCache.patterns.ttl) && requestKey === lastPatternRequestKey) {
+    renderPatterns();
+    return;
+  }
+
+  if (patternsLoading) return;
+  patternsLoading = true;
+  setPatternRefreshState(true);
+
+  try {
+    const historyUrl = new URL(`${getApiBaseUrl()}/api/patterns/history`);
+    historyUrl.searchParams.set('limit', '150');
+    historyUrl.searchParams.set('sinceHours', filters.sinceHours);
+    if (filters.type !== 'all') historyUrl.searchParams.set('type', filters.type);
+    if (filters.market !== 'all') historyUrl.searchParams.set('market', filters.market);
+    if (filters.category !== 'all') historyUrl.searchParams.set('category', filters.category);
+    if (filters.sport !== 'all') historyUrl.searchParams.set('sport', filters.sport);
+    if (filters.agent !== 'all') historyUrl.searchParams.set('agent', filters.agent);
+
+    const summaryUrl = new URL(`${getApiBaseUrl()}/api/patterns/summary`);
+    summaryUrl.searchParams.set('sinceHours', filters.sinceHours);
+
+    const choicesUrl = new URL(`${getApiBaseUrl()}/api/patterns/history`);
+    choicesUrl.searchParams.set('limit', '500');
+    choicesUrl.searchParams.set('sinceHours', filters.sinceHours);
+
+    const [historyRes, summaryRes, choicesRes] = await Promise.all([
+      fetch(historyUrl.toString()),
+      fetch(summaryUrl.toString()),
+      fetch(choicesUrl.toString()),
+    ]);
+    if (!historyRes.ok) throw new Error(`Pattern history failed: ${historyRes.status}`);
+    if (!summaryRes.ok) throw new Error(`Pattern summary failed: ${summaryRes.status}`);
+
+    const patternsData = await historyRes.json();
+    const patternSummary = await summaryRes.json();
+    if (choicesRes.ok) {
+      updatePatternFilterChoices(await choicesRes.json());
+    }
+    set('patternsData', patternsData);
+    set('patternSummary', patternSummary);
+    lastPatternRequestKey = requestKey;
+    if (typeof sectionCache !== 'undefined' && sectionCache?.patterns) sectionCache.patterns.at = Date.now();
+  } catch (err) {
+    console.log('[Patterns] Failed to load live patterns:', err.message);
+    set('patternsData', []);
+    set('patternSummary', { byType: {}, bySeverity: {}, total: 0 });
+  } finally {
+    patternsLoading = false;
+    setPatternRefreshState(false);
+  }
+
+  renderPatterns();
+  updatePatternBadge();
+}
+
 // Window exports
 window.setPatternCategory = setPatternCategory;
 window.getPatternFilters = getPatternFilters;
@@ -506,3 +570,4 @@ window.showPatternDefinition = showPatternDefinition;
 window.resetPatternDetail = resetPatternDetail;
 window.updatePatternSummaryCards = updatePatternSummaryCards;
 window.updatePatternBadge = updatePatternBadge;
+window.loadPatterns = loadPatterns;

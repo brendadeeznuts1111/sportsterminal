@@ -15,7 +15,7 @@ let liveData = { events: [], scores: [], sports: [] };
 let livePollInterval = null;
 let liveFlashPrev = new Map();
 
-import { fetchPost } from './api.js';
+import { fetchPost } from './api.js?v=5.32.14';
 
 function escapeHtml(s) {
   const d = document.createElement('div');

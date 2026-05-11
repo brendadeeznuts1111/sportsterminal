@@ -1,4 +1,4 @@
-import { getApiBaseUrl, fetchJson, fetchPost } from './api.js';
+import { getApiBaseUrl, fetchJson, fetchPost } from './api.js?v=5.32.14';
 import { escapeHtml } from './utils.js';
 
 const PAGE_SIZE = 50;
@@ -28,7 +28,7 @@ export async function loadSandboxScenarioList() {
     const data = await fetchJson('/api/sandbox/list');
     sandboxState.scenarios = data.scenarios || [];
   } catch (err) {
-    sandboxState.error = err.message || 'Failed to load scenarios';
+    sandboxState.error = sandboxErrorMessage(err, 'Failed to load scenarios');
   }
   sandboxState.loading = false;
   renderSandboxUI();
@@ -45,7 +45,7 @@ export async function loadSandboxScenario(id, page = 1) {
     sandboxState.view = 'detail';
     sandboxState.expandedCustomers.clear();
   } catch (err) {
-    sandboxState.error = err.message || 'Failed to load scenario';
+    sandboxState.error = sandboxErrorMessage(err, 'Failed to load scenario');
   }
   sandboxState.loading = false;
   renderSandboxUI();
@@ -150,7 +150,16 @@ function renderListView() {
   }
 
   if (error) {
-    return `<div class="text-center py-12" style="color:var(--red);">${escapeHtml(error)}</div>`;
+    return `
+      <div class="text-center py-12 max-w-xl mx-auto">
+        <div class="text-sm font-semibold mb-2" style="color:var(--red);">${escapeHtml(error)}</div>
+        <div class="text-xs mb-4" style="color:var(--text-dim);">Risk Lab uses protected sandbox APIs. Restore/connect a backend session if auth is required, then retry.</div>
+        <div class="flex items-center justify-center gap-2">
+          <button id="sandboxRetryBtn" class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--accent);color:#fff;">Retry</button>
+          <button type="button" onclick="switchSection('settings')" class="px-3 py-1.5 rounded-lg text-xs font-medium" style="background:var(--panel);border:1px solid var(--border);color:var(--text);">Open Settings</button>
+        </div>
+      </div>
+    `;
   }
 
   if (scenarios.length === 0) {
@@ -522,6 +531,12 @@ function bindSandboxEvents() {
       return;
     }
 
+    const retryBtn = target.closest('#sandboxRetryBtn');
+    if (retryBtn) {
+      loadSandboxScenarioList();
+      return;
+    }
+
     const card = target.closest('.sandbox-scenario-card');
     if (card && !target.closest('.sandbox-delete-btn')) {
       const id = Number(card.dataset.scenarioId);
@@ -706,4 +721,11 @@ function randomInRange(min, max) {
 
 export function initSandboxSection() {
   loadSandboxScenarioList();
+}
+
+function sandboxErrorMessage(err, fallback) {
+  const message = err?.message || fallback;
+  if (message.includes('401')) return 'Backend auth required for Risk Lab.';
+  if (message.includes('timeout')) return 'Risk Lab request timed out. Check backend status and retry.';
+  return message;
 }

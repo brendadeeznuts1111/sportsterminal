@@ -973,7 +973,7 @@ async function getPlayerIntelligenceMap(scraperManager: BuckeyeScraperManager, p
   const sources = [
     sourceRow('wager_archive', 'Wager Archive', wagerArchiveStatus, 'getBetTicker', 'wager_archive', freshness.wager_archive, sourceStatuses.wager_archive, 'Stats, recent wagers, volume, risk, sport breakdown, weekly P&L, pattern flags, estimated CLV.', wagerArchiveStatus === 'live' ? 'Confirmed live from incoming wager archive.' : 'No archived wagers found for this player/login yet.', true),
     sourceRow('agent_performance_snapshots', 'Player Performance', playerPerformanceStatus, 'getPerformancePlayer / getAgentPerformance', 'agent_performance_snapshots', freshness.agent_performance_snapshots, sourceStatuses.agent_performance_snapshots, 'Risk score enrichment, net performance, volume and player/agent performance context.', playerPerformanceStatus === 'live' ? 'Confirmed reusable from player/agent performance reports.' : 'Probe getPerformancePlayer with acc=<player/account>&period=0; falls back to agent performance rows when available.', true),
-    sourceRow('access_logs', 'Access Logs', freshness.access_logs.rowCount > 0 ? 'live' : watermarks.accessLogs ? 'probe' : 'missing', 'getWebLog', 'access_logs', freshness.access_logs, sourceStatuses.access_logs, 'Login history, IP, device, geo, new-IP flagging, access export.', freshness.access_logs.rowCount > 0 ? 'Confirmed reusable Buckeye access endpoint.' : 'Needs access-log poll data for this player.', true),
+    sourceRow('access_logs', 'Access Logs', freshness.access_logs.rowCount > 0 ? 'live' : watermarks.accessLogs ? 'probe' : 'missing', 'getWebLog', 'access_logs', freshness.access_logs, sourceStatuses.access_logs, 'Login history, IP, device, geo, new-IP flagging, access export.', freshness.access_logs.rowCount > 0 ? 'Confirmed reusable Buckeye access endpoint.' : `Use /api/v1/logs/access?login=${encodeURIComponent(playerId)}&limit=100 after the getWebLog poll captures this player.`, true),
     sourceRow('player_transactions', 'Transaction Ledger', transactionStatus, 'getTransactionList / getTransactionHistory', 'player_transactions', freshness.player_transactions, sourceStatuses.player_transactions, 'Full account ledger: wager wins/losses, credits/debits, deposit/withdrawal-like rows, balance, document and grade numbers.', transactionStatus === 'live' ? 'Captured Buckeye transaction ledger rows exist.' : 'Probe getTransactionList with acc=<player/account>&start= and getTransactionHistory with customerID/startDate/endDate before relying on ledger views.', true),
     sourceRow('deleted_transactions', 'Deleted Transactions', deletedTransactionStatus, 'getReportDeletedTransactions', 'player_transactions', freshness.deleted_transactions, sourceStatuses.deleted_transactions, 'Deleted ledger entries, deleted withdrawals/deposits/adjustments, deleted-by operator, Telegram Bot AID evidence in raw payload.', deletedTransactionStatus === 'live' ? 'Captured deleted transaction report rows exist.' : 'Probe getReportDeletedTransactions with manager customerID plus startDate/endDate; rows stay separate via sourceOperation.', true),
     sourceRow('deposits', 'Deposits', depositStatus, 'getTransactionList / getCustomerDeposits / getDepositHistory / getCustomerTransactions / getTransactionHistory', 'deposits', freshness.deposits, sourceStatuses.deposits, 'Deposit-like rows filtered from transaction candidates, amount, method, status, transaction time, deposit IP match.', depositStatus === 'live' ? 'Captured deposit-like transaction rows exist.' : 'Probe candidates exist; endpoint availability still needs live proof.', true),
@@ -1002,7 +1002,7 @@ async function getPlayerIntelligenceMap(scraperManager: BuckeyeScraperManager, p
       accessLogs: `${endpointBase}/export/access-logs`,
     },
     audit: {
-      accessLogs: '/api/v1/logs/access',
+      accessLogs: `/api/v1/logs/access?login=${encodeURIComponent(playerId)}&limit=100`,
     },
     mutations: {
       flagCreate: `${endpointBase}/flags`,
@@ -1013,7 +1013,7 @@ async function getPlayerIntelligenceMap(scraperManager: BuckeyeScraperManager, p
     tabs: {
       Overview: [`${endpointBase}/profile`],
       'Wager History': [`${endpointBase}/profile`, `${endpointBase}/export/wagers`],
-      'Access Logs': [`${endpointBase}/profile`, '/api/v1/logs/access', `${endpointBase}/export/access-logs`],
+      'Access Logs': [`${endpointBase}/profile`, `/api/v1/logs/access?login=${encodeURIComponent(playerId)}&limit=100`, `${endpointBase}/export/access-logs`],
       Performance: [`${endpointBase}/profile`],
       Deposits: [`${endpointBase}/profile`, `${endpointBase}/deposits`, `${endpointBase}/transactions`],
       Account: [`${endpointBase}/profile`, `${endpointBase}/account-snapshots`],

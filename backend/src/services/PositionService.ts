@@ -5,6 +5,7 @@
  */
 
 import type { Database } from '../database';
+import { EnforcementQueueService } from './EnforcementQueueService';
 import { streamHub } from './StreamHub';
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -156,6 +157,9 @@ export class PositionService {
       autoApplied = true;
     }
 
+    const enforcementQueue = new EnforcementQueueService(this.db);
+    const queueResult = await enforcementQueue.enqueuePosition(positionId);
+
     streamHub.publish('positions', {
       event: autoApplied ? 'position_auto_blocked' : 'position_generated',
       data: {
@@ -164,6 +168,7 @@ export class PositionService {
         risk_level: riskLevel,
         suggested: limits,
         auto_applied: autoApplied,
+        manual_enforcement_queue_id: queueResult.id,
       },
     });
 

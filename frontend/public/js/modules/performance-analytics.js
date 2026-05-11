@@ -5,7 +5,7 @@
  * weekly figures, master snapshots, and agent performance detail.
  */
 
-import { fetchBlob, fetchJson, getApiBaseUrl } from '../api.js';
+import { fetchBlob, fetchJson, getApiBaseUrl } from '../api.js?v=5.32.14';
 import { escapeHtml, money, setText, timeAgo } from '../utils.js';
 import { get, set } from './state.js';
 

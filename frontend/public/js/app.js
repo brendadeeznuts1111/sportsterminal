@@ -24,14 +24,50 @@ import { schedule, scheduleImmediate, cancelAll } from './modules/render-schedul
 // Feature modules (side-effect: register window exports)
 import './modules/odds-matrix.js';
 import './modules/patterns.js';
-import './modules/buckeye-integration.js';
+import { normalizeBackendWager } from './modules/buckeye-integration.js';
 import './modules/positions-exposure.js';
 import './modules/webhooks-modals.js';
-import './modules/player-search.js';
+import {
+  closePlayerProfileModal,
+  destroyPlayerProfileCharts,
+  fetchPlayerIntelligenceMap,
+  handleBuckeyeWagerTableClick,
+  handlePlayerSearchClick,
+  loadPlayerSearch,
+  openAgentTreeFromProfile,
+  profileEmptyRow,
+  profileStatCard,
+  profileStatusChip,
+  refreshOpenPlayerProfile,
+  renderPlayerProfile,
+  renderPlayerProfileAgent,
+  renderPlayerProfileError,
+  renderPlayerProfileLoading,
+  renderPlayerProfileOverview,
+  renderPlayerProfileWagers,
+  renderPlayerSearch,
+  renderPlayerSearchFallback,
+  renderPlayerSearchSuggestions,
+  searchPlayers,
+  setPlayerAgentFilter,
+  setPlayerProfileTab,
+  viewPlayer,
+} from './modules/player-search.js';
 import './modules/performance-analytics.js';
 import './modules/agent-network.js';
 import './modules/api-status.js';
 import './modules/settings-auth.js';
+import './command-center.js';
+
+// ==================== WEBSOCKET CLIENT ====================
+const wsClient = new TerminalWebSocketClient({
+  url: (() => {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${window.location.host}/ws`;
+  })(),
+  reconnectInterval: 5000,
+  maxReconnectAttempts: 10,
+});
 
 // ==================== LEGACY WINDOW EXPORTS (sandbox) ====================
 window.initSandboxSection = initSandboxSection;
@@ -40,6 +76,10 @@ window.loadSandboxScenario = loadSandboxScenario;
 window.closeSandboxCreateModal = closeSandboxCreateModal;
 window.submitCreateScenario = submitCreateScenario;
 window.getSandboxState = getSandboxState;
+window.viewPlayer = viewPlayer;
+window.setPlayerProfileTab = setPlayerProfileTab;
+window.refreshOpenPlayerProfile = refreshOpenPlayerProfile;
+window.closePlayerProfileModal = closePlayerProfileModal;
 
 // ==================== STATE INITIALIZATION ====================
 initLegacyCompat();
@@ -66,7 +106,7 @@ const playerTransactionRenderer = createPlayerTransactionRenderer({
   profileStatusChip,
   profileEmptyRow,
   profileStatCard,
-  destroyChart: destroyPlayerProfileChart,
+  destroyChart: destroyPlayerProfileCharts,
   getChart: () => window.Chart,
 });
 
@@ -361,6 +401,82 @@ function switchSection(section, btn) {
 
   // Update URL hash for deep linking
   window.location.hash = section;
+}
+
+// ==================== ALERTS ====================
+function renderAlerts() {
+  const container = document.getElementById('alertsList');
+  if (!container) return;
+
+  const buckeyeWagers = get('buckeyeWagers') || [];
+  const alertWagers = buckeyeWagers.filter(w => w.TicketWriter === 'ALERT' || w.AmountWagered >= 10000);
+
+  container.innerHTML = alertWagers.slice(0, 20).map(w => {
+    const severity = w.AmountWagered >= 50000 ? 'critical' : w.AmountWagered >= 10000 ? 'warning' : 'info';
+    const severityClass = severity === 'critical' ? 'alert-critical' : severity === 'warning' ? 'alert-warning' : 'alert-info';
+
+    return `<div class="flex items-center justify-between p-3 rounded-lg ${severityClass}">
+      <div>
+        <div class="text-xs font-bold">${w.AgentLogin || ''} → ${w.Login || ''}</div>
+        <div class="text-xs mt-0.5" style="color:var(--text-dim);">${(w.ShortDesc || '').substring(0, 60)}...</div>
+      </div>
+      <div class="text-right">
+        <div class="text-xs font-mono font-bold">$${(w.AmountWagered || 0).toLocaleString()}</div>
+        <div class="text-xs" style="color:var(--text-dim);">${w.TicketWriter || ''}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const badge = document.getElementById('alertBadge');
+  if (badge) {
+    if (alertWagers.length > 0) {
+      badge.textContent = alertWagers.length;
+      badge.classList.remove('hidden');
+    } else {
+      badge.classList.add('hidden');
+    }
+  }
+}
+
+function updateAlertsToastButton() {
+  const enabled = localStorage.getItem('toastsEnabled') !== 'false';
+  const btn = document.getElementById('alertsToastBtn');
+  if (btn) {
+    btn.textContent = enabled ? '🔔' : '🔕';
+    btn.title = enabled ? 'Alert toasts on' : 'Alert toasts muted';
+  }
+}
+
+function toggleAlertsToast() {
+  const current = localStorage.getItem('toastsEnabled') !== 'false';
+  const next = !current;
+  localStorage.setItem('toastsEnabled', String(next));
+  updateAlertsToastButton();
+  if (typeof showToast === 'function') showToast(next ? 'Alert toasts enabled' : 'Alert toasts muted', 'info');
+}
+
+// ==================== PLAYER PROFILE LIVE WAGER ====================
+function handlePlayerProfileLiveWager(wager) {
+  const playerProfileState = get('playerProfileState');
+  const profile = playerProfileState.profile;
+  const playerId = playerProfileState.playerId;
+  if (!profile || !playerId) return;
+  const normalized = normalizeBackendWager(wager);
+  if (normalized.Login !== playerId && normalized.CustomerID !== playerId) return;
+  const liveWager = { ...wager, ...normalized, __live: true };
+  profile.recentWagers = [liveWager, ...(profile.recentWagers || []).filter(row => String((row.WagerNumber || row.wagerNumber)) !== String(normalized.WagerNumber))].slice(0, 200);
+  profile.stats = profile.stats || {};
+  profile.stats.wagerCount = Number(profile.stats.wagerCount || 0) + 1;
+  profile.stats.openBets = Number(profile.stats.openBets || 0) + 1;
+  profile.stats.totalVolume = Number(profile.stats.totalVolume || 0) + Number(normalized.AmountWagered || 0);
+  profile.stats.riskScore = Math.min(100, Number(profile.stats.riskScore || 0) + 1);
+  if (typeof FactoryWager !== 'undefined') FactoryWager.state.ws.lastEventAt = new Date().toISOString();
+  playerProfileState.liveRegionMessage = `New wager ${normalized.WagerNumber || ''} for ${playerId} added to live feed`;
+  const liveRegion = document.getElementById('playerProfileLiveRegion');
+  if (liveRegion) liveRegion.textContent = playerProfileState.liveRegionMessage;
+  if (playerProfileState.tab === 'wagers' || playerProfileState.tab === 'overview') {
+    if (typeof renderPlayerProfile === 'function') renderPlayerProfile();
+  }
 }
 
 // ==================== INIT ====================

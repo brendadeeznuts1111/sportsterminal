@@ -3,7 +3,7 @@
  * Extracted from app.js — handles API endpoint health checks and status rendering.
  */
 
-import { getApiBaseUrl } from '../api.js';
+import { getApiBaseUrl, getApiHeaders } from '../api.js?v=5.32.14';
 
 const API_ENDPOINTS = [
   { path: '/health', label: 'Health', group: 'System' },
@@ -77,7 +77,7 @@ function getPlayer360EndpointRegistry(playerId = getStatusPlayerId()) {
     { path: `/api/v1/players/${safePlayer}/notes`, label: 'Notes', group: 'Player 360', tab: 'Notes', aspect: 'Operator notes', sources: ['player_notes'] },
     { path: `/api/v1/players/${safePlayer}/export/wagers`, label: 'Export Wagers', group: 'Player 360', tab: 'Wager History', aspect: 'Wager CSV export', sources: ['wager_archive'] },
     { path: `/api/v1/players/${safePlayer}/export/access-logs`, label: 'Export Access', group: 'Player 360', tab: 'Access Logs', aspect: 'Access CSV export', sources: ['access_logs'] },
-    { path: `/api/v1/logs/access?limit=1`, label: 'Audit Access', group: 'Player 360', tab: 'Access Logs', aspect: 'Audit access-log fallback', sources: ['access_logs'] },
+    { path: `/api/v1/logs/access?login=${safePlayer}&limit=1`, label: 'Audit Access', group: 'Player 360', tab: 'Access Logs', aspect: 'Player-filtered access-log fallback', sources: ['access_logs'] },
   ];
 }
 
@@ -91,7 +91,7 @@ async function checkApiEndpoints() {
   const results = await Promise.allSettled(
     getApiEndpoints().map(async (ep) => {
       const start = performance.now();
-      const res = await fetch(`${getApiBaseUrl()}${ep.path}`);
+      const res = await fetch(`${getApiBaseUrl()}${ep.path}`, { headers: getApiHeaders() });
       const ms = Math.round(performance.now() - start);
       return { ...ep, status: res.status, ms };
     })

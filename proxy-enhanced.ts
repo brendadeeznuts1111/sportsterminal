@@ -2,28 +2,26 @@
 // Merged features: CircuitBreaker, apiKeyAuth, SWR cache, special handlers,
 // renewToken, status, endpoints, openapi.json, dashboard, request tracking,
 // JWT auth, per-endpoint rate limiting, token scheduling, idempotency
-import { Database } from "bun:sqlite";
-import { heapStats as jscHeapStats, estimateShallowMemoryUsageOf } from "bun:jsc";
+import type { ServerWebSocket, WebSocketHandler } from "bun";
 import { randomUUIDv7 } from "bun";
+import { estimateShallowMemoryUsageOf, heapStats as jscHeapStats } from "bun:jsc";
+import { Database } from "bun:sqlite";
 import { watch } from "node:fs";
+import { z } from "zod";
 import { CONFIG, initConfig, reloadFromEnv } from "./config";
-import { CircuitBreaker, logger, hashPayload as utilsHashPayload, fetchWithRetry as utilsFetchWithRetry, requestContext, json as utilsJson, atomicWrite } from "./utils";
-import { fetchWithTimeout } from "./utils/fetchWithTimeout";
-import { PROXY_SECRET_NAMES, deleteManagedSecret, extractCfClearanceValue, getManagedSecret, getManagedSecretNames, getScopedSecret, proxySecretEnvFallback, setManagedSecret, setScopedSecret, shouldUseKeychain } from "./utils/secrets";
-import { getAllEndpoints, ENDPOINT_COUNTS, TEST_SUMMARY } from "./endpoint-index";
+import { ENDPOINT_COUNTS, TEST_SUMMARY, getAllEndpoints } from "./endpoint-index";
+import { CircuitBreaker, atomicWrite, logger, requestContext, hashPayload as utilsHashPayload } from "./utils";
 import {
   buildBrowserHeaders,
   buildServiceHeaders,
-  benchmarkNetworkTarget,
   prewarmNetworkTargets as connectionPrewarmNetworkTargets,
-  getDnsCacheStats,
   enrichDnsStats,
-  getConnectionFingerprint,
   getApiFingerprintHeader,
-  type WarmupBenchmark,
+  getDnsCacheStats,
+  type WarmupBenchmark
 } from "./utils/connection";
-import type { ServerWebSocket, WebSocketHandler } from "bun";
-import { z } from "zod";
+import { fetchWithTimeout } from "./utils/fetchWithTimeout";
+import { PROXY_SECRET_NAMES, deleteManagedSecret, extractCfClearanceValue, getManagedSecret, getManagedSecretNames, getScopedSecret, proxySecretEnvFallback, setManagedSecret, setScopedSecret, shouldUseKeychain } from "./utils/secrets";
 
 await initConfig();
 
@@ -534,59 +532,59 @@ const DEMO_ENDPOINT_KEYS = new Set([
 // COMPLETE BUCKEYE ENDPOINT MAP (from network trace)
 // ==========================================
 const ENDPOINT_MAP: Record<string, { path: string; cacheTtl: number; category: string }> = {
-  auth:           { path: "System/authenticateCustomer", cacheTtl: 0,    category: "auth" },
-  renewToken:     { path: "System/renewToken",           cacheTtl: 0,    category: "auth" },
-  logWrite:       { path: "Log/write",                    cacheTtl: 0,    category: "telemetry" },
-  accountInfo:    { path: "Manager/getAccountInfoOwner",  cacheTtl: 60,   category: "account" },
-  playerInfo:     { path: "Manager/getInfoPlayer",        cacheTtl: 120,  category: "player" },
-  newEmails:      { path: "Manager/getNewEmailsCount",    cacheTtl: 30,   category: "account" },
-  mail:           { path: "Manager/getMail",             cacheTtl: 60,   category: "account" },
-  cryptoInfo:     { path: "Manager/getCryptoInfo",        cacheTtl: 300,  category: "banking" },
-  authorizations: { path: "Manager/getAuthorizations",    cacheTtl: 300,  category: "admin" },
-  sportsLeagues:  { path: "League/Get_SportsLeagues",     cacheTtl: 3600, category: "taxonomy" },
-  leagueLines:    { path: "Lines/Get_LeagueLines2",       cacheTtl: 60,   category: "lines" },
-  games:          { path: "Manager/getGames",             cacheTtl: 300,  category: "taxonomy" },
-  gameVolume:     { path: "Manager/getGameVolume",        cacheTtl: 30,   category: "lines" },
-  periodsBySport: { path: "Manager/getPeriodsBySport",   cacheTtl: 3600, category: "config" },
-  buyPoints:      { path: "Lines/getBuyPointsGroup",     cacheTtl: 3600, category: "config" },
-  amountLimits:   { path: "Limit/getAmountLimitGroup",    cacheTtl: 3600, category: "config" },
-  linesPlus:      { path: "Provider/getLinesPlusData",    cacheTtl: 60,   category: "lines" },
+  auth: { path: "System/authenticateCustomer", cacheTtl: 0, category: "auth" },
+  renewToken: { path: "System/renewToken", cacheTtl: 0, category: "auth" },
+  logWrite: { path: "Log/write", cacheTtl: 0, category: "telemetry" },
+  accountInfo: { path: "Manager/getAccountInfoOwner", cacheTtl: 60, category: "account" },
+  playerInfo: { path: "Manager/getInfoPlayer", cacheTtl: 120, category: "player" },
+  newEmails: { path: "Manager/getNewEmailsCount", cacheTtl: 30, category: "account" },
+  mail: { path: "Manager/getMail", cacheTtl: 60, category: "account" },
+  cryptoInfo: { path: "Manager/getCryptoInfo", cacheTtl: 300, category: "banking" },
+  authorizations: { path: "Manager/getAuthorizations", cacheTtl: 300, category: "admin" },
+  sportsLeagues: { path: "League/Get_SportsLeagues", cacheTtl: 3600, category: "taxonomy" },
+  leagueLines: { path: "Lines/Get_LeagueLines2", cacheTtl: 60, category: "lines" },
+  games: { path: "Manager/getGames", cacheTtl: 300, category: "taxonomy" },
+  gameVolume: { path: "Manager/getGameVolume", cacheTtl: 30, category: "lines" },
+  periodsBySport: { path: "Manager/getPeriodsBySport", cacheTtl: 3600, category: "config" },
+  buyPoints: { path: "Lines/getBuyPointsGroup", cacheTtl: 3600, category: "config" },
+  amountLimits: { path: "Limit/getAmountLimitGroup", cacheTtl: 3600, category: "config" },
+  linesPlus: { path: "Provider/getLinesPlusData", cacheTtl: 60, category: "lines" },
   propBuilderURL: { path: "Provider/getPropBuilderGameScheduleURL", cacheTtl: 300, category: "props" },
-  dynamicLive:    { path: "Manager/getDynamicLive",       cacheTtl: 10,   category: "live" },
-  sportsTypesLive: { path: "Manager/getSportsTypesLive",   cacheTtl: 60,   category: "live" },
-  scoresLive:     { path: "Report/getScoresLiveDynamic",   cacheTtl: 15,   category: "live" },
-  props:          { path: "Manager/getProps",              cacheTtl: 300,  category: "props" },
-  extendedProps:  { path: "Manager/getExtendedProps",     cacheTtl: 300,  category: "props" },
-  teaserProfile:  { path: "Manager/getTeaserProfile",     cacheTtl: 300,  category: "config" },
-  agentDownline:  { path: "Manager/getListAgenstByAgent",  cacheTtl: 300,  category: "agent" },
-  agentBilling:   { path: "Manager/getAgentBilling",      cacheTtl: 300,  category: "agent" },
-  sportsAdmin:    { path: "Manager/getSportsCustomerAdmin", cacheTtl: 300,  category: "admin" },
-  sportsType:     { path: "Manager/getSportsType",          cacheTtl: 3600, category: "taxonomy" },
-  vigSetup:       { path: "Manager/getSportsVigSetup",     cacheTtl: 300,  category: "admin" },
-  maxWager:       { path: "Manager/getSportsMaxWager",     cacheTtl: 300,  category: "admin" },
-  colors:         { path: "Manager/getColorsSelections",    cacheTtl: 3600, category: "admin" },
-  stores:         { path: "Manager/getStores",              cacheTtl: 3600, category: "admin" },
-  circleLimits:   { path: "Manager/getCircleLimits",        cacheTtl: 300,  category: "admin" },
-  betTicker:      { path: "Manager/getBetTicker",           cacheTtl: 5,    category: "analytics" },
-  betTickerConfig:{ path: "Manager/getBetTickerConfig",     cacheTtl: 300,  category: "analytics" },
-  pending:        { path: "Manager/getPending",             cacheTtl: 15,   category: "analytics" },
+  dynamicLive: { path: "Manager/getDynamicLive", cacheTtl: 10, category: "live" },
+  sportsTypesLive: { path: "Manager/getSportsTypesLive", cacheTtl: 60, category: "live" },
+  scoresLive: { path: "Report/getScoresLiveDynamic", cacheTtl: 15, category: "live" },
+  props: { path: "Manager/getProps", cacheTtl: 300, category: "props" },
+  extendedProps: { path: "Manager/getExtendedProps", cacheTtl: 300, category: "props" },
+  teaserProfile: { path: "Manager/getTeaserProfile", cacheTtl: 300, category: "config" },
+  agentDownline: { path: "Manager/getListAgenstByAgent", cacheTtl: 300, category: "agent" },
+  agentBilling: { path: "Manager/getAgentBilling", cacheTtl: 300, category: "agent" },
+  sportsAdmin: { path: "Manager/getSportsCustomerAdmin", cacheTtl: 300, category: "admin" },
+  sportsType: { path: "Manager/getSportsType", cacheTtl: 3600, category: "taxonomy" },
+  vigSetup: { path: "Manager/getSportsVigSetup", cacheTtl: 300, category: "admin" },
+  maxWager: { path: "Manager/getSportsMaxWager", cacheTtl: 300, category: "admin" },
+  colors: { path: "Manager/getColorsSelections", cacheTtl: 3600, category: "admin" },
+  stores: { path: "Manager/getStores", cacheTtl: 3600, category: "admin" },
+  circleLimits: { path: "Manager/getCircleLimits", cacheTtl: 300, category: "admin" },
+  betTicker: { path: "Manager/getBetTicker", cacheTtl: 5, category: "analytics" },
+  betTickerConfig: { path: "Manager/getBetTickerConfig", cacheTtl: 300, category: "analytics" },
+  pending: { path: "Manager/getPending", cacheTtl: 15, category: "analytics" },
   pendingReportConfig: { path: "Manager/getConfigWebReportsPending", cacheTtl: 300, category: "reports" },
   updatePendingReportConfig: { path: "Manager/updateReportConfigPending", cacheTtl: 0, category: "reports" },
-  openBets:       { path: "Manager/getOpenBets",            cacheTtl: 30,   category: "analytics" },
-  agentPerformance:{ path: "Manager/getAgentPerformance",   cacheTtl: 300,  category: "analytics" },
-  wagerByPlayer:  { path: "Manager/getWagerByPlayer",       cacheTtl: 60,   category: "analytics" },
-  playerWeek:     { path: "Manager/getPlayerWeek",           cacheTtl: 300,  category: "analytics" },
-  transactionPlayer:{ path: "Manager/getEnterTransactions",  cacheTtl: 300,  category: "analytics" },
-  historyPlayer:  { path: "Manager/getReportPlayerAnalysis",  cacheTtl: 300,  category: "analytics" },
-  webLog:         { path: "Manager/getWebLog",               cacheTtl: 60,   category: "analytics" },
-  getConfigWebReports:{ path: "Manager/getConfigWebReports",  cacheTtl: 300,  category: "reports" },
-  agentManagement:{ path: "Manager/getAgentManagement",      cacheTtl: 300,  category: "agent" },
-  listVip:        { path: "Manager/getListVip",               cacheTtl: 300,  category: "agent" },
-  cryptoAvailable:{ path: "Manager/getCryptoAvailable",      cacheTtl: 300,  category: "banking" },
-  getMessage:     { path: "Manager/getMessage",              cacheTtl: 30,   category: "account" },
-  playerActivity:  { path: "System/getPlayerActivity",        cacheTtl: 120,  category: "player" },
-  bettorDetails:  { path: "Manager/getBettorDetails",        cacheTtl: 120,  category: "player" },
-  liveGame:       { path: "Manager/getGames",               cacheTtl: 15,   category: "live" },
+  openBets: { path: "Manager/getOpenBets", cacheTtl: 30, category: "analytics" },
+  agentPerformance: { path: "Manager/getAgentPerformance", cacheTtl: 300, category: "analytics" },
+  wagerByPlayer: { path: "Manager/getWagerByPlayer", cacheTtl: 60, category: "analytics" },
+  playerWeek: { path: "Manager/getPlayerWeek", cacheTtl: 300, category: "analytics" },
+  transactionPlayer: { path: "Manager/getEnterTransactions", cacheTtl: 300, category: "analytics" },
+  historyPlayer: { path: "Manager/getReportPlayerAnalysis", cacheTtl: 300, category: "analytics" },
+  webLog: { path: "Manager/getWebLog", cacheTtl: 60, category: "analytics" },
+  getConfigWebReports: { path: "Manager/getConfigWebReports", cacheTtl: 300, category: "reports" },
+  agentManagement: { path: "Manager/getAgentManagement", cacheTtl: 300, category: "agent" },
+  listVip: { path: "Manager/getListVip", cacheTtl: 300, category: "agent" },
+  cryptoAvailable: { path: "Manager/getCryptoAvailable", cacheTtl: 300, category: "banking" },
+  getMessage: { path: "Manager/getMessage", cacheTtl: 30, category: "account" },
+  playerActivity: { path: "System/getPlayerActivity", cacheTtl: 120, category: "player" },
+  bettorDetails: { path: "Manager/getBettorDetails", cacheTtl: 120, category: "player" },
+  liveGame: { path: "Manager/getGames", cacheTtl: 15, category: "live" },
 };
 
 function getEndpointMeta(endpointPath: string): { key: string; cacheTtl: number; category: string } | null {
@@ -935,6 +933,34 @@ db.run(`
 `);
 db.run(`CREATE INDEX IF NOT EXISTS idx_line_adj_log_game ON line_adjustment_log(gameId, timestamp)`);
 
+db.run(`
+  CREATE TABLE IF NOT EXISTS enforcement_queue (
+    id INTEGER PRIMARY KEY,
+    position_id INTEGER,
+    customer_id TEXT NOT NULL,
+    risk_level TEXT NOT NULL,
+    suggested_max_exposure REAL,
+    suggested_wager_limit REAL,
+    suggested_action TEXT,
+    ai_confidence REAL,
+    ai_summary TEXT,
+    status TEXT DEFAULT 'pending',
+    viewed_at TEXT,
+    viewed_by TEXT,
+    applied_at TEXT,
+    applied_by TEXT,
+    buckeye_admin_url TEXT,
+    reminder_count INTEGER DEFAULT 0,
+    last_reminder_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    expires_at TEXT DEFAULT (datetime('now', '+30 minutes'))
+  )
+`);
+db.run(`CREATE INDEX IF NOT EXISTS idx_enforcement_pending ON enforcement_queue(status, risk_level, created_at)`);
+db.run(`CREATE INDEX IF NOT EXISTS idx_enforcement_customer ON enforcement_queue(customer_id, status)`);
+
+// ...existing code...
+
 // Add missing columns if upgrading from older schema
 for (const column of [
   "ALTER TABLE request_log ADD COLUMN customerID TEXT",
@@ -1012,6 +1038,16 @@ const getAllLineRules = dbRead.prepare(`SELECT * FROM line_adjustment_rules WHER
 const updateLineRule = db.prepare(`UPDATE line_adjustment_rules SET sport = $sport, league = $league, lineType = $lineType, condition = $condition, threshold = $threshold, adjustmentPercent = $adjustmentPercent, maxMovePercent = $maxMovePercent, enabled = $enabled WHERE id = $id`);
 const deleteLineRule = db.prepare(`DELETE FROM line_adjustment_rules WHERE id = $id AND agentID = $agentID`);
 
+// Enforcement queue prepared statements
+const insertEnforcementQueue = db.prepare(`INSERT INTO enforcement_queue (position_id, customer_id, risk_level, suggested_max_exposure, suggested_wager_limit, suggested_action, ai_confidence, ai_summary, buckeye_admin_url) VALUES ($position_id, $customer_id, $risk_level, $suggested_max_exposure, $suggested_wager_limit, $suggested_action, $ai_confidence, $ai_summary, $buckeye_admin_url)`);
+const getEnforcementQueue = dbRead.prepare(`SELECT * FROM enforcement_queue WHERE status = COALESCE($status, status) AND risk_level = COALESCE($risk_level, risk_level) ORDER BY CASE risk_level WHEN 'BLACK' THEN 1 WHEN 'RED' THEN 2 ELSE 3 END, created_at DESC LIMIT $limit`);
+const getEnforcementQueueByCustomer = dbRead.prepare(`SELECT * FROM enforcement_queue WHERE customer_id = $customer_id AND status = COALESCE($status, status) ORDER BY created_at DESC`);
+const updateEnforcementViewed = db.prepare(`UPDATE enforcement_queue SET status = 'viewed', viewed_at = datetime('now'), viewed_by = $viewed_by WHERE id = $id`);
+const updateEnforcementApplied = db.prepare(`UPDATE enforcement_queue SET status = 'applied', applied_at = datetime('now'), applied_by = $applied_by WHERE id = $id`);
+const expireOldEnforcement = db.prepare(`UPDATE enforcement_queue SET status = 'expired' WHERE status = 'pending' AND expires_at <= datetime('now')`);
+const getUrgentEnforcement = dbRead.prepare(`SELECT * FROM enforcement_queue WHERE status = 'pending' AND risk_level = 'BLACK' AND (viewed_at IS NULL OR viewed_at < datetime('now', '-5 minutes')) AND reminder_count < 3 AND (last_reminder_at IS NULL OR last_reminder_at < datetime('now', '-5 minutes'))`);
+const incrementEnforcementReminder = db.prepare(`UPDATE enforcement_queue SET reminder_count = reminder_count + 1, last_reminder_at = datetime('now') WHERE id = $id`);
+
 const deleteRiskConfig = db.prepare(`DELETE FROM risk_config WHERE agentID = $agentID`);
 const deleteRateLimitOverrideInline = db.prepare(`DELETE FROM rate_limit_overrides WHERE endpoint = $endpoint`);
 
@@ -1063,7 +1099,7 @@ setInterval(() => {
 setInterval(async () => {
   try {
     const backupDir = "./backups";
-    await atomicWrite(`${backupDir}/.keep`, "").catch(() => {});
+    await atomicWrite(`${backupDir}/.keep`, "").catch(() => { });
     const backupPath = `${backupDir}/proxy-${Date.now()}.db`;
     db.run(`VACUUM INTO '${backupPath}'`);
     logger.log("info", "backup", `SQLite hot backup created`, { path: backupPath });
@@ -1072,7 +1108,7 @@ setInterval(async () => {
     const sorted = files.sort();
     while (sorted.length > 10) {
       const old = sorted.shift();
-      if (old) { await Bun.file(old).delete().catch(() => {}); }
+      if (old) { await Bun.file(old).delete().catch(() => { }); }
     }
   } catch (err: unknown) {
     logger.warn("Backup failed", { error: err instanceof Error ? err.message : String(err) });
@@ -1100,7 +1136,7 @@ setInterval(() => {
 // OTEL TRACE EXPORTER — background flush
 // ==========================================
 if (CONFIG.otel.enabled) {
-  setInterval(() => { void tracer.export().catch(() => {}); }, CONFIG.otel.exportIntervalMs);
+  setInterval(() => { void tracer.export().catch(() => { }); }, CONFIG.otel.exportIntervalMs);
   logger.info("OTel trace exporter enabled", { endpoint: CONFIG.otel.endpoint, intervalMs: CONFIG.otel.exportIntervalMs });
 }
 
@@ -1147,7 +1183,7 @@ async function runRiskEngine(): Promise<void> {
             method: "POST",
             headers: buildServiceHeaders(),
             body: JSON.stringify({ agentID: cfg.agentID, alerts, timestamp: Date.now() }),
-          }).catch(() => {});
+          }).catch(() => { });
           logger.info("Risk alert sent", { agentID: cfg.agentID, alerts });
         }
       } catch (err: unknown) {
@@ -1160,7 +1196,7 @@ async function runRiskEngine(): Promise<void> {
 }
 
 if (CONFIG.features.riskEngine) {
-  riskEngineTimer = setInterval(() => { void runRiskEngine().catch(() => {}); }, PROXY_CONSTANTS.RISK_ENGINE_INTERVAL_MS) as unknown as Timer;
+  riskEngineTimer = setInterval(() => { void runRiskEngine().catch(() => { }); }, PROXY_CONSTANTS.RISK_ENGINE_INTERVAL_MS) as unknown as Timer;
 }
 
 // ==========================================
@@ -1265,6 +1301,22 @@ if (CONFIG.features.memoryCache) {
 }
 
 // ==========================================
+// ENFORCEMENT QUEUE REMINDER CRON
+// ==========================================
+setInterval(() => {
+  try {
+    expireOldEnforcement.run();
+    const urgent = getUrgentEnforcement.all() as Array<{ id: number; customer_id: string; suggested_wager_limit: number | null }>;
+    for (const item of urgent) {
+      logger.warn("UNENFORCED BLACK position", { customerID: item.customer_id, limit: item.suggested_wager_limit });
+      incrementEnforcementReminder.run({ $id: item.id });
+    }
+  } catch (err: unknown) {
+    logger.warn("Enforcement reminder cron failed", { error: err instanceof Error ? err.message : String(err) });
+  }
+}, 300000); // Every 5 minutes
+
+// ==========================================
 // 4. SWR (STALE-WHILE-REVALIDATE) CACHE
 // ==========================================
 const SWR_TTL_MULTIPLIER = 2;
@@ -1322,14 +1374,31 @@ async function getCacheWithSWR(
 // ==========================================
 // 5. HELPERS
 // ==========================================
+const corsMethods = ["POST", "GET", "PATCH", "DELETE", "OPTIONS"];
+const corsHeaders = ["Content-Type", "Authorization", "X-API-Key", "X-Request-ID", "X-Stream", "Idempotency-Key", "X-API-Fingerprint"];
+
+// Static CORS for backward compatibility (used when Request is not available)
 const cors = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, GET, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, X-Request-ID, X-Stream, Idempotency-Key",
 };
 
-const corsMethods = ["POST", "GET", "PATCH", "DELETE", "OPTIONS"];
-const corsHeaders = ["Content-Type", "Authorization", "X-API-Key", "X-Request-ID", "X-Stream", "Idempotency-Key", "X-API-Fingerprint"];
+// Dynamic CORS: respects CORS_ORIGIN env var when set
+function buildCorsHeaders(req: Request): Record<string, string> {
+  const requestOrigin = req.headers.get("Origin") || "";
+  const allowedOrigin = CONFIG.corsOrigin;
+  // If CORS_ORIGIN is configured, validate; otherwise allow any origin (dev default)
+  const origin = allowedOrigin
+    ? (requestOrigin === allowedOrigin ? allowedOrigin : allowedOrigin)
+    : (requestOrigin || "*");
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "POST, GET, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, X-Request-ID, X-Stream, Idempotency-Key",
+    "Vary": "Origin",
+  };
+}
 
 function browserHeaders(token = "undefined", cookie = "") {
   return buildBrowserHeaders({
@@ -1414,9 +1483,10 @@ function getDemoCfClearance(): string {
   return `demo_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
 
-function json(data: unknown, status = 200, headers: Record<string, string> = {}, acceptEncoding = "") {
+function json(data: unknown, status = 200, headers: Record<string, string> = {}, acceptEncoding = "", req?: Request) {
   const body = JSON.stringify(data, null, 2);
-  const responseHeaders: Record<string, string> = { "Content-Type": "application/json", ...cors, ...headers };
+  const corsHeaders = req ? buildCorsHeaders(req) : cors;
+  const responseHeaders: Record<string, string> = { "Content-Type": "application/json", ...corsHeaders, ...headers };
   const gzip = Bun.gzipSync;
   if (CONFIG.features.responseCompression && gzip && acceptEncoding.includes("gzip") && body.length > PROXY_CONSTANTS.COMPRESSION_THRESHOLD_BYTES) {
     const compressed = gzip(body);
@@ -1739,8 +1809,8 @@ function correlateSharpMoney(lineHistory: LineMove[], wagers: Wager[]): SharpAle
       w.timestamp >= before && w.timestamp <= move.timestamp &&
       w.gameId === move.gameId &&
       ((move.lineType === "spread" && w.wagerType === "SPREAD" && w.side.toUpperCase() === move.side.toUpperCase()) ||
-       (move.lineType === "total" && w.wagerType === "TOTAL" && w.side.toUpperCase() === move.side.toUpperCase()) ||
-       (move.lineType === "moneyline" && w.wagerType === "MONEYLINE"))
+        (move.lineType === "total" && w.wagerType === "TOTAL" && w.side.toUpperCase() === move.side.toUpperCase()) ||
+        (move.lineType === "moneyline" && w.wagerType === "MONEYLINE"))
     );
     if (relevantWagers.length > 0) {
       const totalStake = relevantWagers.reduce((s, w) => s + w.stake, 0);
@@ -2079,7 +2149,7 @@ async function evaluateLineAdjustments(): Promise<void> {
 }
 
 if (CONFIG.features.analytics) {
-  setInterval(() => { void evaluateLineAdjustments().catch(() => {}); }, 60000);
+  setInterval(() => { void evaluateLineAdjustments().catch(() => { }); }, 60000);
 }
 
 const memCache = new Map<string, { value: unknown; expires: number }>();
@@ -2141,8 +2211,8 @@ async function readProxySecret(name: typeof PROXY_SECRET_NAMES[keyof typeof PROX
 
   const fromConfig =
     name === PROXY_SECRET_NAMES.password ? CONFIG.password :
-    name === PROXY_SECRET_NAMES.cfClearance ? CONFIG.cfClearance :
-    undefined;
+      name === PROXY_SECRET_NAMES.cfClearance ? CONFIG.cfClearance :
+        undefined;
   if (fromConfig) return name === PROXY_SECRET_NAMES.cfClearance ? extractCfClearanceValue(fromConfig) : fromConfig;
 
   if (shouldUseKeychain()) {
@@ -2296,12 +2366,12 @@ function normalizeResponse(endpoint: string, raw: unknown, keyOverride?: string)
     const rows = topLevelRows
       ? topLevelRows
       : Array.isArray(list)
-      ? list as Record<string, unknown>[]
-      : Array.isArray(nestedList)
-        ? nestedList as Record<string, unknown>[]
-        : arr
-          ? arr as Record<string, unknown>[]
-          : [obj];
+        ? list as Record<string, unknown>[]
+        : Array.isArray(nestedList)
+          ? nestedList as Record<string, unknown>[]
+          : arr
+            ? arr as Record<string, unknown>[]
+            : [obj];
     const grouped = new Map<string, Record<string, unknown>[]>();
 
     for (const row of rows) {
@@ -4703,7 +4773,7 @@ const server = Bun.serve<WsData>({
   } as unknown as WebSocketHandler<WsData>),
 
   async fetch(req, server) {
-    if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...cors, "Access-Control-Allow-Methods": corsMethods.join(", "), "Access-Control-Allow-Headers": corsHeaders.join(", ") } });
+    if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...buildCorsHeaders(req), "Access-Control-Allow-Methods": corsMethods.join(", "), "Access-Control-Allow-Headers": corsHeaders.join(", ") } });
 
     const ctx = requestContext(req);
     const url = new URL(req.url);
@@ -4727,209 +4797,209 @@ const server = Bun.serve<WsData>({
         }
 
         if (!authenticated && jwtEnabled) {
-          return new Response(JSON.stringify({ error: 'Invalid WebSocket token' }), { status: 401, headers: { 'Content-Type': 'application/json', ...cors } });
+          return new Response(JSON.stringify({ error: 'Invalid WebSocket token' }), { status: 401, headers: { 'Content-Type': 'application/json', ...buildCorsHeaders(req) } });
         }
 
         const ok = server.upgrade(req, { data: { url: req.url, reqId: ctx.reqId, customerID, authenticated, connectedAt: Date.now() } satisfies WsData });
-        return ok ? undefined : new Response(JSON.stringify({ error: 'WebSocket upgrade failed' }), { status: 400, headers: { 'Content-Type': 'application/json', ...cors } });
+        return ok ? undefined : new Response(JSON.stringify({ error: 'WebSocket upgrade failed' }), { status: 400, headers: { 'Content-Type': 'application/json', ...buildCorsHeaders(req) } });
       }
 
       if (path === "/ping" || path === "/ping/") {
-        const pingHeaders: Record<string, string> = { "X-Request-ID": ctx.reqId, ...cors };
+        const pingHeaders: Record<string, string> = { "X-Request-ID": ctx.reqId, ...buildCorsHeaders(req) };
         return new Response("pong", { status: 200, headers: pingHeaders });
       }
 
       if (shuttingDown) {
-        return json({ error: "Server is shutting down" }, 503);
+        return json({ error: "Server is shutting down" }, 503, {}, "", req);
       }
 
       const acceptEncoding = req.headers.get("accept-encoding") || "";
 
-    // ---- / ----
-    if (path === "/" || path === "") {
-      return json({
-        service: "Buckeye PPH Proxy",
-        version: "2.0",
-        runtime: "Bun",
-        sqlite: "bun:sqlite (WAL)",
-        status: "running",
-        timestamp: new Date().toISOString(),
-        websocket: "/ws",
-        endpoints: ["/", "/ping", "/features", "/demo/status", "/metrics", "/metrics/prometheus", "/ready", "/health", "/config", "/ws", "/openapi.json", "/dashboard", "/admin", "/api/agent/network-stats", "/api/secrets", "/api/proxy/auth", "/api/proxy/:endpoint", "/api/proxy/{endpointKey}", "/api/proxy/taxonomy/:level", "/api/proxy/sportsLeagues", "/api/proxy/leagueLines", "/api/proxy/agentDownline", "/api/proxy/agentBilling", "/api/proxy/playerInfo", "/api/proxy/dynamicLive", "/api/proxy/scoresLive", "/api/proxy/sportsTypesLive", "/api/proxy/liveGame", "/api/proxy/gameVolume", "/api/proxy/pending", "/api/proxy/pendingReportConfig", "/api/proxy/updatePendingReportConfig", "/api/proxy/tokens", "/api/proxy/logs", "/api/proxy/admin/summary", "/api/proxy/admin/config", "/api/proxy/admin/logs", "/api/proxy/health", "/api/proxy/status", "/api/proxy/endpoints", "/api/proxy/renewToken", "/api/proxy/agent/heatmap", "/api/proxy/agents", "/api/proxy/agent/performance", "/api/proxy/bettor/details", "/api/proxy/analytics/syndicates", "/api/proxy/analytics/syndicates/stats", "/api/proxy/analytics/sharp-money", "/api/proxy/analytics/ev-simulation", "/api/proxy/analytics/predictive-sharpness", "/api/proxy/analytics/backtest", "/api/proxy/integrity/cases", "/api/proxy/integrity/cases/:id", "/api/proxy/risk/alerts", "/api/proxy/risk/config", "/api/proxy/risk/syndicates", "/api/proxy/line-rules", "/api/proxy/line-adjustments/log", "/admin/rate-limit"],
-        subscribers: subscribers.size + sessions.size,
-        features: { ...CONFIG.features },
-        circuitBreaker: circuitBreaker.getStatus(),
-      });
-    }
-
-    // ---- /HEALTH ----
-    if (path === "/health") {
-      const health = await dependencyHealth();
-      return json(health.body, health.httpStatus);
-    }
-
-    // ---- /FEATURES ----
-    if (path === "/features") {
-      return json({
-        features: { ...CONFIG.features },
-        retry: { maxRetries: CONFIG.maxRetries, backoffBaseMs: CONFIG.retryBaseMs },
-        rateLimit: { defaultPerMinute: CONFIG.defaultRateLimit.limit, window: CONFIG.defaultRateLimit.window },
-        tokenRenewal: CONFIG.tokenRenewal,
-        circuitBreaker: circuitBreaker.getStatus(),
-        tunables: {
-          wsBatchIntervalMs: CONFIG.wsBatchIntervalMs,
-          tokenCacheTtlMs: CONFIG.tokenCacheTtlMs,
-          memoryCacheTtlMs: CONFIG.memoryCacheTtlMs,
-          memCacheEntries: memCache.size,
-          inflightRequests: inflight.size,
-          tokenMemCacheEntries: tokenMemCache.size,
-          riskEngineRunning,
-          lineEngineRunning,
-        },
-      });
-    }
-
-    // ---- /DEMO/STATUS ----
-    if (path === "/demo/status") {
-      return json({
-        demoMode: CONFIG.features.demoMode,
-        mockedEndpoints: Array.from(DEMO_ENDPOINT_KEYS).sort(),
-        bypassesBuckeyeAuth: CONFIG.features.demoMode,
-        note: CONFIG.features.demoMode
-          ? "Demo mode returns local mock payloads for listed endpoints before Buckeye token validation."
-          : "Demo mode is disabled; listed endpoints still require Buckeye token/cf_clearance or stored credentials.",
-      });
-    }
-
-    // ---- /METRICS ----
-    if (path === "/metrics/prometheus" && CONFIG.features.metrics) {
-      return new Response(prometheusMetrics(), {
-        status: 200,
-        headers: { "Content-Type": "text/plain; version=0.0.4; charset=utf-8", ...cors },
-      });
-    }
-
-    if (path === "/metrics" && CONFIG.features.metrics) {
-      return json(runtimeMetrics());
-    }
-
-    if (path === "/api/agent/network-stats" && req.method === "GET") {
-      const authErr = apiKeyAuth(req);
-      if (authErr) return authErr;
-      return json(networkHealthMetrics(), 200, { "X-Request-ID": ctx.reqId });
-    }
-
-    // ---- /READY (k8s probe) ----
-    if (path === "/ready") {
-      const result = await readiness();
-      return json(result, result.ready ? 200 : 503);
-    }
-
-    // ---- /CONFIG (runtime config hot-reload) ----
-    if (path === "/config" && req.method === "POST") {
-      const updated = reloadFromEnv();
-      return json({ reloaded: true, features: updated.features, tunables: { wsBatchIntervalMs: updated.wsBatchIntervalMs, maxRetries: updated.maxRetries, retryBaseMs: updated.retryBaseMs } });
-    }
-
-    // ---- /API/SECRETS ----
-    if (path === "/api/secrets") {
-      const authErr = apiKeyAuth(req);
-      if (authErr) return authErr;
-
-      if (req.method === "GET") {
-        const names = await getManagedSecretNames();
-        const redact = url.searchParams.get("redact") === "1" || url.searchParams.get("redact") === "true";
-        const secretsMap: Record<string, string | null> = {};
-        for (const name of names) {
-          const value = await getManagedSecret(name);
-          secretsMap[name] = redact && value ? "[set]" : value;
-        }
-        return json(secretsMap, 200, { "X-Request-ID": ctx.reqId });
+      // ---- / ----
+      if (path === "/" || path === "") {
+        return json({
+          service: "Buckeye PPH Proxy",
+          version: "2.0",
+          runtime: "Bun",
+          sqlite: "bun:sqlite (WAL)",
+          status: "running",
+          timestamp: new Date().toISOString(),
+          websocket: "/ws",
+          endpoints: ["/", "/ping", "/features", "/demo/status", "/metrics", "/metrics/prometheus", "/ready", "/health", "/config", "/ws", "/openapi.json", "/dashboard", "/admin", "/api/agent/network-stats", "/api/secrets", "/api/proxy/auth", "/api/proxy/:endpoint", "/api/proxy/{endpointKey}", "/api/proxy/taxonomy/:level", "/api/proxy/sportsLeagues", "/api/proxy/leagueLines", "/api/proxy/agentDownline", "/api/proxy/agentBilling", "/api/proxy/playerInfo", "/api/proxy/dynamicLive", "/api/proxy/scoresLive", "/api/proxy/sportsTypesLive", "/api/proxy/liveGame", "/api/proxy/gameVolume", "/api/proxy/pending", "/api/proxy/pendingReportConfig", "/api/proxy/updatePendingReportConfig", "/api/proxy/tokens", "/api/proxy/logs", "/api/proxy/admin/summary", "/api/proxy/admin/config", "/api/proxy/admin/logs", "/api/proxy/health", "/api/proxy/status", "/api/proxy/endpoints", "/api/proxy/renewToken", "/api/proxy/agent/heatmap", "/api/proxy/agents", "/api/proxy/agent/performance", "/api/proxy/bettor/details", "/api/proxy/analytics/syndicates", "/api/proxy/analytics/syndicates/stats", "/api/proxy/analytics/sharp-money", "/api/proxy/analytics/ev-simulation", "/api/proxy/analytics/predictive-sharpness", "/api/proxy/analytics/backtest", "/api/proxy/integrity/cases", "/api/proxy/integrity/cases/:id", "/api/proxy/risk/alerts", "/api/proxy/risk/config", "/api/proxy/risk/syndicates", "/api/proxy/line-rules", "/api/proxy/line-adjustments/log", "/admin/rate-limit"],
+          subscribers: subscribers.size + sessions.size,
+          features: { ...CONFIG.features },
+          circuitBreaker: circuitBreaker.getStatus(),
+        }, 200, {}, "", req);
       }
 
-      if (req.method === "POST") {
-        const body = await readBody(req);
-        const name = cleanString(body.name);
-        const value = typeof body.value === "string" ? body.value : "";
-        if (!name || typeof body.value !== "string") {
-          return json({ error: "name and value required" }, 400, { "X-Request-ID": ctx.reqId });
-        }
-        if (!/^[A-Za-z0-9:_-]+$/.test(name)) {
-          return json({ error: "secret name contains unsupported characters" }, 400, { "X-Request-ID": ctx.reqId });
-        }
-        try {
-          await setManagedSecret(name, value);
-          applyManagedSecretToConfig(name, value);
-          return json({ success: true, name }, 200, { "X-Request-ID": ctx.reqId });
-        } catch (err: unknown) {
-          return json({ error: "Secret write failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
-        }
+      // ---- /HEALTH ----
+      if (path === "/health") {
+        const health = await dependencyHealth();
+        return json(health.body, health.httpStatus);
       }
 
-      if (req.method === "DELETE") {
-        const name = cleanString(url.searchParams.get("name"));
-        if (!name) return json({ error: "name required" }, 400, { "X-Request-ID": ctx.reqId });
-        try {
-          await deleteManagedSecret(name);
-          applyManagedSecretToConfig(name, null);
-          return json({ success: true, name }, 200, { "X-Request-ID": ctx.reqId });
-        } catch (err: unknown) {
-          return json({ error: "Secret delete failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
-        }
+      // ---- /FEATURES ----
+      if (path === "/features") {
+        return json({
+          features: { ...CONFIG.features },
+          retry: { maxRetries: CONFIG.maxRetries, backoffBaseMs: CONFIG.retryBaseMs },
+          rateLimit: { defaultPerMinute: CONFIG.defaultRateLimit.limit, window: CONFIG.defaultRateLimit.window },
+          tokenRenewal: CONFIG.tokenRenewal,
+          circuitBreaker: circuitBreaker.getStatus(),
+          tunables: {
+            wsBatchIntervalMs: CONFIG.wsBatchIntervalMs,
+            tokenCacheTtlMs: CONFIG.tokenCacheTtlMs,
+            memoryCacheTtlMs: CONFIG.memoryCacheTtlMs,
+            memCacheEntries: memCache.size,
+            inflightRequests: inflight.size,
+            tokenMemCacheEntries: tokenMemCache.size,
+            riskEngineRunning,
+            lineEngineRunning,
+          },
+        });
       }
 
-      return json({ error: "Method not allowed" }, 405, { "X-Request-ID": ctx.reqId });
-    }
+      // ---- /DEMO/STATUS ----
+      if (path === "/demo/status") {
+        return json({
+          demoMode: CONFIG.features.demoMode,
+          mockedEndpoints: Array.from(DEMO_ENDPOINT_KEYS).sort(),
+          bypassesBuckeyeAuth: CONFIG.features.demoMode,
+          note: CONFIG.features.demoMode
+            ? "Demo mode returns local mock payloads for listed endpoints before Buckeye token validation."
+            : "Demo mode is disabled; listed endpoints still require Buckeye token/cf_clearance or stored credentials.",
+        });
+      }
 
-    // ---- /OPENAPI.JSON ----
-    if (path === "/openapi.json") {
-      return json(buildOpenApiSpec());
-    }
+      // ---- /METRICS ----
+      if (path === "/metrics/prometheus" && CONFIG.features.metrics) {
+        return new Response(prometheusMetrics(), {
+          status: 200,
+          headers: { "Content-Type": "text/plain; version=0.0.4; charset=utf-8", ...cors },
+        });
+      }
 
-    // ---- ADMIN JSON + HTML ----
-    if (path === "/api/proxy/admin/summary" && req.method === "GET") {
-      const authErr = adminApiKeyAuth(req);
-      if (authErr) return authErr;
-      const limit = parseInt(url.searchParams.get("limit") || "25", 10);
-      return json(adminSummaryPayload(limit));
-    }
+      if (path === "/metrics" && CONFIG.features.metrics) {
+        return json(runtimeMetrics());
+      }
 
-    if (path === "/api/proxy/admin/config" && req.method === "GET") {
-      const authErr = adminApiKeyAuth(req);
-      if (authErr) return authErr;
-      return json({ config: redactedConfig() });
-    }
+      if (path === "/api/agent/network-stats" && req.method === "GET") {
+        const authErr = apiKeyAuth(req);
+        if (authErr) return authErr;
+        return json(networkHealthMetrics(), 200, { "X-Request-ID": ctx.reqId });
+      }
 
-    if (path === "/api/proxy/admin/logs" && req.method === "GET") {
-      const authErr = adminApiKeyAuth(req);
-      if (authErr) return authErr;
-      const limit = parseInt(url.searchParams.get("limit") || "100", 10);
-      const logs = getAdminLogs(limit);
-      return json({ count: logs.length, logs });
-    }
+      // ---- /READY (k8s probe) ----
+      if (path === "/ready") {
+        const result = await readiness();
+        return json(result, result.ready ? 200 : 503);
+      }
 
-    if (path === "/api/proxy/admin/sample-rate" && req.method === "POST") {
-      const authErr = adminApiKeyAuth(req);
-      if (authErr) return authErr;
-      const parsed = await safeParseBody(req, SampleRateSchema);
-      if (!parsed.success) return json({ error: parsed.error }, 400);
-      CONFIG.sampleRate = parsed.data.rate;
-      logger.log("info", "admin", `Sample rate changed to ${parsed.data.rate}`);
-      return json({ success: true, sampleRate: parsed.data.rate });
-    }
+      // ---- /CONFIG (runtime config hot-reload) ----
+      if (path === "/config" && req.method === "POST") {
+        const updated = reloadFromEnv();
+        return json({ reloaded: true, features: updated.features, tunables: { wsBatchIntervalMs: updated.wsBatchIntervalMs, maxRetries: updated.maxRetries, retryBaseMs: updated.retryBaseMs } });
+      }
 
-    if (path === "/admin" && req.method === "GET") {
-      const authErr = adminApiKeyAuth(req);
-      if (authErr) return authErr;
-      return new Response(buildAdminHtml(), {
-        status: 200,
-        headers: { "Content-Type": "text/html; charset=utf-8", ...cors },
-      });
-    }
+      // ---- /API/SECRETS ----
+      if (path === "/api/secrets") {
+        const authErr = apiKeyAuth(req);
+        if (authErr) return authErr;
 
-    // ---- /DASHBOARD ----
-    if (path === "/dashboard" && req.method === "GET") {
-      const dashboardHtml = `<!DOCTYPE html>
+        if (req.method === "GET") {
+          const names = await getManagedSecretNames();
+          const redact = url.searchParams.get("redact") === "1" || url.searchParams.get("redact") === "true";
+          const secretsMap: Record<string, string | null> = {};
+          for (const name of names) {
+            const value = await getManagedSecret(name);
+            secretsMap[name] = redact && value ? "[set]" : value;
+          }
+          return json(secretsMap, 200, { "X-Request-ID": ctx.reqId });
+        }
+
+        if (req.method === "POST") {
+          const body = await readBody(req);
+          const name = cleanString(body.name);
+          const value = typeof body.value === "string" ? body.value : "";
+          if (!name || typeof body.value !== "string") {
+            return json({ error: "name and value required" }, 400, { "X-Request-ID": ctx.reqId });
+          }
+          if (!/^[A-Za-z0-9:_-]+$/.test(name)) {
+            return json({ error: "secret name contains unsupported characters" }, 400, { "X-Request-ID": ctx.reqId });
+          }
+          try {
+            await setManagedSecret(name, value);
+            applyManagedSecretToConfig(name, value);
+            return json({ success: true, name }, 200, { "X-Request-ID": ctx.reqId });
+          } catch (err: unknown) {
+            return json({ error: "Secret write failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
+          }
+        }
+
+        if (req.method === "DELETE") {
+          const name = cleanString(url.searchParams.get("name"));
+          if (!name) return json({ error: "name required" }, 400, { "X-Request-ID": ctx.reqId });
+          try {
+            await deleteManagedSecret(name);
+            applyManagedSecretToConfig(name, null);
+            return json({ success: true, name }, 200, { "X-Request-ID": ctx.reqId });
+          } catch (err: unknown) {
+            return json({ error: "Secret delete failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
+          }
+        }
+
+        return json({ error: "Method not allowed" }, 405, { "X-Request-ID": ctx.reqId });
+      }
+
+      // ---- /OPENAPI.JSON ----
+      if (path === "/openapi.json") {
+        return json(buildOpenApiSpec());
+      }
+
+      // ---- ADMIN JSON + HTML ----
+      if (path === "/api/proxy/admin/summary" && req.method === "GET") {
+        const authErr = adminApiKeyAuth(req);
+        if (authErr) return authErr;
+        const limit = parseInt(url.searchParams.get("limit") || "25", 10);
+        return json(adminSummaryPayload(limit));
+      }
+
+      if (path === "/api/proxy/admin/config" && req.method === "GET") {
+        const authErr = adminApiKeyAuth(req);
+        if (authErr) return authErr;
+        return json({ config: redactedConfig() });
+      }
+
+      if (path === "/api/proxy/admin/logs" && req.method === "GET") {
+        const authErr = adminApiKeyAuth(req);
+        if (authErr) return authErr;
+        const limit = parseInt(url.searchParams.get("limit") || "100", 10);
+        const logs = getAdminLogs(limit);
+        return json({ count: logs.length, logs });
+      }
+
+      if (path === "/api/proxy/admin/sample-rate" && req.method === "POST") {
+        const authErr = adminApiKeyAuth(req);
+        if (authErr) return authErr;
+        const parsed = await safeParseBody(req, SampleRateSchema);
+        if (!parsed.success) return json({ error: parsed.error }, 400);
+        CONFIG.sampleRate = parsed.data.rate;
+        logger.log("info", "admin", `Sample rate changed to ${parsed.data.rate}`);
+        return json({ success: true, sampleRate: parsed.data.rate });
+      }
+
+      if (path === "/admin" && req.method === "GET") {
+        const authErr = adminApiKeyAuth(req);
+        if (authErr) return authErr;
+        return new Response(buildAdminHtml(), {
+          status: 200,
+          headers: { "Content-Type": "text/html; charset=utf-8", ...cors },
+        });
+      }
+
+      // ---- /DASHBOARD ----
+      if (path === "/dashboard" && req.method === "GET") {
+        const dashboardHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -5031,1785 +5101,1913 @@ const server = Bun.serve<WsData>({
 </script>
 </body>
 </html>`;
-      return new Response(dashboardHtml, { status: 200, headers: { "Content-Type": "text/html; charset=utf-8", ...cors } });
-    }
-
-    // ---- /API/PROXY/AUTH ----
-    if (path === "/api/proxy/auth" && req.method === "POST") {
-      activeRequests++;
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const body = await readBody(req);
-      const customerID = cleanString(body.customerID || body.customerId || CONFIG.customerId || CONFIG.agentId);
-      const credentials = await loadProxyCredentials(customerID, {
-        password: cleanString(body.password),
-        cfClearance: cleanString(body.cf_clearance || body.cfClearance),
-      });
-      const password = credentials.password;
-      const cf_clearance = credentials.cfClearance;
-      if (!customerID) { activeRequests--; return json({ error: "customerID required" }, 400, { "X-Request-ID": ctx.reqId }); }
-      if (!password) { activeRequests--; return json({ error: "password required" }, 400, { "X-Request-ID": ctx.reqId }); }
-      if (!cf_clearance) { activeRequests--; return json({ error: "cf_clearance required" }, 400, { "X-Request-ID": ctx.reqId }); }
-
-      const form = toForm({
-        customerID, password, state: "true", multiaccount: "1",
-        response_type: "code", client_id: customerID,
-        domain: "fantasy402.com", redirect_uri: "fantasy402.com",
-        operation: "authenticateCustomer", RRO: "1",
-      });
-
-      try {
-        const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}${AUTH_ENDPOINT}`, {
-          method: "POST",
-          headers: browserHeaders("undefined"),
-          body: form,
-          redirect: "manual",
-        }), { reqId: ctx.reqId, endpoint: "auth" });
-
-        const bodyText = await upstream.clone().text();
-        requestFinished(ctx, "auth", customerID, upstream.status);
-
-        const location = upstream.headers.get("location");
-        const authCode = location ? new URL(location, CONFIG.baseUrl).searchParams.get("code") : null;
-
-        let storedToken = null;
-        if (authCode) {
-          try {
-            const tokenRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/System/renewToken`, {
-              method: "POST",
-              headers: browserHeaders("undefined", `cf_clearance=${cf_clearance}`),
-              body: toForm({ operation: "renewToken", agentID: customerID, agentOwner: customerID, agentSite: "1" }),
-            }), { reqId: ctx.reqId, endpoint: "renewToken" });
-            const tokenData = await tokenRes.json() as { token?: string; code?: string };
-            storedToken = tokenData.token || tokenData.code || null;
-          } catch (e) { console.warn("[Proxy] Token renewal fallback failed:", e); }
-        }
-
-        const expiresAt = Math.floor(Date.now() / 1000) + 7200;
-        insertToken.run({
-          $customerID: customerID,
-          $cf_clearance: null,
-          $auth_code: authCode,
-          $bearer_token: storedToken,
-          $expires_at: expiresAt,
-        });
-        invalidateTokenCache(customerID);
-        scheduleTokenRenewal(customerID, expiresAt);
-
-        const ok = upstream.ok || upstream.status === 302;
-        if (ok) {
-          await rememberProxyCredentialSecrets(customerID, { password, cfClearance: cf_clearance });
-        }
-        activeRequests--;
-        return json({ success: ok, status: upstream.status, authCode, location, bearer_token: storedToken, body: bodyText }, ok ? 200 : upstream.status, { "X-Request-ID": ctx.reqId });
-      } catch (err: unknown) {
-        requestFinished(ctx, "auth", customerID, 0, err);
-        activeRequests--;
-        return json({ error: "Auth failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
-      }
-    }
-
-    // ---- /API/PROXY/TAXONOMY/:LEVEL ----
-    if (path.startsWith("/api/proxy/taxonomy/") && req.method === "POST") {
-      activeRequests++;
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-
-      const rawLevel = path.replace("/api/proxy/taxonomy/", "");
-      if (!isTaxonomyLevel(rawLevel)) {
-        activeRequests--;
-        return json({ error: `Unknown taxonomy level: ${rawLevel}`, valid: Object.keys(TAXONOMY_MAP) }, 400, { "X-Request-ID": ctx.reqId });
+        return new Response(dashboardHtml, { status: 200, headers: { "Content-Type": "text/html; charset=utf-8", ...cors } });
       }
 
-      const taxonomy = TAXONOMY_MAP[rawLevel];
-      let customerID: string | null = null;
-      try {
-        const body = await readBody(req);
-        const { token, cf_clearance, customerID: bodyCustomerID, ...filters } = body;
-        customerID = bodyCustomerID ? String(bodyCustomerID) : null;
-
-        let finalToken = token ? String(token) : "";
-        let finalCf = cf_clearance ? extractCfClearanceValue(String(cf_clearance)) : "";
-        if (customerID && (!finalToken || !finalCf)) {
-          const stored = await getStoredCredentials(customerID);
-          finalToken ||= stored?.token || "";
-          finalCf ||= stored?.cf_clearance || "";
-        }
-
-        if (!finalToken || !finalCf) {
-          requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, 400, "Missing token/cf_clearance");
-          activeRequests--;
-          return json({ error: "token/cf_clearance or customerID required" }, 400, { "X-Request-ID": ctx.reqId });
-        }
-
-        const pHash = utilsHashPayload({ level: rawLevel, ...filters });
-        const memKey = `tax:${rawLevel}:${pHash}`;
-        const memCached = getMemCache(memKey);
-        if (memCached) {
-          requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, 200);
-          activeRequests--;
-          return json({ source: "mem_cache", level: rawLevel, shape: taxonomy.shape, data: memCached }, 200, { "X-Request-ID": ctx.reqId });
-        }
-
-        const cached = getCache.get({ $endpoint: taxonomy.endpoint, $payload_hash: pHash }) as CacheRow | null;
-        if (cached) {
-          const data = JSON.parse(cached.response_json) as unknown;
-          setMemCache(memKey, data, taxonomy.cacheTtl * 1000);
-          requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, 200);
-          activeRequests--;
-          return json({ source: "sqlite_cache", level: rawLevel, shape: taxonomy.shape, cached_at: cached.cached_at, data }, 200, { "X-Request-ID": ctx.reqId });
-        }
-
-        const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/${taxonomy.endpoint}`, {
-          method: "POST",
-          headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
-          body: toForm({ ...filters, operation: taxonomy.endpoint.split("/").pop() || rawLevel, RRO: "1" }),
-        }), { reqId: ctx.reqId, endpoint: taxonomy.endpoint });
-
-        const raw = await readBuckeyeOrThrow(upstream, taxonomy.endpoint, ctx.reqId);
-        const data = normalizeTaxonomy(rawLevel, raw);
-        insertCache.run({ $endpoint: taxonomy.endpoint, $payload_hash: pHash, $response_json: JSON.stringify(data), $ttl_seconds: taxonomy.cacheTtl });
-        setMemCache(memKey, data, taxonomy.cacheTtl * 1000);
-        requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, upstream.status);
-        activeRequests--;
-        return json({ source: "live", level: rawLevel, shape: taxonomy.shape, data }, upstream.status, { "X-Request-ID": ctx.reqId });
-      } catch (err: unknown) {
-        const status = err instanceof UpstreamProxyError ? err.clientStatus : 500;
-        requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, status, err);
-        activeRequests--;
-        if (err instanceof UpstreamProxyError) {
-          return json({ ...err.payload, level: rawLevel }, err.clientStatus, { "X-Request-ID": ctx.reqId });
-        }
-        return json({ error: "Taxonomy fetch failed", level: rawLevel, details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
-      }
-    }
-
-    // ---- /API/PROXY NAMED BUCKEYE ALIASES ----
-    if (path.startsWith("/api/proxy/") && req.method === "POST") {
-      const alias = path.replace("/api/proxy/", "");
-      if (isProxyAlias(alias)) {
+      // ---- /API/PROXY/AUTH ----
+      if (path === "/api/proxy/auth" && req.method === "POST") {
         activeRequests++;
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const body = await readBody(req);
+        const customerID = cleanString(body.customerID || body.customerId || CONFIG.customerId || CONFIG.agentId);
+        const credentials = await loadProxyCredentials(customerID, {
+          password: cleanString(body.password),
+          cfClearance: cleanString(body.cf_clearance || body.cfClearance),
+        });
+        const password = credentials.password;
+        const cf_clearance = credentials.cfClearance;
+        if (!customerID) { activeRequests--; return json({ error: "customerID required" }, 400, { "X-Request-ID": ctx.reqId }); }
+        if (!password) { activeRequests--; return json({ error: "password required" }, 400, { "X-Request-ID": ctx.reqId }); }
+        if (!cf_clearance) { activeRequests--; return json({ error: "cf_clearance required" }, 400, { "X-Request-ID": ctx.reqId }); }
+
+        const form = toForm({
+          customerID, password, state: "true", multiaccount: "1",
+          response_type: "code", client_id: customerID,
+          domain: "fantasy402.com", redirect_uri: "fantasy402.com",
+          operation: "authenticateCustomer", RRO: "1",
+        });
+
+        try {
+          const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}${AUTH_ENDPOINT}`, {
+            method: "POST",
+            headers: browserHeaders("undefined"),
+            body: form,
+            redirect: "manual",
+          }), { reqId: ctx.reqId, endpoint: "auth" });
+
+          const bodyText = await upstream.clone().text();
+          requestFinished(ctx, "auth", customerID, upstream.status);
+
+          const location = upstream.headers.get("location");
+          const authCode = location ? new URL(location, CONFIG.baseUrl).searchParams.get("code") : null;
+
+          let storedToken = null;
+          if (authCode) {
+            try {
+              const tokenRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/System/renewToken`, {
+                method: "POST",
+                headers: browserHeaders("undefined", `cf_clearance=${cf_clearance}`),
+                body: toForm({ operation: "renewToken", agentID: customerID, agentOwner: customerID, agentSite: "1" }),
+              }), { reqId: ctx.reqId, endpoint: "renewToken" });
+              const tokenData = await tokenRes.json() as { token?: string; code?: string };
+              storedToken = tokenData.token || tokenData.code || null;
+            } catch (e) { console.warn("[Proxy] Token renewal fallback failed:", e); }
+          }
+
+          const expiresAt = Math.floor(Date.now() / 1000) + 7200;
+          insertToken.run({
+            $customerID: customerID,
+            $cf_clearance: null,
+            $auth_code: authCode,
+            $bearer_token: storedToken,
+            $expires_at: expiresAt,
+          });
+          invalidateTokenCache(customerID);
+          scheduleTokenRenewal(customerID, expiresAt);
+
+          const ok = upstream.ok || upstream.status === 302;
+          if (ok) {
+            await rememberProxyCredentialSecrets(customerID, { password, cfClearance: cf_clearance });
+          }
+          activeRequests--;
+          return json({ success: ok, status: upstream.status, authCode, location, bearer_token: storedToken, body: bodyText }, ok ? 200 : upstream.status, { "X-Request-ID": ctx.reqId });
+        } catch (err: unknown) {
+          requestFinished(ctx, "auth", customerID, 0, err);
+          activeRequests--;
+          return json({ error: "Auth failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
+        }
+      }
+
+      // ---- /API/PROXY/TAXONOMY/:LEVEL ----
+      if (path.startsWith("/api/proxy/taxonomy/") && req.method === "POST") {
+        activeRequests++;
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+
+        const rawLevel = path.replace("/api/proxy/taxonomy/", "");
+        if (!isTaxonomyLevel(rawLevel)) {
+          activeRequests--;
+          return json({ error: `Unknown taxonomy level: ${rawLevel}`, valid: Object.keys(TAXONOMY_MAP) }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        const taxonomy = TAXONOMY_MAP[rawLevel];
         let customerID: string | null = null;
         try {
           const body = await readBody(req);
-          customerID = cleanString(body.agentID || body.customerID || body.playerID || body.bettorID) || null;
-          const missing = missingAliasRequestParams(alias, body);
-          if (missing.length) {
-            requestFinished(ctx, `alias:${alias}`, customerID, 400, `Missing params: ${missing.join(", ")}`);
-            activeRequests--;
-            return json({ error: `Missing required parameters: ${missing.join(", ")}`, missing, alias }, 400, { "X-Request-ID": ctx.reqId });
-          }
-          if ((alias === "pendingReportConfig" || alias === "updatePendingReportConfig") && !cleanString(body.agentID)) {
-            requestFinished(ctx, `alias:${alias}`, customerID, 400, "Missing agentID");
-            activeRequests--;
-            return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
-          }
-          if (CONFIG.features.demoMode) {
-            const mock = getMockResponse(alias, body);
-            if (mock !== null) {
-              requestFinished(ctx, `alias:${alias}`, customerID, 200);
-              activeRequests--;
-              return json({ source: "demo", alias, data: mock }, 200, { "X-Request-ID": ctx.reqId });
-            }
-          }
-          let finalToken = cleanString(body.token);
-          let finalCf = cleanString(body.cf_clearance || body.cfClearance);
-          const finalCfBm = cleanString(body.__cf_bm || body.cf_bm || body.cfBm);
+          const { token, cf_clearance, customerID: bodyCustomerID, ...filters } = body;
+          customerID = bodyCustomerID ? String(bodyCustomerID) : null;
+
+          let finalToken = token ? String(token) : "";
+          let finalCf = cf_clearance ? extractCfClearanceValue(String(cf_clearance)) : "";
           if (customerID && (!finalToken || !finalCf)) {
             const stored = await getStoredCredentials(customerID);
             finalToken ||= stored?.token || "";
             finalCf ||= stored?.cf_clearance || "";
           }
+
+          if (!finalToken || !finalCf) {
+            requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, 400, "Missing token/cf_clearance");
+            activeRequests--;
+            return json({ error: "token/cf_clearance or customerID required" }, 400, { "X-Request-ID": ctx.reqId });
+          }
+
+          const pHash = utilsHashPayload({ level: rawLevel, ...filters });
+          const memKey = `tax:${rawLevel}:${pHash}`;
+          const memCached = getMemCache(memKey);
+          if (memCached) {
+            requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, 200);
+            activeRequests--;
+            return json({ source: "mem_cache", level: rawLevel, shape: taxonomy.shape, data: memCached }, 200, { "X-Request-ID": ctx.reqId });
+          }
+
+          const cached = getCache.get({ $endpoint: taxonomy.endpoint, $payload_hash: pHash }) as CacheRow | null;
+          if (cached) {
+            const data = JSON.parse(cached.response_json) as unknown;
+            setMemCache(memKey, data, taxonomy.cacheTtl * 1000);
+            requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, 200);
+            activeRequests--;
+            return json({ source: "sqlite_cache", level: rawLevel, shape: taxonomy.shape, cached_at: cached.cached_at, data }, 200, { "X-Request-ID": ctx.reqId });
+          }
+
+          const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/${taxonomy.endpoint}`, {
+            method: "POST",
+            headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
+            body: toForm({ ...filters, operation: taxonomy.endpoint.split("/").pop() || rawLevel, RRO: "1" }),
+          }), { reqId: ctx.reqId, endpoint: taxonomy.endpoint });
+
+          const raw = await readBuckeyeOrThrow(upstream, taxonomy.endpoint, ctx.reqId);
+          const data = normalizeTaxonomy(rawLevel, raw);
+          insertCache.run({ $endpoint: taxonomy.endpoint, $payload_hash: pHash, $response_json: JSON.stringify(data), $ttl_seconds: taxonomy.cacheTtl });
+          setMemCache(memKey, data, taxonomy.cacheTtl * 1000);
+          requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, upstream.status);
+          activeRequests--;
+          return json({ source: "live", level: rawLevel, shape: taxonomy.shape, data }, upstream.status, { "X-Request-ID": ctx.reqId });
+        } catch (err: unknown) {
+          const status = err instanceof UpstreamProxyError ? err.clientStatus : 500;
+          requestFinished(ctx, `taxonomy:${rawLevel}`, customerID, status, err);
+          activeRequests--;
+          if (err instanceof UpstreamProxyError) {
+            return json({ ...err.payload, level: rawLevel }, err.clientStatus, { "X-Request-ID": ctx.reqId });
+          }
+          return json({ error: "Taxonomy fetch failed", level: rawLevel, details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
+        }
+      }
+
+      // ---- /API/PROXY NAMED BUCKEYE ALIASES ----
+      if (path.startsWith("/api/proxy/") && req.method === "POST") {
+        const alias = path.replace("/api/proxy/", "");
+        if (isProxyAlias(alias)) {
+          activeRequests++;
+          let customerID: string | null = null;
+          try {
+            const body = await readBody(req);
+            customerID = cleanString(body.agentID || body.customerID || body.playerID || body.bettorID) || null;
+            const missing = missingAliasRequestParams(alias, body);
+            if (missing.length) {
+              requestFinished(ctx, `alias:${alias}`, customerID, 400, `Missing params: ${missing.join(", ")}`);
+              activeRequests--;
+              return json({ error: `Missing required parameters: ${missing.join(", ")}`, missing, alias }, 400, { "X-Request-ID": ctx.reqId });
+            }
+            if ((alias === "pendingReportConfig" || alias === "updatePendingReportConfig") && !cleanString(body.agentID)) {
+              requestFinished(ctx, `alias:${alias}`, customerID, 400, "Missing agentID");
+              activeRequests--;
+              return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+            }
+            if (CONFIG.features.demoMode) {
+              const mock = getMockResponse(alias, body);
+              if (mock !== null) {
+                requestFinished(ctx, `alias:${alias}`, customerID, 200);
+                activeRequests--;
+                return json({ source: "demo", alias, data: mock }, 200, { "X-Request-ID": ctx.reqId });
+              }
+            }
+            let finalToken = cleanString(body.token);
+            let finalCf = cleanString(body.cf_clearance || body.cfClearance);
+            const finalCfBm = cleanString(body.__cf_bm || body.cf_bm || body.cfBm);
+            if (customerID && (!finalToken || !finalCf)) {
+              const stored = await getStoredCredentials(customerID);
+              finalToken ||= stored?.token || "";
+              finalCf ||= stored?.cf_clearance || "";
+            }
+            if (CONFIG.features.demoMode && (!finalToken || !finalCf)) {
+              finalToken = "demo-token";
+              finalCf = getDemoCfClearance();
+            }
+            if (!finalToken || !finalCf) {
+              requestFinished(ctx, `alias:${alias}`, customerID, 400, "Missing token/cf_clearance");
+              activeRequests--;
+              return json({ error: "token/cf_clearance or stored customerID credentials required" }, 400, { "X-Request-ID": ctx.reqId });
+            }
+
+            const result = await callProxyAlias(alias, body, finalToken, finalCf, ctx.reqId, finalCfBm);
+            const normalized = alias === "agentDownline" || alias === "agentBilling"
+              ? normalizeResponse(result.candidate.endpoint, result.raw)
+              : alias === "playerInfo"
+                ? normalizeBettorDetails(result.raw, cleanString(body.playerID || body.bettorID || body.customerID))
+                : alias === "leagueLines"
+                  ? normalizeTaxonomy("lines", result.raw)
+                  : result.raw;
+
+            requestFinished(ctx, `alias:${alias}`, customerID, result.status);
+            activeRequests--;
+            return json({
+              source: "live",
+              alias,
+              endpoint: result.candidate.endpoint,
+              operation: result.candidate.operation,
+              data: normalized,
+            }, result.status, { "X-Request-ID": ctx.reqId });
+          } catch (err: unknown) {
+            requestFinished(ctx, `alias:${alias}`, customerID, 502, err);
+            activeRequests--;
+            return json({ error: `${alias} failed`, details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
+          }
+        }
+      }
+
+      // ---- /API/PROXY/RISK/CONFIG ----
+      if (path === "/api/proxy/risk/config" && req.method === "POST") {
+        activeRequests++;
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const body = await readBody(req);
+        const agentID = cleanString(body.agentID);
+        if (!agentID) {
+          activeRequests--;
+          return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+        const thresholds = asTaxonomyRecord(body.thresholds) || {};
+        insertRiskConfig.run({
+          $agentID: agentID,
+          $customerID: cleanString(body.customerID || agentID),
+          $thresholds: JSON.stringify(thresholds),
+          $webhook: cleanString(body.webhookUrl || body.webhook) || null,
+        });
+        requestFinished(ctx, "risk/config", agentID, 200);
+        activeRequests--;
+        return json({ success: true, agentID, thresholds }, 200, { "X-Request-ID": ctx.reqId });
+      }
+
+      if (path === "/api/proxy/risk/config" && req.method === "GET") {
+        activeRequests++;
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const agentID = cleanString(url.searchParams.get("agentID"));
+        if (!agentID) {
+          activeRequests--;
+          return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+        const cfg = getRiskConfig.get({ $agentID: agentID }) as { agentID: string; customerID: string; thresholds: string; webhook: string | null; updated_at: number } | null;
+        requestFinished(ctx, "risk/config", agentID, cfg ? 200 : 404);
+        activeRequests--;
+        if (!cfg) return json({ found: false }, 404, { "X-Request-ID": ctx.reqId });
+        return json({ found: true, agentID: cfg.agentID, customerID: cfg.customerID, thresholds: JSON.parse(cfg.thresholds || "{}"), webhook: cfg.webhook, updatedAt: cfg.updated_at }, 200, { "X-Request-ID": ctx.reqId });
+      }
+
+      // ---- /API/PROXY/ANALYTICS/EV ----
+      if (path === "/api/proxy/analytics/ev" && req.method === "POST") {
+        activeRequests++;
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+
+        const body = await readBody(req);
+        const token = cleanString(body.token);
+        const cf_clearance = cleanString(body.cf_clearance || body.cfClearance);
+        const bettorID = cleanString(body.bettorID || body.bettorId || body.customerID);
+        const days = Math.max(1, rowNumber(body, ["days"], 365));
+        if (!token || !cf_clearance || !bettorID) {
+          activeRequests--;
+          return json({ error: "token, cf_clearance, and bettorID required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        const since = Math.floor(Date.now() / 1000) - days * 86400;
+        try {
+          let wagers = getWagerAnalytics.all({ $bettorId: bettorID, $since: since }) as StoredWagerAnalytic[];
+          if (wagers.length < 20) {
+            const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getWagerByPlayer`, {
+              method: "POST",
+              headers: browserHeaders(token, `cf_clearance=${cf_clearance}`),
+              body: toForm({ playerID: bettorID, customerID: bettorID, operation: "getWagerByPlayer", RRO: "1" }),
+            }), { reqId: ctx.reqId, endpoint: "getWagerByPlayer" });
+            const raw = await readBuckeyeJson(upstream);
+            if (!upstream.ok) throw new Error(`getWagerByPlayer failed with ${upstream.status}: ${JSON.stringify(raw).slice(0, 400)}`);
+            storeAnalyticWagers(buckeyeRows(raw), "", bettorID);
+            wagers = getWagerAnalytics.all({ $bettorId: bettorID, $since: since }) as StoredWagerAnalytic[];
+          }
+
+          const model = computeAnalyticEV(wagers);
+          requestFinished(ctx, "analytics/ev", bettorID, 200);
+          activeRequests--;
+          return json(model, 200, { "X-Request-ID": ctx.reqId });
+        } catch (err: unknown) {
+          requestFinished(ctx, "analytics/ev", bettorID, 500, err);
+          activeRequests--;
+          return json({ error: "EV computation failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
+        }
+      }
+
+      // ---- AGENT DOWNLINE ROUTES ----
+      if (path === "/api/proxy/agents" && (req.method === "GET" || req.method === "POST")) {
+        activeRequests++;
+        const body = req.method === "POST" ? await readBody(req) : {};
+        const token = cleanString(url.searchParams.get("token") || body.token);
+        const cf_clearance = cleanString(url.searchParams.get("cf_clearance") || body.cf_clearance || body.cfClearance);
+        const customerID = cleanString(url.searchParams.get("customerID") || url.searchParams.get("agentID") || body.customerID || body.agentID);
+        if (!token || !cf_clearance) {
+          activeRequests--;
+          return json({ error: "token and cf_clearance required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+        if (!customerID) {
+          activeRequests--;
+          return json({ error: "customerID required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        const candidates = [
+          { endpoint: "Manager/getAgentList", operation: "getAgentList", extra: {} },
+          { endpoint: "Manager/getAgentManagement", operation: "getAgentManagement", extra: {} },
+          { endpoint: "Manager/getListAgenstByAgent", operation: "getListAgenstByAgent", extra: { agentType: "M" } },
+        ];
+        let lastError = "";
+
+        try {
+          for (const candidate of candidates) {
+            const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/${candidate.endpoint}`, {
+              method: "POST",
+              headers: browserHeaders(token, `cf_clearance=${cf_clearance}`),
+              body: toForm({
+                operation: candidate.operation,
+                agentID: customerID,
+                RRO: "1",
+                agentOwner: customerID,
+                agentSite: "1",
+                ...candidate.extra,
+              }),
+            }), { reqId: ctx.reqId, endpoint: candidate.operation });
+            const raw = await readBuckeyeJson(upstream);
+            if (upstream.ok) {
+              const normalized = normalizeAgentList(raw);
+              if (normalized.length > 0 || candidate === candidates[candidates.length - 1]) {
+                requestFinished(ctx, candidate.operation, customerID, upstream.status);
+                activeRequests--;
+                return json(normalized, 200, { "X-Request-ID": ctx.reqId });
+              }
+              lastError = `${candidate.operation} returned no agents`;
+            } else {
+              lastError = `${candidate.operation} failed with ${upstream.status}`;
+            }
+          }
+          requestFinished(ctx, "agentDownline", customerID, 502, lastError);
+          activeRequests--;
+          return json({ error: "Agent list unavailable", details: lastError }, 502, { "X-Request-ID": ctx.reqId });
+        } catch (err: unknown) {
+          requestFinished(ctx, "agentDownline", customerID, 500, err);
+          activeRequests--;
+          return json({ error: "Agent list failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
+        }
+      }
+
+      if (path === "/api/proxy/agent/performance" && req.method === "POST") {
+        activeRequests++;
+        const body = await readBody(req);
+        const token = cleanString(body.token);
+        const cf_clearance = cleanString(body.cf_clearance || body.cfClearance);
+        const agentID = cleanString(body.agentID || body.customerID);
+        const view: PerformancePeriod = cleanString(body.view || body.period, "weekly") === "daily" ? "daily" : "weekly";
+        if (!token || !cf_clearance || !agentID) {
+          activeRequests--;
+          return json({ error: "token, cf_clearance, and agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        try {
+          const buckets = buildPerformanceBuckets(
+            cleanString(body.startDate || body.start) || undefined,
+            cleanString(body.endDate || body.end) || undefined,
+            view
+          );
+          const maxBuckets = view === "daily" ? 31 : 26;
+          if (buckets.length > maxBuckets) {
+            activeRequests--;
+            return json({ error: `${view} reports support a maximum of ${maxBuckets} buckets per request` }, 400, { "X-Request-ID": ctx.reqId });
+          }
+
+          const data: PerformanceBucket[] = [];
+          for (const bucket of buckets) {
+            const payload: JsonObject = {
+              operation: "getAgentPerformance",
+              agentID,
+              customerID: agentID,
+              startDate: bucket.startDate,
+              endDate: bucket.endDate,
+              type: cleanString(body.type, "CP"),
+              freePlay: cleanString(body.freePlay, "Y"),
+              store: cleanString(body.store || agentID),
+              sport: cleanString(body.sport),
+              subsport: cleanString(body.subsport),
+              period: cleanString(body.performancePeriod || body.buckeyePeriod, "-1"),
+              wagerType: cleanString(body.wagerType),
+              betType: cleanString(body.betType),
+              tipo: cleanString(body.tipo || body.activity, "-1"),
+              debug: cleanString(body.debug, "0"),
+              agentOwner: cleanString(body.agentOwner || agentID),
+              agentSite: "1",
+              RRO: "1",
+            };
+            if (body.group) payload.group = body.group;
+            const upstream = await fetchWithFallback(CONFIG.baseUrl, "Manager/getAgentPerformance", payload, token, cf_clearance, ctx.reqId);
+            const raw = await readBuckeyeJson(upstream);
+            if (!upstream.ok) {
+              throw new Error(`getAgentPerformance ${bucket.date} failed with ${upstream.status}: ${JSON.stringify(raw).slice(0, 400)}`);
+            }
+            data.push({
+              date: bucket.date,
+              startDate: bucket.startDate,
+              endDate: bucket.endDate,
+              ...summarizePerformanceRows(buckeyeRows(raw)),
+            });
+          }
+
+          const report = performanceReportFromBuckets(view, data);
+          requestFinished(ctx, "agentPerformance", agentID, 200);
+          activeRequests--;
+          return json(report, 200, { "X-Request-ID": ctx.reqId });
+        } catch (err: unknown) {
+          requestFinished(ctx, "agentPerformance", agentID, 500, err);
+          activeRequests--;
+          return json({ error: "Agent performance failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
+        }
+      }
+
+      if (path === "/api/proxy/bettor/details" && req.method === "POST") {
+        activeRequests++;
+        const body = await readBody(req);
+        const token = cleanString(body.token);
+        const cf_clearance = cleanString(body.cf_clearance || body.cfClearance);
+        const bettorID = cleanString(body.bettorID || body.customerID || body.playerLogin || body.player);
+        const agentID = cleanString(body.agentID || body.agentOwner || body.store);
+        if (!token || !cf_clearance || !bettorID) {
+          activeRequests--;
+          return json({ error: "token, cf_clearance, and bettorID required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        const startDate = cleanString(body.startDate || body.start) || isoDate(addDays(new Date(), -7));
+        const endDate = cleanString(body.endDate || body.end) || isoDate(new Date());
+        const candidates = [
+          {
+            endpoint: "Manager/getBettorDetails",
+            payload: {
+              operation: "getBettorDetails",
+              bettorID,
+              customerID: bettorID,
+              playerLogin: bettorID,
+              agentID,
+              startDate,
+              endDate,
+              RRO: "1",
+              agentOwner: cleanString(body.agentOwner || agentID),
+              agentSite: "1",
+            },
+          },
+          {
+            endpoint: "System/getPlayerActivity",
+            payload: {
+              operation: "getPlayerActivity",
+              acc: bettorID,
+              customerID: bettorID,
+              playerLogin: bettorID,
+              agentID,
+              startDate,
+              endDate,
+              RRO: "1",
+            },
+          },
+          {
+            endpoint: "Manager/getReportPlayerAnalysis",
+            payload: {
+              operation: "getReportPlayerAnalysis",
+              playerLogin: bettorID,
+              customerID: bettorID,
+              agentID,
+              RRO: "1",
+              agentOwner: cleanString(body.agentOwner || agentID),
+              agentSite: "1",
+            },
+          },
+        ];
+        let lastError = "";
+
+        try {
+          for (const candidate of candidates) {
+            const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/${candidate.endpoint}`, {
+              method: "POST",
+              headers: browserHeaders(token, `cf_clearance=${cf_clearance}`),
+              body: toForm(candidate.payload),
+            }), { reqId: ctx.reqId, endpoint: candidate.endpoint });
+            const raw = await readBuckeyeJson(upstream);
+            if (upstream.ok) {
+              const details = normalizeBettorDetails(raw, bettorID);
+              requestFinished(ctx, candidate.endpoint, agentID || bettorID, upstream.status);
+              activeRequests--;
+              return json(details, 200, { "X-Request-ID": ctx.reqId });
+            }
+            lastError = `${candidate.endpoint} failed with ${upstream.status}`;
+          }
+          requestFinished(ctx, "bettorDetails", agentID || bettorID, 502, lastError);
+          activeRequests--;
+          return json({ error: "Bettor details unavailable", details: lastError }, 502, { "X-Request-ID": ctx.reqId });
+        } catch (err: unknown) {
+          requestFinished(ctx, "bettorDetails", agentID || bettorID, 500, err);
+          activeRequests--;
+          return json({ error: "Bettor details failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
+        }
+      }
+
+      // ---- /API/PROXY/:ENDPOINT ----
+      if (path.startsWith("/api/proxy/") && path !== "/api/proxy/auth" && path !== "/api/proxy/tokens" && path !== "/api/proxy/logs" && path !== "/api/proxy/health" && path !== "/api/proxy/status" && path !== "/api/proxy/endpoints" && path !== "/api/proxy/renewToken" && !path.startsWith("/api/proxy/agent/") && !path.startsWith("/api/proxy/analytics/") && !path.startsWith("/api/proxy/integrity/") && !path.startsWith("/api/proxy/risk/") && !path.startsWith("/api/proxy/line-") && req.method === "POST") {
+        activeRequests++;
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const endpointKey = path.replace("/api/proxy/", "");
+        const meta = ENDPOINT_MAP[endpointKey];
+        const endpoint = meta?.path || endpointKey;
+        const cacheTtl = meta?.cacheTtl ?? CONFIG.defaultRateLimit.window;
+        const isLogWrite = endpoint === "Log/write" || endpointKey === "logWrite";
+        let customerID: string | null = null;
+
+        try {
+          const idempotencyKey = CONFIG.features.idempotency && !isLogWrite ? req.headers.get("Idempotency-Key") : null;
+
+          const respond = async (response: Response) => {
+            if (idempotencyKey && response.status < 500) {
+              setIdempotency.run({ $key: idempotencyKey, $endpoint: endpoint, $customerID: customerID, $status: response.status, $response_json: await response.clone().text() });
+            }
+            return response;
+          };
+
+          if (idempotencyKey) {
+            const stored = getIdempotency.get({ $key: idempotencyKey }) as IdempotencyRow | null;
+            if (stored) {
+              activeRequests--;
+              return new Response(stored.response_json, { status: stored.status, headers: { "Content-Type": "application/json", ...cors, "X-Idempotent-Replay": "true", "X-Request-ID": ctx.reqId } });
+            }
+          }
+
+          const body = await readBody(req);
+          const {
+            token: bodyToken,
+            cf_clearance: bodyCf,
+            cfClearance: bodyCfCamel,
+            __cf_bm: _bodyCfBm,
+            cf_bm: _bodyCfBmSnake,
+            cfBm: _bodyCfBmCamel,
+            useCache = false,
+            ...bodyPayload
+          } = body;
+          const rawCustomerID = body.customerID || body.agentID || body.agentOwner || CONFIG.agentId || CONFIG.customerId;
+          customerID = rawCustomerID ? String(rawCustomerID).trim() : null;
+          const payload = applyEndpointDefaults(endpointKey, endpoint, bodyPayload);
+          const paramError = validateRequiredParams(endpointKey, endpoint, payload);
+          if (paramError) {
+            requestFinished(ctx, endpoint, customerID, 400, "Missing required parameters");
+            activeRequests--;
+            return respond(paramError);
+          }
+
+          if (CONFIG.features.demoMode) {
+            const mock = getMockResponse(endpointKey, payload);
+            if (mock !== null) {
+              requestFinished(ctx, endpoint, customerID, 200);
+              activeRequests--;
+              return respond(json({ source: "demo", data: mock }, 200, { "X-Request-ID": ctx.reqId }));
+            }
+          }
+
+          if (customerID && !isLogWrite) {
+            const rateResult = checkRateLimit(`${customerID}::${endpoint}`);
+            if (!rateResult.allowed) {
+              requestFinished(ctx, endpoint, customerID, 429, "Rate limit exceeded");
+              activeRequests--;
+              const nowUnix = Math.floor(Date.now() / 1000);
+              const override = findRateLimitOverride(endpoint);
+              const rateLimit = override?.limit || CONFIG.defaultRateLimit.limit;
+              const rateWindow = override?.window || CONFIG.defaultRateLimit.window;
+              return respond(json({ error: "Rate limit exceeded", retryAfter: rateResult.retryAfter }, 429, {
+                "Retry-After": String(rateResult.retryAfter),
+                "X-RateLimit-Limit": String(rateLimit),
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": String(nowUnix + (rateResult.retryAfter || rateWindow)),
+                "X-Request-ID": ctx.reqId,
+              }));
+            }
+          }
+
+          let finalToken = bodyToken ? String(bodyToken) : "";
+          let finalCf = bodyCf || bodyCfCamel ? extractCfClearanceValue(String(bodyCf || bodyCfCamel)) : "";
+
+          if (customerID && (!finalToken || !finalCf)) {
+            const stored = await getStoredCredentials(customerID);
+            if (stored) {
+              finalToken ||= stored.token;
+              finalCf ||= stored.cf_clearance;
+            }
+          }
           if (CONFIG.features.demoMode && (!finalToken || !finalCf)) {
             finalToken = "demo-token";
             finalCf = getDemoCfClearance();
           }
+
           if (!finalToken || !finalCf) {
-            requestFinished(ctx, `alias:${alias}`, customerID, 400, "Missing token/cf_clearance");
+            requestFinished(ctx, endpoint, customerID, 400, "Missing token or cf_clearance");
             activeRequests--;
-            return json({ error: "token/cf_clearance or stored customerID credentials required" }, 400, { "X-Request-ID": ctx.reqId });
+            return respond(json({ error: "token and cf_clearance (or stored customerID credentials) required" }, 400, { "X-Request-ID": ctx.reqId }));
           }
 
-          const result = await callProxyAlias(alias, body, finalToken, finalCf, ctx.reqId, finalCfBm);
-          const normalized = alias === "agentDownline" || alias === "agentBilling"
-            ? normalizeResponse(result.candidate.endpoint, result.raw)
-            : alias === "playerInfo"
-              ? normalizeBettorDetails(result.raw, cleanString(body.playerID || body.bettorID || body.customerID))
-              : alias === "leagueLines"
-                ? normalizeTaxonomy("lines", result.raw)
-                : result.raw;
+          const enrichedPayload = applySpecialHandler(endpoint, payload, body);
+          const shouldStream = req.headers.get("X-Stream") === "true" || body.stream === true || body.stream === "true";
 
-          requestFinished(ctx, `alias:${alias}`, customerID, result.status);
-          activeRequests--;
-          return json({
-            source: "live",
-            alias,
-            endpoint: result.candidate.endpoint,
-            operation: result.candidate.operation,
-            data: normalized,
-          }, result.status, { "X-Request-ID": ctx.reqId });
-        } catch (err: unknown) {
-          requestFinished(ctx, `alias:${alias}`, customerID, 502, err);
-          activeRequests--;
-          return json({ error: `${alias} failed`, details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
-        }
-      }
-    }
-
-    // ---- /API/PROXY/RISK/CONFIG ----
-    if (path === "/api/proxy/risk/config" && req.method === "POST") {
-      activeRequests++;
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const body = await readBody(req);
-      const agentID = cleanString(body.agentID);
-      if (!agentID) {
-        activeRequests--;
-        return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
-      }
-      const thresholds = asTaxonomyRecord(body.thresholds) || {};
-      insertRiskConfig.run({
-        $agentID: agentID,
-        $customerID: cleanString(body.customerID || agentID),
-        $thresholds: JSON.stringify(thresholds),
-        $webhook: cleanString(body.webhookUrl || body.webhook) || null,
-      });
-      requestFinished(ctx, "risk/config", agentID, 200);
-      activeRequests--;
-      return json({ success: true, agentID, thresholds }, 200, { "X-Request-ID": ctx.reqId });
-    }
-
-    if (path === "/api/proxy/risk/config" && req.method === "GET") {
-      activeRequests++;
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const agentID = cleanString(url.searchParams.get("agentID"));
-      if (!agentID) {
-        activeRequests--;
-        return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
-      }
-      const cfg = getRiskConfig.get({ $agentID: agentID }) as { agentID: string; customerID: string; thresholds: string; webhook: string | null; updated_at: number } | null;
-      requestFinished(ctx, "risk/config", agentID, cfg ? 200 : 404);
-      activeRequests--;
-      if (!cfg) return json({ found: false }, 404, { "X-Request-ID": ctx.reqId });
-      return json({ found: true, agentID: cfg.agentID, customerID: cfg.customerID, thresholds: JSON.parse(cfg.thresholds || "{}"), webhook: cfg.webhook, updatedAt: cfg.updated_at }, 200, { "X-Request-ID": ctx.reqId });
-    }
-
-    // ---- /API/PROXY/ANALYTICS/EV ----
-    if (path === "/api/proxy/analytics/ev" && req.method === "POST") {
-      activeRequests++;
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-
-      const body = await readBody(req);
-      const token = cleanString(body.token);
-      const cf_clearance = cleanString(body.cf_clearance || body.cfClearance);
-      const bettorID = cleanString(body.bettorID || body.bettorId || body.customerID);
-      const days = Math.max(1, rowNumber(body, ["days"], 365));
-      if (!token || !cf_clearance || !bettorID) {
-        activeRequests--;
-        return json({ error: "token, cf_clearance, and bettorID required" }, 400, { "X-Request-ID": ctx.reqId });
-      }
-
-      const since = Math.floor(Date.now() / 1000) - days * 86400;
-      try {
-        let wagers = getWagerAnalytics.all({ $bettorId: bettorID, $since: since }) as StoredWagerAnalytic[];
-        if (wagers.length < 20) {
-          const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getWagerByPlayer`, {
-            method: "POST",
-            headers: browserHeaders(token, `cf_clearance=${cf_clearance}`),
-            body: toForm({ playerID: bettorID, customerID: bettorID, operation: "getWagerByPlayer", RRO: "1" }),
-          }), { reqId: ctx.reqId, endpoint: "getWagerByPlayer" });
-          const raw = await readBuckeyeJson(upstream);
-          if (!upstream.ok) throw new Error(`getWagerByPlayer failed with ${upstream.status}: ${JSON.stringify(raw).slice(0, 400)}`);
-          storeAnalyticWagers(buckeyeRows(raw), "", bettorID);
-          wagers = getWagerAnalytics.all({ $bettorId: bettorID, $since: since }) as StoredWagerAnalytic[];
-        }
-
-        const model = computeAnalyticEV(wagers);
-        requestFinished(ctx, "analytics/ev", bettorID, 200);
-        activeRequests--;
-        return json(model, 200, { "X-Request-ID": ctx.reqId });
-      } catch (err: unknown) {
-        requestFinished(ctx, "analytics/ev", bettorID, 500, err);
-        activeRequests--;
-        return json({ error: "EV computation failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
-      }
-    }
-
-    // ---- AGENT DOWNLINE ROUTES ----
-    if (path === "/api/proxy/agents" && (req.method === "GET" || req.method === "POST")) {
-      activeRequests++;
-      const body = req.method === "POST" ? await readBody(req) : {};
-      const token = cleanString(url.searchParams.get("token") || body.token);
-      const cf_clearance = cleanString(url.searchParams.get("cf_clearance") || body.cf_clearance || body.cfClearance);
-      const customerID = cleanString(url.searchParams.get("customerID") || url.searchParams.get("agentID") || body.customerID || body.agentID);
-      if (!token || !cf_clearance) {
-        activeRequests--;
-        return json({ error: "token and cf_clearance required" }, 400, { "X-Request-ID": ctx.reqId });
-      }
-      if (!customerID) {
-        activeRequests--;
-        return json({ error: "customerID required" }, 400, { "X-Request-ID": ctx.reqId });
-      }
-
-      const candidates = [
-        { endpoint: "Manager/getAgentList", operation: "getAgentList", extra: {} },
-        { endpoint: "Manager/getAgentManagement", operation: "getAgentManagement", extra: {} },
-        { endpoint: "Manager/getListAgenstByAgent", operation: "getListAgenstByAgent", extra: { agentType: "M" } },
-      ];
-      let lastError = "";
-
-      try {
-        for (const candidate of candidates) {
-          const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/${candidate.endpoint}`, {
-            method: "POST",
-            headers: browserHeaders(token, `cf_clearance=${cf_clearance}`),
-            body: toForm({
-              operation: candidate.operation,
-              agentID: customerID,
-              RRO: "1",
-              agentOwner: customerID,
-              agentSite: "1",
-              ...candidate.extra,
-            }),
-          }), { reqId: ctx.reqId, endpoint: candidate.operation });
-          const raw = await readBuckeyeJson(upstream);
-          if (upstream.ok) {
-            const normalized = normalizeAgentList(raw);
-            if (normalized.length > 0 || candidate === candidates[candidates.length - 1]) {
-              requestFinished(ctx, candidate.operation, customerID, upstream.status);
-              activeRequests--;
-              return json(normalized, 200, { "X-Request-ID": ctx.reqId });
-            }
-            lastError = `${candidate.operation} returned no agents`;
-          } else {
-            lastError = `${candidate.operation} failed with ${upstream.status}`;
+          if (shouldStream) {
+            const upstream = await fetchWithFallback(CONFIG.baseUrl, endpoint, enrichedPayload, finalToken, finalCf, ctx.reqId);
+            requestFinished(ctx, endpoint, customerID, upstream.status);
+            activeRequests--;
+            return new Response(upstream.body, {
+              status: upstream.status,
+              headers: {
+                "Content-Type": upstream.headers.get("content-type") || "application/json",
+                ...(upstream.headers.get("content-encoding") ? { "Content-Encoding": upstream.headers.get("content-encoding") || "" } : {}),
+                ...cors,
+                "X-Request-ID": ctx.reqId,
+              },
+            });
           }
-        }
-        requestFinished(ctx, "agentDownline", customerID, 502, lastError);
-        activeRequests--;
-        return json({ error: "Agent list unavailable", details: lastError }, 502, { "X-Request-ID": ctx.reqId });
-      } catch (err: unknown) {
-        requestFinished(ctx, "agentDownline", customerID, 500, err);
-        activeRequests--;
-        return json({ error: "Agent list failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
-      }
-    }
 
-    if (path === "/api/proxy/agent/performance" && req.method === "POST") {
-      activeRequests++;
-      const body = await readBody(req);
-      const token = cleanString(body.token);
-      const cf_clearance = cleanString(body.cf_clearance || body.cfClearance);
-      const agentID = cleanString(body.agentID || body.customerID);
-      const view: PerformancePeriod = cleanString(body.view || body.period, "weekly") === "daily" ? "daily" : "weekly";
-      if (!token || !cf_clearance || !agentID) {
-        activeRequests--;
-        return json({ error: "token, cf_clearance, and agentID required" }, 400, { "X-Request-ID": ctx.reqId });
-      }
-
-      try {
-        const buckets = buildPerformanceBuckets(
-          cleanString(body.startDate || body.start) || undefined,
-          cleanString(body.endDate || body.end) || undefined,
-          view
-        );
-        const maxBuckets = view === "daily" ? 31 : 26;
-        if (buckets.length > maxBuckets) {
-          activeRequests--;
-          return json({ error: `${view} reports support a maximum of ${maxBuckets} buckets per request` }, 400, { "X-Request-ID": ctx.reqId });
-        }
-
-        const data: PerformanceBucket[] = [];
-        for (const bucket of buckets) {
-          const payload: JsonObject = {
-            operation: "getAgentPerformance",
-            agentID,
-            customerID: agentID,
-            startDate: bucket.startDate,
-            endDate: bucket.endDate,
-            type: cleanString(body.type, "CP"),
-            freePlay: cleanString(body.freePlay, "Y"),
-            store: cleanString(body.store || agentID),
-            sport: cleanString(body.sport),
-            subsport: cleanString(body.subsport),
-            period: cleanString(body.performancePeriod || body.buckeyePeriod, "-1"),
-            wagerType: cleanString(body.wagerType),
-            betType: cleanString(body.betType),
-            tipo: cleanString(body.tipo || body.activity, "-1"),
-            debug: cleanString(body.debug, "0"),
-            agentOwner: cleanString(body.agentOwner || agentID),
-            agentSite: "1",
-            RRO: "1",
+          const fetchLive = async () => {
+            const tokenPrefix = finalToken.slice(0, 8);
+            const dedupeKey = `${endpoint}::${hashPayloadImpl({ endpoint, ...enrichedPayload })}::${tokenPrefix}`;
+            return dedupeRequest(dedupeKey, async () => {
+              const upstream = await fetchWithFallback(CONFIG.baseUrl, endpoint, enrichedPayload, finalToken, finalCf, ctx.reqId);
+              return readBuckeyeOrThrow(upstream, endpoint, ctx.reqId);
+            });
           };
-          if (body.group) payload.group = body.group;
-          const upstream = await fetchWithFallback(CONFIG.baseUrl, "Manager/getAgentPerformance", payload, token, cf_clearance, ctx.reqId);
-          const raw = await readBuckeyeJson(upstream);
-          if (!upstream.ok) {
-            throw new Error(`getAgentPerformance ${bucket.date} failed with ${upstream.status}: ${JSON.stringify(raw).slice(0, 400)}`);
-          }
-          data.push({
-            date: bucket.date,
-            startDate: bucket.startDate,
-            endDate: bucket.endDate,
-            ...summarizePerformanceRows(buckeyeRows(raw)),
-          });
-        }
 
-        const report = performanceReportFromBuckets(view, data);
-        requestFinished(ctx, "agentPerformance", agentID, 200);
-        activeRequests--;
-        return json(report, 200, { "X-Request-ID": ctx.reqId });
-      } catch (err: unknown) {
-        requestFinished(ctx, "agentPerformance", agentID, 500, err);
-        activeRequests--;
-        return json({ error: "Agent performance failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
-      }
-    }
-
-    if (path === "/api/proxy/bettor/details" && req.method === "POST") {
-      activeRequests++;
-      const body = await readBody(req);
-      const token = cleanString(body.token);
-      const cf_clearance = cleanString(body.cf_clearance || body.cfClearance);
-      const bettorID = cleanString(body.bettorID || body.customerID || body.playerLogin || body.player);
-      const agentID = cleanString(body.agentID || body.agentOwner || body.store);
-      if (!token || !cf_clearance || !bettorID) {
-        activeRequests--;
-        return json({ error: "token, cf_clearance, and bettorID required" }, 400, { "X-Request-ID": ctx.reqId });
-      }
-
-      const startDate = cleanString(body.startDate || body.start) || isoDate(addDays(new Date(), -7));
-      const endDate = cleanString(body.endDate || body.end) || isoDate(new Date());
-      const candidates = [
-        {
-          endpoint: "Manager/getBettorDetails",
-          payload: {
-            operation: "getBettorDetails",
-            bettorID,
-            customerID: bettorID,
-            playerLogin: bettorID,
-            agentID,
-            startDate,
-            endDate,
-            RRO: "1",
-            agentOwner: cleanString(body.agentOwner || agentID),
-            agentSite: "1",
-          },
-        },
-        {
-          endpoint: "System/getPlayerActivity",
-          payload: {
-            operation: "getPlayerActivity",
-            acc: bettorID,
-            customerID: bettorID,
-            playerLogin: bettorID,
-            agentID,
-            startDate,
-            endDate,
-            RRO: "1",
-          },
-        },
-        {
-          endpoint: "Manager/getReportPlayerAnalysis",
-          payload: {
-            operation: "getReportPlayerAnalysis",
-            playerLogin: bettorID,
-            customerID: bettorID,
-            agentID,
-            RRO: "1",
-            agentOwner: cleanString(body.agentOwner || agentID),
-            agentSite: "1",
-          },
-        },
-      ];
-      let lastError = "";
-
-      try {
-        for (const candidate of candidates) {
-          const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/${candidate.endpoint}`, {
-            method: "POST",
-            headers: browserHeaders(token, `cf_clearance=${cf_clearance}`),
-            body: toForm(candidate.payload),
-          }), { reqId: ctx.reqId, endpoint: candidate.endpoint });
-          const raw = await readBuckeyeJson(upstream);
-          if (upstream.ok) {
-            const details = normalizeBettorDetails(raw, bettorID);
-            requestFinished(ctx, candidate.endpoint, agentID || bettorID, upstream.status);
-            activeRequests--;
-            return json(details, 200, { "X-Request-ID": ctx.reqId });
-          }
-          lastError = `${candidate.endpoint} failed with ${upstream.status}`;
-        }
-        requestFinished(ctx, "bettorDetails", agentID || bettorID, 502, lastError);
-        activeRequests--;
-        return json({ error: "Bettor details unavailable", details: lastError }, 502, { "X-Request-ID": ctx.reqId });
-      } catch (err: unknown) {
-        requestFinished(ctx, "bettorDetails", agentID || bettorID, 500, err);
-        activeRequests--;
-        return json({ error: "Bettor details failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
-      }
-    }
-
-    // ---- /API/PROXY/:ENDPOINT ----
-    if (path.startsWith("/api/proxy/") && path !== "/api/proxy/auth" && path !== "/api/proxy/tokens" && path !== "/api/proxy/logs" && path !== "/api/proxy/health" && path !== "/api/proxy/status" && path !== "/api/proxy/endpoints" && path !== "/api/proxy/renewToken" && !path.startsWith("/api/proxy/agent/") && !path.startsWith("/api/proxy/analytics/") && !path.startsWith("/api/proxy/integrity/") && !path.startsWith("/api/proxy/risk/") && !path.startsWith("/api/proxy/line-") && req.method === "POST") {
-      activeRequests++;
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const endpointKey = path.replace("/api/proxy/", "");
-      const meta = ENDPOINT_MAP[endpointKey];
-      const endpoint = meta?.path || endpointKey;
-      const cacheTtl = meta?.cacheTtl ?? CONFIG.defaultRateLimit.window;
-      const isLogWrite = endpoint === "Log/write" || endpointKey === "logWrite";
-      let customerID: string | null = null;
-
-      try {
-        const idempotencyKey = CONFIG.features.idempotency && !isLogWrite ? req.headers.get("Idempotency-Key") : null;
-
-        const respond = async (response: Response) => {
-          if (idempotencyKey && response.status < 500) {
-            setIdempotency.run({ $key: idempotencyKey, $endpoint: endpoint, $customerID: customerID, $status: response.status, $response_json: await response.clone().text() });
-          }
-          return response;
-        };
-
-        if (idempotencyKey) {
-          const stored = getIdempotency.get({ $key: idempotencyKey }) as IdempotencyRow | null;
-          if (stored) {
-            activeRequests--;
-            return new Response(stored.response_json, { status: stored.status, headers: { "Content-Type": "application/json", ...cors, "X-Idempotent-Replay": "true", "X-Request-ID": ctx.reqId } });
-          }
-        }
-
-        const body = await readBody(req);
-        const {
-          token: bodyToken,
-          cf_clearance: bodyCf,
-          cfClearance: bodyCfCamel,
-          __cf_bm: _bodyCfBm,
-          cf_bm: _bodyCfBmSnake,
-          cfBm: _bodyCfBmCamel,
-          useCache = false,
-          ...bodyPayload
-        } = body;
-        const rawCustomerID = body.customerID || body.agentID || body.agentOwner || CONFIG.agentId || CONFIG.customerId;
-        customerID = rawCustomerID ? String(rawCustomerID).trim() : null;
-        const payload = applyEndpointDefaults(endpointKey, endpoint, bodyPayload);
-        const paramError = validateRequiredParams(endpointKey, endpoint, payload);
-        if (paramError) {
-          requestFinished(ctx, endpoint, customerID, 400, "Missing required parameters");
-          activeRequests--;
-          return respond(paramError);
-        }
-
-        if (CONFIG.features.demoMode) {
-          const mock = getMockResponse(endpointKey, payload);
-          if (mock !== null) {
+          // Passthrough for logWrite: no cache at all
+          if (isLogWrite) {
+            const rawData = await fetchLive();
+            const data = normalizeResponse(endpoint, rawData, endpointKey);
             requestFinished(ctx, endpoint, customerID, 200);
             activeRequests--;
-            return respond(json({ source: "demo", data: mock }, 200, { "X-Request-ID": ctx.reqId }));
+            return respond(json({ source: "live", data }, 200, { "X-Request-ID": ctx.reqId }, acceptEncoding));
           }
-        }
 
-        if (customerID && !isLogWrite) {
-          const rateResult = checkRateLimit(`${customerID}::${endpoint}`);
-          if (!rateResult.allowed) {
-            requestFinished(ctx, endpoint, customerID, 429, "Rate limit exceeded");
+          if (useCache && cacheTtl > 0) {
+            const result = await getCacheWithSWR(endpoint, enrichedPayload, fetchLive, ctx.reqId, cacheTtl);
+            const normalizedData = normalizeResponse(endpoint, result.data, endpointKey);
+            requestFinished(ctx, endpoint, customerID, 200);
             activeRequests--;
-            const nowUnix = Math.floor(Date.now() / 1000);
-            const override = findRateLimitOverride(endpoint);
-            const rateLimit = override?.limit || CONFIG.defaultRateLimit.limit;
-            const rateWindow = override?.window || CONFIG.defaultRateLimit.window;
-            return respond(json({ error: "Rate limit exceeded", retryAfter: rateResult.retryAfter }, 429, {
-              "Retry-After": String(rateResult.retryAfter),
-              "X-RateLimit-Limit": String(rateLimit),
-              "X-RateLimit-Remaining": "0",
-              "X-RateLimit-Reset": String(nowUnix + (rateResult.retryAfter || rateWindow)),
-              "X-Request-ID": ctx.reqId,
-            }));
+            return respond(json({ source: result.source, stale: Boolean(result.stale), data: normalizedData }, 200, { "X-Request-ID": ctx.reqId }));
+          }
+
+          // After SWR cache check, check memCache
+          if (CONFIG.features.memoryCache && cacheTtl > 0) {
+            const memKey = memCacheKey(endpoint, enrichedPayload);
+            const cached = getMemCache(memKey);
+            if (cached) {
+              requestFinished(ctx, endpoint, customerID, 200);
+              activeRequests--;
+              return respond(json({ source: "mem_cache", data: normalizeResponse(endpoint, cached, endpointKey) }, 200, { "X-Request-ID": ctx.reqId }));
+            }
+          }
+
+          const rawData = await fetchLive();
+          const data = normalizeResponse(endpoint, rawData, endpointKey);
+
+          // Detect live score changes and push live_flash to WS subscribers
+          if (CONFIG.features.analytics) {
+            const effectiveKey = endpointKey || "";
+            if (effectiveKey === "scoresLive" || effectiveKey === "dynamicLive" || effectiveKey === "liveGame" || effectiveKey === "games") {
+              try {
+                const events = Array.isArray(data) ? data : (data as Record<string, unknown>)?.events ?? (data as Record<string, unknown>)?.scores ?? (data as Record<string, unknown>)?.items ?? [];
+                if (Array.isArray(events)) {
+                  for (const ev of events) {
+                    if (typeof ev === "object" && ev !== null && ("awayScore" in ev || "away" in ev)) {
+                      pushLiveFlash({
+                        id: String(ev.id ?? ev.ID ?? ev.GameID ?? ""),
+                        sport: String(ev.sport ?? ev.Sport ?? ""),
+                        away: String(ev.away ?? ev.AwayTeam ?? ""),
+                        home: String(ev.home ?? ev.HomeTeam ?? ""),
+                        awayScore: Number(ev.awayScore ?? ev.AwayScore ?? 0),
+                        homeScore: Number(ev.homeScore ?? ev.HomeScore ?? 0),
+                        period: String(ev.period ?? ev.Period ?? ""),
+                      });
+                    }
+                  }
+                }
+              } catch { /* live_flash is best-effort */ }
+            }
+          }
+
+          // Auto-update stored token on renewToken responses
+          if (endpoint === "System/renewToken" && customerID) {
+            try {
+              const tokenData = typeof data === "object" && data !== null ? data as Record<string, unknown> : {};
+              const newToken = String(tokenData.token || tokenData.code || tokenData.access_token || "");
+              if (newToken) {
+                const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+                await rememberProxyCredentialSecrets(customerID, { cfClearance: finalCf });
+                insertToken.run({ $customerID: customerID, $cf_clearance: null, $auth_code: null, $bearer_token: newToken, $expires_at: expiresAt });
+                invalidateTokenCache(customerID);
+                scheduleTokenRenewal(customerID, expiresAt);
+                logger.info("Auto-renewed token via proxy", { customerID, reqId: ctx.reqId });
+              }
+            } catch (tokenErr: unknown) {
+              logger.warn("Auto-renewToken DB update failed", { error: tokenErr instanceof Error ? tokenErr.message : String(tokenErr) });
+            }
+          }
+
+          // Store live response in memCache
+          if (CONFIG.features.memoryCache && cacheTtl > 0) {
+            const memKey = memCacheKey(endpoint, enrichedPayload);
+            setMemCache(memKey, rawData, cacheTtl * 1000);
+          }
+
+          requestFinished(ctx, endpoint, customerID, 200);
+          activeRequests--;
+          return respond(json({ source: "live", data }, 200, { "X-Request-ID": ctx.reqId }, acceptEncoding));
+        } catch (err: unknown) {
+          const details = err instanceof Error ? err.message : String(err);
+          const status = err instanceof UpstreamProxyError
+            ? err.clientStatus
+            : details.includes("CIRCUIT_OPEN") ? 503 : 500;
+          requestFinished(ctx, endpoint, customerID, status, err);
+          activeRequests--;
+          if (err instanceof UpstreamProxyError) {
+            return json(err.payload, err.clientStatus, { "X-Request-ID": ctx.reqId });
+          }
+          return json({ error: "Proxy failed", details }, status, { "X-Request-ID": ctx.reqId });
+        }
+      }
+
+      // ---- /API/PROXY/TOKENS ----
+      if (path === "/api/proxy/tokens") {
+        if (req.method === "GET") {
+          const customerID = url.searchParams.get("customerID");
+          if (!customerID) return json({ error: "customerID required" }, 400);
+          const token = getLatestTokenWrite.get({ $customerID: customerID }) as TokenRow | null;
+          if (!token) return json({ found: false }, 404);
+          const now = Math.floor(Date.now() / 1000);
+          const cfClearance = await readProxySecret(PROXY_SECRET_NAMES.cfClearance, customerID)
+            || extractCfClearanceValue(token.cf_clearance || "");
+          return json({
+            found: true,
+            token: token.bearer_token ? token.bearer_token.substring(0, 40) + "..." : null,
+            cf_clearance: cfClearance ? cfClearance.substring(0, 20) + "..." : null,
+            expired: token.expires_at < now,
+            expires_in: token.expires_at - now,
+            created_at: token.created_at,
+            expires_at: token.expires_at,
+          });
+        }
+        if (req.method === "POST") {
+          const authErr = apiKeyAuth(req);
+          if (authErr) return authErr;
+          const customerID = url.searchParams.get("customerID");
+          if (!customerID) return json({ error: "customerID required" }, 400);
+          const token = getLatestTokenWrite.get({ $customerID: customerID }) as TokenRow | null;
+          if (!token) return json({ found: false }, 404);
+          const now = Math.floor(Date.now() / 1000);
+          const cfClearance = await readProxySecret(PROXY_SECRET_NAMES.cfClearance, customerID)
+            || extractCfClearanceValue(token.cf_clearance || "");
+          return json({
+            found: true,
+            token: token.bearer_token ? token.bearer_token.substring(0, 40) + "..." : null,
+            cf_clearance: cfClearance ? cfClearance.substring(0, 20) + "..." : null,
+            expired: token.expires_at < now,
+            expires_in: token.expires_at - now,
+            created_at: token.created_at,
+            expires_at: token.expires_at,
+          });
+        }
+      }
+
+      // ---- /API/PROXY/LOGS ----
+      if (path === "/api/proxy/logs" && req.method === "GET") {
+        const authErr = apiKeyAuth(req);
+        if (authErr) return authErr;
+        const limit = parseInt(url.searchParams.get("limit") || "50");
+        const logs = getAdminLogs(limit);
+        return json({ count: logs.length, logs });
+      }
+
+      // ---- /API/PROXY/HEALTH ----
+      if (path === "/api/proxy/health") {
+        const cf_clearance = url.searchParams.get("cf_clearance");
+        if (!cf_clearance) {
+          const health = await dependencyHealth();
+          return json(health.body, health.httpStatus);
+        }
+        try {
+          const test = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/`, {
+            headers: { "Cookie": `cf_clearance=${cf_clearance}`, "User-Agent": browserHeaders()["User-Agent"] },
+          }), { endpoint: "health" });
+          const dbOk = getReadDb().query("SELECT 1").get() !== undefined;
+          return json({ valid: test.status === 200, status: test.status, dependencies: (await dependencyHealth()).body });
+        } catch (err: unknown) {
+          return json({ valid: false, error: err instanceof Error ? err.message : String(err) }, 500);
+        }
+      }
+
+      // ---- /API/PROXY/STATUS ----
+      if (path === "/api/proxy/status" && req.method === "GET") {
+        const customerID = url.searchParams.get("customerID");
+        const now = Math.floor(Date.now() / 1000);
+        const row = totalRequestCount.get() as CountRow | null;
+        const errRow = errorRequestCount.get() as CountRow | null;
+        const resp: JsonObject = {
+          service: "Buckeye Proxy",
+          version: "2.0",
+          uptime: process.uptime(),
+          memory: { rss: Math.round(process.memoryUsage().rss / 1024 / 1024) + "MB" },
+          timestamp: new Date().toISOString(),
+          fingerprint: getApiFingerprintHeader(),
+          stats: { total_requests: row?.count ?? 0, errors: errRow?.count ?? 0 },
+          circuitBreaker: circuitBreaker.getStatus(),
+          endpoints: ENDPOINT_COUNTS,
+          test_results: { passed: TEST_SUMMARY.passed, total: TEST_SUMMARY.total, failures: [] },
+          activeRequests,
+        };
+        if (customerID) {
+          const token = getLatestTokenWrite.get({ $customerID: customerID }) as TokenRow | null;
+          if (token) {
+            (resp as JsonObject).token = {
+              exists: true,
+              expired: token.expires_at < now,
+              expires_in: token.expires_at - now,
+              renew_needed: (token.expires_at - now) < 900,
+            };
           }
         }
+        return json(resp);
+      }
 
-        let finalToken = bodyToken ? String(bodyToken) : "";
-        let finalCf = bodyCf || bodyCfCamel ? extractCfClearanceValue(String(bodyCf || bodyCfCamel)) : "";
+      // ---- /API/PROXY/ENDPOINTS ----
+      if (path === "/api/proxy/endpoints" && req.method === "GET") {
+        const all = getAllEndpoints();
+        const proxyRoutes: Record<string, string> = {};
+        const buckeyeRoutes: Record<string, string> = {};
+        for (const [k, v] of Object.entries(all.proxy)) proxyRoutes[v.path] = `${v.method} - ${v.description}`;
+        for (const [k, v] of Object.entries(all.buckeye)) buckeyeRoutes[k] = `[${v.test_ok ? "OK" : "FAIL"}] ${v.description}`;
+        const cacheControl = url.searchParams.get("_") ? "no-cache" : "max-age=300";
+        return json({
+          proxy: proxyRoutes,
+          buckeye: buckeyeRoutes,
+          taxonomy: Object.fromEntries(Object.entries(TAXONOMY_MAP).map(([level, cfg]) => [
+            `/api/proxy/taxonomy/${level}`,
+            `POST - ${cfg.endpoint} -> ${cfg.shape}, cache ${cfg.cacheTtl}s`,
+          ])),
+          aliases: Object.fromEntries(Object.entries(PROXY_ALIAS_MAP).map(([alias, candidates]) => [
+            `/api/proxy/${alias}`,
+            {
+              method: "POST",
+              params: PROXY_ALIAS_PARAMS[alias as ProxyAliasName],
+              candidates: candidates.map((candidate) => ({
+                endpoint: candidate.endpoint,
+                operation: candidate.operation,
+                defaults: candidate.defaults || {},
+              })),
+            },
+          ])),
+          analytics: {
+            "/api/proxy/analytics/syndicates": "POST - detect same-game/same-line bettor clusters",
+            "/api/proxy/analytics/syndicates/stats": "GET - summarize syndicate detections and integrity case status",
+            "/api/proxy/analytics/sharp-money": "POST - correlate local wager analytics with line history",
+            "/api/proxy/analytics/ev-simulation": "POST - compute bettor EV and edge model",
+            "/api/proxy/analytics/predictive-sharpness": "POST - compute predictive sharpness score for a bettor",
+            "/api/proxy/analytics/backtest": "POST - simulate line adjustment rules against historical data",
+            "/api/proxy/integrity/cases": "GET/POST - list or create integrity review cases",
+            "/api/proxy/integrity/cases/:id": "PATCH - update an integrity review case",
+            "/api/proxy/risk/alerts": "GET/POST - read or save risk alert thresholds",
+            "/api/proxy/risk/config": "GET/POST/DELETE - risk config CRUD",
+            "/api/proxy/risk/syndicates": "GET - read cached syndicate detections",
+            "/api/proxy/line-rules": "GET/POST/PUT/DELETE - auto line adjustment rule CRUD",
+            "/api/proxy/line-adjustments/log": "GET - line adjustment audit log",
+          },
+          endpointMap: Object.fromEntries(Object.entries(ENDPOINT_MAP).map(([key, meta]) => [
+            key,
+            { path: `/cloud/api/${meta.path}`, cacheTtl: meta.cacheTtl, category: meta.category, description: getEndpointDescription(key) },
+          ])),
+          counts: ENDPOINT_COUNTS,
+          test_summary: `${TEST_SUMMARY.passed}/${TEST_SUMMARY.total} passed`,
+        }, 200, { "Cache-Control": cacheControl });
+      }
 
-        if (customerID && (!finalToken || !finalCf)) {
-          const stored = await getStoredCredentials(customerID);
+      // ---- /API/PROXY/AGENT/HEATMAP ----
+      if (path === "/api/proxy/agent/heatmap" && req.method === "POST") {
+        activeRequests++;
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const body = await readBody(req);
+        const agentID = String(body.agentID || body.customerID || "");
+        const days = Math.min(Math.max(parseInt(String(body.days || "30"), 10) || 30, 1), 90);
+
+        if (!agentID) {
+          activeRequests--;
+          return json({ error: "agentID or customerID required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        let finalToken = body.token ? String(body.token) : "";
+        let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
+
+        if (agentID && (!finalToken || !finalCf)) {
+          const stored = await getStoredCredentials(agentID);
           if (stored) {
             finalToken ||= stored.token;
             finalCf ||= stored.cf_clearance;
           }
         }
-        if (CONFIG.features.demoMode && (!finalToken || !finalCf)) {
-          finalToken = "demo-token";
-          finalCf = getDemoCfClearance();
-        }
 
-        if (!finalToken || !finalCf) {
-          requestFinished(ctx, endpoint, customerID, 400, "Missing token or cf_clearance");
-          activeRequests--;
-          return respond(json({ error: "token and cf_clearance (or stored customerID credentials) required" }, 400, { "X-Request-ID": ctx.reqId }));
-        }
-
-        const enrichedPayload = applySpecialHandler(endpoint, payload, body);
-        const shouldStream = req.headers.get("X-Stream") === "true" || body.stream === true || body.stream === "true";
-
-        if (shouldStream) {
-          const upstream = await fetchWithFallback(CONFIG.baseUrl, endpoint, enrichedPayload, finalToken, finalCf, ctx.reqId);
-          requestFinished(ctx, endpoint, customerID, upstream.status);
-          activeRequests--;
-          return new Response(upstream.body, {
-            status: upstream.status,
-            headers: {
-              "Content-Type": upstream.headers.get("content-type") || "application/json",
-              ...(upstream.headers.get("content-encoding") ? { "Content-Encoding": upstream.headers.get("content-encoding") || "" } : {}),
-              ...cors,
-              "X-Request-ID": ctx.reqId,
-            },
+        try {
+          // Fetch web logs (timestamps with IP, device) for activity heatmap
+          const webLogParams = new URLSearchParams({
+            agentID: agentID,
+            customerID: agentID,
+            start: normalizeWebLogDate(new Date(Date.now() - days * 86400000).toISOString()),
+            end: normalizeWebLogDate(new Date().toISOString()),
+            type: "A",
+            actions: "ALL",
+            operation: "getWebLog",
+            RRO: "1",
+            agentOwner: agentID,
+            agentSite: "1",
           });
-        }
 
-        const fetchLive = async () => {
-          const tokenPrefix = finalToken.slice(0, 8);
-          const dedupeKey = `${endpoint}::${hashPayloadImpl({ endpoint, ...enrichedPayload })}::${tokenPrefix}`;
-          return dedupeRequest(dedupeKey, async () => {
-            const upstream = await fetchWithFallback(CONFIG.baseUrl, endpoint, enrichedPayload, finalToken, finalCf, ctx.reqId);
-            return readBuckeyeOrThrow(upstream, endpoint, ctx.reqId);
-          });
-        };
-
-        // Passthrough for logWrite: no cache at all
-        if (isLogWrite) {
-          const rawData = await fetchLive();
-          const data = normalizeResponse(endpoint, rawData, endpointKey);
-          requestFinished(ctx, endpoint, customerID, 200);
-          activeRequests--;
-          return respond(json({ source: "live", data }, 200, { "X-Request-ID": ctx.reqId }, acceptEncoding));
-        }
-
-        if (useCache && cacheTtl > 0) {
-          const result = await getCacheWithSWR(endpoint, enrichedPayload, fetchLive, ctx.reqId, cacheTtl);
-          const normalizedData = normalizeResponse(endpoint, result.data, endpointKey);
-          requestFinished(ctx, endpoint, customerID, 200);
-          activeRequests--;
-          return respond(json({ source: result.source, stale: Boolean(result.stale), data: normalizedData }, 200, { "X-Request-ID": ctx.reqId }));
-        }
-
-        // After SWR cache check, check memCache
-        if (CONFIG.features.memoryCache && cacheTtl > 0) {
-          const memKey = memCacheKey(endpoint, enrichedPayload);
-          const cached = getMemCache(memKey);
-          if (cached) {
-            requestFinished(ctx, endpoint, customerID, 200);
-            activeRequests--;
-            return respond(json({ source: "mem_cache", data: normalizeResponse(endpoint, cached, endpointKey) }, 200, { "X-Request-ID": ctx.reqId }));
-          }
-        }
-
-        const rawData = await fetchLive();
-        const data = normalizeResponse(endpoint, rawData, endpointKey);
-
-        // Detect live score changes and push live_flash to WS subscribers
-        if (CONFIG.features.analytics) {
-          const effectiveKey = endpointKey || "";
-          if (effectiveKey === "scoresLive" || effectiveKey === "dynamicLive" || effectiveKey === "liveGame" || effectiveKey === "games") {
-            try {
-              const events = Array.isArray(data) ? data : (data as Record<string, unknown>)?.events ?? (data as Record<string, unknown>)?.scores ?? (data as Record<string, unknown>)?.items ?? [];
-              if (Array.isArray(events)) {
-                for (const ev of events) {
-                  if (typeof ev === "object" && ev !== null && ("awayScore" in ev || "away" in ev)) {
-                    pushLiveFlash({
-                      id: String(ev.id ?? ev.ID ?? ev.GameID ?? ""),
-                      sport: String(ev.sport ?? ev.Sport ?? ""),
-                      away: String(ev.away ?? ev.AwayTeam ?? ""),
-                      home: String(ev.home ?? ev.HomeTeam ?? ""),
-                      awayScore: Number(ev.awayScore ?? ev.AwayScore ?? 0),
-                      homeScore: Number(ev.homeScore ?? ev.HomeScore ?? 0),
-                      period: String(ev.period ?? ev.Period ?? ""),
-                    });
-                  }
-                }
-              }
-            } catch { /* live_flash is best-effort */ }
-          }
-        }
-
-        // Auto-update stored token on renewToken responses
-        if (endpoint === "System/renewToken" && customerID) {
-          try {
-            const tokenData = typeof data === "object" && data !== null ? data as Record<string, unknown> : {};
-            const newToken = String(tokenData.token || tokenData.code || tokenData.access_token || "");
-            if (newToken) {
-              const expiresAt = Math.floor(Date.now() / 1000) + 3600;
-              await rememberProxyCredentialSecrets(customerID, { cfClearance: finalCf });
-              insertToken.run({ $customerID: customerID, $cf_clearance: null, $auth_code: null, $bearer_token: newToken, $expires_at: expiresAt });
-              invalidateTokenCache(customerID);
-              scheduleTokenRenewal(customerID, expiresAt);
-              logger.info("Auto-renewed token via proxy", { customerID, reqId: ctx.reqId });
-            }
-          } catch (tokenErr: unknown) {
-            logger.warn("Auto-renewToken DB update failed", { error: tokenErr instanceof Error ? tokenErr.message : String(tokenErr) });
-          }
-        }
-
-        // Store live response in memCache
-        if (CONFIG.features.memoryCache && cacheTtl > 0) {
-          const memKey = memCacheKey(endpoint, enrichedPayload);
-          setMemCache(memKey, rawData, cacheTtl * 1000);
-        }
-
-        requestFinished(ctx, endpoint, customerID, 200);
-        activeRequests--;
-        return respond(json({ source: "live", data }, 200, { "X-Request-ID": ctx.reqId }, acceptEncoding));
-      } catch (err: unknown) {
-        const details = err instanceof Error ? err.message : String(err);
-        const status = err instanceof UpstreamProxyError
-          ? err.clientStatus
-          : details.includes("CIRCUIT_OPEN") ? 503 : 500;
-        requestFinished(ctx, endpoint, customerID, status, err);
-        activeRequests--;
-        if (err instanceof UpstreamProxyError) {
-          return json(err.payload, err.clientStatus, { "X-Request-ID": ctx.reqId });
-        }
-        return json({ error: "Proxy failed", details }, status, { "X-Request-ID": ctx.reqId });
-      }
-    }
-
-    // ---- /API/PROXY/TOKENS ----
-    if (path === "/api/proxy/tokens") {
-      if (req.method === "GET") {
-        const customerID = url.searchParams.get("customerID");
-        if (!customerID) return json({ error: "customerID required" }, 400);
-        const token = getLatestTokenWrite.get({ $customerID: customerID }) as TokenRow | null;
-        if (!token) return json({ found: false }, 404);
-        const now = Math.floor(Date.now() / 1000);
-        const cfClearance = await readProxySecret(PROXY_SECRET_NAMES.cfClearance, customerID)
-          || extractCfClearanceValue(token.cf_clearance || "");
-        return json({
-          found: true,
-          token: token.bearer_token ? token.bearer_token.substring(0, 40) + "..." : null,
-          cf_clearance: cfClearance ? cfClearance.substring(0, 20) + "..." : null,
-          expired: token.expires_at < now,
-          expires_in: token.expires_at - now,
-          created_at: token.created_at,
-          expires_at: token.expires_at,
-        });
-      }
-      if (req.method === "POST") {
-        const authErr = apiKeyAuth(req);
-        if (authErr) return authErr;
-        const customerID = url.searchParams.get("customerID");
-        if (!customerID) return json({ error: "customerID required" }, 400);
-        const token = getLatestTokenWrite.get({ $customerID: customerID }) as TokenRow | null;
-        if (!token) return json({ found: false }, 404);
-        const now = Math.floor(Date.now() / 1000);
-        const cfClearance = await readProxySecret(PROXY_SECRET_NAMES.cfClearance, customerID)
-          || extractCfClearanceValue(token.cf_clearance || "");
-        return json({
-          found: true,
-          token: token.bearer_token ? token.bearer_token.substring(0, 40) + "..." : null,
-          cf_clearance: cfClearance ? cfClearance.substring(0, 20) + "..." : null,
-          expired: token.expires_at < now,
-          expires_in: token.expires_at - now,
-          created_at: token.created_at,
-          expires_at: token.expires_at,
-        });
-      }
-    }
-
-    // ---- /API/PROXY/LOGS ----
-    if (path === "/api/proxy/logs" && req.method === "GET") {
-      const authErr = apiKeyAuth(req);
-      if (authErr) return authErr;
-      const limit = parseInt(url.searchParams.get("limit") || "50");
-      const logs = getAdminLogs(limit);
-      return json({ count: logs.length, logs });
-    }
-
-    // ---- /API/PROXY/HEALTH ----
-    if (path === "/api/proxy/health") {
-      const cf_clearance = url.searchParams.get("cf_clearance");
-      if (!cf_clearance) {
-        const health = await dependencyHealth();
-        return json(health.body, health.httpStatus);
-      }
-      try {
-        const test = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/`, {
-          headers: { "Cookie": `cf_clearance=${cf_clearance}`, "User-Agent": browserHeaders()["User-Agent"] },
-        }), { endpoint: "health" });
-        const dbOk = getReadDb().query("SELECT 1").get() !== undefined;
-        return json({ valid: test.status === 200, status: test.status, dependencies: (await dependencyHealth()).body });
-      } catch (err: unknown) {
-        return json({ valid: false, error: err instanceof Error ? err.message : String(err) }, 500);
-      }
-    }
-
-    // ---- /API/PROXY/STATUS ----
-    if (path === "/api/proxy/status" && req.method === "GET") {
-      const customerID = url.searchParams.get("customerID");
-      const now = Math.floor(Date.now() / 1000);
-      const row = totalRequestCount.get() as CountRow | null;
-      const errRow = errorRequestCount.get() as CountRow | null;
-      const resp: JsonObject = {
-        service: "Buckeye Proxy",
-        version: "2.0",
-        uptime: process.uptime(),
-        memory: { rss: Math.round(process.memoryUsage().rss / 1024 / 1024) + "MB" },
-        timestamp: new Date().toISOString(),
-        fingerprint: getApiFingerprintHeader(),
-        stats: { total_requests: row?.count ?? 0, errors: errRow?.count ?? 0 },
-        circuitBreaker: circuitBreaker.getStatus(),
-        endpoints: ENDPOINT_COUNTS,
-        test_results: { passed: TEST_SUMMARY.passed, total: TEST_SUMMARY.total, failures: [] },
-        activeRequests,
-      };
-      if (customerID) {
-        const token = getLatestTokenWrite.get({ $customerID: customerID }) as TokenRow | null;
-        if (token) {
-          (resp as JsonObject).token = {
-            exists: true,
-            expired: token.expires_at < now,
-            expires_in: token.expires_at - now,
-            renew_needed: (token.expires_at - now) < 900,
-          };
-        }
-      }
-      return json(resp);
-    }
-
-    // ---- /API/PROXY/ENDPOINTS ----
-    if (path === "/api/proxy/endpoints" && req.method === "GET") {
-      const all = getAllEndpoints();
-      const proxyRoutes: Record<string, string> = {};
-      const buckeyeRoutes: Record<string, string> = {};
-      for (const [k, v] of Object.entries(all.proxy)) proxyRoutes[v.path] = `${v.method} - ${v.description}`;
-      for (const [k, v] of Object.entries(all.buckeye)) buckeyeRoutes[k] = `[${v.test_ok ? "OK" : "FAIL"}] ${v.description}`;
-      const cacheControl = url.searchParams.get("_") ? "no-cache" : "max-age=300";
-      return json({
-        proxy: proxyRoutes,
-        buckeye: buckeyeRoutes,
-        taxonomy: Object.fromEntries(Object.entries(TAXONOMY_MAP).map(([level, cfg]) => [
-          `/api/proxy/taxonomy/${level}`,
-          `POST - ${cfg.endpoint} -> ${cfg.shape}, cache ${cfg.cacheTtl}s`,
-        ])),
-        aliases: Object.fromEntries(Object.entries(PROXY_ALIAS_MAP).map(([alias, candidates]) => [
-          `/api/proxy/${alias}`,
-          {
+          const webLogRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/qubic/api/Manager/getWebLog`, {
             method: "POST",
-            params: PROXY_ALIAS_PARAMS[alias as ProxyAliasName],
-            candidates: candidates.map((candidate) => ({
-              endpoint: candidate.endpoint,
-              operation: candidate.operation,
-              defaults: candidate.defaults || {},
-            })),
-          },
-        ])),
-        analytics: {
-          "/api/proxy/analytics/syndicates": "POST - detect same-game/same-line bettor clusters",
-          "/api/proxy/analytics/syndicates/stats": "GET - summarize syndicate detections and integrity case status",
-          "/api/proxy/analytics/sharp-money": "POST - correlate local wager analytics with line history",
-          "/api/proxy/analytics/ev-simulation": "POST - compute bettor EV and edge model",
-          "/api/proxy/analytics/predictive-sharpness": "POST - compute predictive sharpness score for a bettor",
-          "/api/proxy/analytics/backtest": "POST - simulate line adjustment rules against historical data",
-          "/api/proxy/integrity/cases": "GET/POST - list or create integrity review cases",
-          "/api/proxy/integrity/cases/:id": "PATCH - update an integrity review case",
-          "/api/proxy/risk/alerts": "GET/POST - read or save risk alert thresholds",
-          "/api/proxy/risk/config": "GET/POST/DELETE - risk config CRUD",
-          "/api/proxy/risk/syndicates": "GET - read cached syndicate detections",
-          "/api/proxy/line-rules": "GET/POST/PUT/DELETE - auto line adjustment rule CRUD",
-          "/api/proxy/line-adjustments/log": "GET - line adjustment audit log",
-        },
-        endpointMap: Object.fromEntries(Object.entries(ENDPOINT_MAP).map(([key, meta]) => [
-          key,
-          { path: `/cloud/api/${meta.path}`, cacheTtl: meta.cacheTtl, category: meta.category, description: getEndpointDescription(key) },
-        ])),
-        counts: ENDPOINT_COUNTS,
-        test_summary: `${TEST_SUMMARY.passed}/${TEST_SUMMARY.total} passed`,
-      }, 200, { "Cache-Control": cacheControl });
-    }
+            headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
+            body: webLogParams.toString(),
+          }), { reqId: ctx.reqId, endpoint: "getWebLog" });
 
-    // ---- /API/PROXY/AGENT/HEATMAP ----
-    if (path === "/api/proxy/agent/heatmap" && req.method === "POST") {
-      activeRequests++;
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const body = await readBody(req);
-      const agentID = String(body.agentID || body.customerID || "");
-      const days = Math.min(Math.max(parseInt(String(body.days || "30"), 10) || 30, 1), 90);
+          const webLogData = await webLogRes.json().catch(() => null);
 
-      if (!agentID) {
-        activeRequests--;
-        return json({ error: "agentID or customerID required" }, 400, { "X-Request-ID": ctx.reqId });
-      }
+          // Also fetch recent wagers for volume heatmap
+          const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
+            method: "POST",
+            headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
+            body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
+          }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
 
-      let finalToken = body.token ? String(body.token) : "";
-      let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
+          const wagerData = await wagerRes.json().catch(() => null);
+          const wagerList = Array.isArray(wagerData?.LIST) ? wagerData.LIST : Array.isArray(wagerData?.data?.LIST) ? wagerData.data.LIST : [];
 
-      if (agentID && (!finalToken || !finalCf)) {
-        const stored = await getStoredCredentials(agentID);
-        if (stored) {
-          finalToken ||= stored.token;
-          finalCf ||= stored.cf_clearance;
+          // Parse web log entries for timestamps
+          const logEntries = parseWebLogEntries(webLogData);
+
+          // Build 7x24 matrices
+          const accessHeatmap = buildHeatmapFromEntries(logEntries, days, "access_datetime");
+          const wagerHeatmap = buildHeatmapFromWagers(wagerList, days);
+
+          requestFinished(ctx, "agent/heatmap", agentID, 200);
+          activeRequests--;
+          return json({
+            agentID,
+            days,
+            access: accessHeatmap,
+            wagers: wagerHeatmap,
+            totalAccessLogEntries: logEntries.length,
+            totalWagers: wagerList.length,
+            fetchedAt: new Date().toISOString(),
+          }, 200, { "X-Request-ID": ctx.reqId });
+        } catch (err: unknown) {
+          requestFinished(ctx, "agent/heatmap", agentID, 500, err);
+          activeRequests--;
+          return json({ error: "Heatmap fetch failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
         }
       }
 
-      try {
-        // Fetch web logs (timestamps with IP, device) for activity heatmap
-        const webLogParams = new URLSearchParams({
-          agentID: agentID,
-          customerID: agentID,
-          start: normalizeWebLogDate(new Date(Date.now() - days * 86400000).toISOString()),
-          end: normalizeWebLogDate(new Date().toISOString()),
-          type: "A",
-          actions: "ALL",
-          operation: "getWebLog",
-          RRO: "1",
-          agentOwner: agentID,
-          agentSite: "1",
+      // ---- /API/PROXY/ANALYTICS/SYNDICATES ----
+      if (path === "/api/proxy/analytics/syndicates" && req.method === "POST") {
+        activeRequests++;
+        if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const body = await readBody(req);
+        const agentID = String(body.agentID || body.customerID || "");
+        const lookbackHours = Math.min(Math.max(parseInt(String(body.lookbackHours || "24"), 10) || 24, 1), 168);
+        const minBettors = Math.max(parseInt(String(body.minBettors || "2"), 10) || 2, 2);
+        const minStake = Math.max(parseInt(String(body.minStake || "1000"), 10) || 1000, 0);
+        const days = Math.ceil(lookbackHours / 24);
+
+        if (!agentID) {
+          activeRequests--;
+          return json({ error: "agentID or customerID required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        let finalToken = body.token ? String(body.token) : "";
+        let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
+        if (agentID && (!finalToken || !finalCf)) {
+          const stored = await getStoredCredentials(agentID);
+          if (stored) { finalToken ||= stored.token; finalCf ||= stored.cf_clearance; }
+        }
+        if (!finalToken || !finalCf) {
+          activeRequests--;
+          return json({ error: "token/cf_clearance or stored credentials required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        try {
+          const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
+            method: "POST",
+            headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
+            body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
+          }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
+
+          const wagerData = await wagerRes.json().catch(() => null);
+          const wagerList = Array.isArray(wagerData?.LIST) ? wagerData.LIST : Array.isArray(wagerData?.data?.LIST) ? wagerData.data.LIST : [];
+          const storedWagers = storeAnalyticWagers(wagerList.filter(isTaxonomyRecord), agentID);
+          const cutoff = Date.now() - lookbackHours * 3600000;
+          const wagers = parseBuckeyeWagers(wagerData).filter(w => w.timestamp >= cutoff);
+          const syndicates = detectSyndicates(wagers, { minBettors, minStake });
+
+          for (const s of syndicates) {
+            insertSyndicate.run({
+              $id: s.id, $agentID: agentID, $pattern: s.pattern,
+              $members: JSON.stringify(s.members), $totalStake: s.totalStake, $commonGame: s.commonGame,
+              $windowMs: s.windowMs || 0, $wagerCount: s.wagerCount || s.members.length, $avgStake: s.avgStake || 0,
+              $riskScore: s.riskScore || 0, $confidence: s.confidence || 0, $signals: JSON.stringify(s.signals || []),
+              $detected_at: Math.floor(s.timestamp / 1000),
+            });
+          }
+
+          requestFinished(ctx, "analytics/syndicates", agentID, 200);
+          activeRequests--;
+          return json({
+            agentID, lookbackHours, minBettors, minStake,
+            totalWagers: wagers.length,
+            storedWagers: storedWagers.length,
+            syndicates: syndicates.length,
+            syndicateDetails: syndicates,
+            fetchedAt: new Date().toISOString(),
+          }, 200, { "X-Request-ID": ctx.reqId });
+        } catch (err: unknown) {
+          requestFinished(ctx, "analytics/syndicates", agentID, 500, err);
+          activeRequests--;
+          return json({ error: "Syndicate detection failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
+        }
+      }
+
+      // ---- /API/PROXY/ANALYTICS/SHARP-MONEY ----
+      if (path === "/api/proxy/analytics/sharp-money" && req.method === "POST") {
+        activeRequests++;
+        if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const body = await readBody(req);
+        const agentID = String(body.agentID || body.customerID || "");
+        const gameId = String(body.gameId || "");
+        const minutesBefore = Math.min(Math.max(parseInt(String(body.minutesBefore || "60"), 10) || 60, 1), 1440);
+
+        if (!agentID) {
+          activeRequests--;
+          return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        let finalToken = body.token ? String(body.token) : "";
+        let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
+        if (agentID && (!finalToken || !finalCf)) {
+          const stored = await getStoredCredentials(agentID);
+          if (stored) { finalToken ||= stored.token; finalCf ||= stored.cf_clearance; }
+        }
+        if (!finalToken || !finalCf) {
+          activeRequests--;
+          return json({ error: "token/cf_clearance or stored credentials required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        try {
+          const cutoff = Date.now() - minutesBefore * 60000;
+          const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
+            method: "POST",
+            headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
+            body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
+          }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
+
+          const wagerData = await wagerRes.json().catch(() => null);
+          const wagers = parseBuckeyeWagers(wagerData).filter(w => w.timestamp >= cutoff);
+
+          // For sharp money, we need line movements. If the caller provided them, use them.
+          // Otherwise we infer from wager patterns (same game, same type, different lines at different times).
+          const lineHistory: LineMove[] = Array.isArray(body.lineHistory) ? (body.lineHistory as LineMove[]) : [];
+          const alerts = correlateSharpMoney(lineHistory, wagers);
+
+          // If no line history provided, provide wagers grouped by game for manual analysis
+          const gameGroups = new Map<string, Wager[]>();
+          for (const w of wagers) {
+            if (gameId && w.gameId !== gameId) continue;
+            if (!gameGroups.has(w.gameId)) gameGroups.set(w.gameId, []);
+            gameGroups.get(w.gameId)!.push(w);
+          }
+
+          requestFinished(ctx, "analytics/sharp-money", agentID, 200);
+          activeRequests--;
+          return json({
+            agentID, gameId, minutesBefore,
+            totalWagers: wagers.length,
+            lineHistoryProvided: lineHistory.length > 0,
+            sharpAlerts: alerts,
+            gameSummaries: Array.from(gameGroups.entries()).map(([gid, gw]) => ({
+              gameId: gid,
+              wagerCount: gw.length,
+              totalStake: gw.reduce((s, w) => s + w.stake, 0),
+              uniqueBettors: new Set(gw.map(w => w.bettorId)).size,
+            })),
+            fetchedAt: new Date().toISOString(),
+          }, 200, { "X-Request-ID": ctx.reqId });
+        } catch (err: unknown) {
+          requestFinished(ctx, "analytics/sharp-money", agentID, 500, err);
+          activeRequests--;
+          return json({ error: "Sharp money analysis failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
+        }
+      }
+
+      // ---- /API/PROXY/ANALYTICS/EV-SIMULATION ----
+      if (path === "/api/proxy/analytics/ev-simulation" && req.method === "POST") {
+        activeRequests++;
+        if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const body = await readBody(req);
+        const agentID = String(body.agentID || body.customerID || "");
+        const bettorID = String(body.bettorID || "");
+        const modelType = String(body.modelType || "bayesian");
+        const lookbackDays = Math.min(Math.max(parseInt(String(body.lookbackDays || "30"), 10) || 30, 1), 365);
+
+        if (!agentID) {
+          activeRequests--;
+          return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        let finalToken = body.token ? String(body.token) : "";
+        let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
+        if (agentID && (!finalToken || !finalCf)) {
+          const stored = await getStoredCredentials(agentID);
+          if (stored) { finalToken ||= stored.token; finalCf ||= stored.cf_clearance; }
+        }
+        if (!finalToken || !finalCf) {
+          activeRequests--;
+          return json({ error: "token/cf_clearance or stored credentials required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        try {
+          const cutoff = Date.now() - lookbackDays * 86400000;
+          const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
+            method: "POST",
+            headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
+            body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
+          }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
+
+          const wagerData = await wagerRes.json().catch(() => null);
+          let wagers = parseBuckeyeWagers(wagerData).filter(w => w.timestamp >= cutoff);
+          if (bettorID) wagers = wagers.filter(w => w.bettorId === bettorID);
+
+          const ev = computeExpectedValue(wagers, modelType);
+
+          requestFinished(ctx, "analytics/ev-simulation", agentID, 200);
+          activeRequests--;
+          return json({
+            agentID, bettorID: bettorID || "all", modelType, lookbackDays,
+            totalWagers: wagers.length,
+            ev,
+            fetchedAt: new Date().toISOString(),
+          }, 200, { "X-Request-ID": ctx.reqId });
+        } catch (err: unknown) {
+          requestFinished(ctx, "analytics/ev-simulation", agentID, 500, err);
+          activeRequests--;
+          return json({ error: "EV simulation failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
+        }
+      }
+
+      // ---- /API/PROXY/RISK/ALERTS ----
+      if (path === "/api/proxy/risk/alerts" && req.method === "POST") {
+        activeRequests++;
+        if (!CONFIG.features.riskEngine) { activeRequests--; return json({ error: "Risk engine disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const body = await readBody(req);
+        const agentID = String(body.agentID || body.customerID || "");
+        const thresholds = asTaxonomyRecord(body.thresholds) || {};
+        const webhookUrl = String(body.webhookUrl || "");
+
+        if (!agentID) {
+          activeRequests--;
+          return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        insertRiskConfig.run({
+          $agentID: agentID,
+          $customerID: String(body.customerID || agentID),
+          $thresholds: JSON.stringify(thresholds),
+          $webhook: webhookUrl || null,
         });
 
-        const webLogRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/qubic/api/Manager/getWebLog`, {
-          method: "POST",
-          headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
-          body: webLogParams.toString(),
-        }), { reqId: ctx.reqId, endpoint: "getWebLog" });
+        requestFinished(ctx, "risk/alerts", agentID, 200);
+        activeRequests--;
+        return json({ success: true, agentID, thresholds, webhookUrl: webhookUrl || null }, 200, { "X-Request-ID": ctx.reqId });
+      }
 
-        const webLogData = await webLogRes.json().catch(() => null);
+      if (path === "/api/proxy/risk/alerts" && req.method === "GET") {
+        activeRequests++;
+        if (!CONFIG.features.riskEngine) { activeRequests--; return json({ error: "Risk engine disabled" }, 403); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const agentID = url.searchParams.get("agentID");
+        if (agentID) {
+          const cfg = getRiskConfig.get({ $agentID: agentID }) as { agentID: string; thresholds: string; webhook: string | null; updated_at: number } | null;
+          activeRequests--;
+          if (!cfg) return json({ agentID, thresholds: {}, webhookUrl: null });
+          return json({ agentID: cfg.agentID, thresholds: JSON.parse(cfg.thresholds), webhookUrl: cfg.webhook, updatedAt: cfg.updated_at });
+        }
+        const all = getAllRiskConfigs.all() as Array<{ agentID: string; thresholds: string; webhook: string | null; updated_at: number }>;
+        activeRequests--;
+        return json({ configs: all.map(c => ({ agentID: c.agentID, thresholds: JSON.parse(c.thresholds), webhookUrl: c.webhook, updatedAt: c.updated_at })) });
+      }
 
-        // Also fetch recent wagers for volume heatmap
-        const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
-          method: "POST",
-          headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
-          body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
-        }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
+      // ---- /API/PROXY/RISK/CONFIG ----
+      if (path === "/api/proxy/risk/config" && req.method === "DELETE") {
+        activeRequests++;
+        if (!CONFIG.features.riskEngine) { activeRequests--; return json({ error: "Risk engine disabled" }, 403); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const agentID = url.searchParams.get("agentID");
+        if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400); }
+        deleteRiskConfig.run({ $agentID: agentID });
+        activeRequests--;
+        return json({ success: true, deleted: agentID });
+      }
 
-        const wagerData = await wagerRes.json().catch(() => null);
-        const wagerList = Array.isArray(wagerData?.LIST) ? wagerData.LIST : Array.isArray(wagerData?.data?.LIST) ? wagerData.data.LIST : [];
-
-        // Parse web log entries for timestamps
-        const logEntries = parseWebLogEntries(webLogData);
-
-        // Build 7x24 matrices
-        const accessHeatmap = buildHeatmapFromEntries(logEntries, days, "access_datetime");
-        const wagerHeatmap = buildHeatmapFromWagers(wagerList, days);
-
-        requestFinished(ctx, "agent/heatmap", agentID, 200);
+      // ---- /API/PROXY/RISK/SYNDICATES (GET cached) ----
+      if (path === "/api/proxy/risk/syndicates" && req.method === "GET") {
+        activeRequests++;
+        if (!CONFIG.features.riskEngine) { activeRequests--; return json({ error: "Risk engine disabled" }, 403); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const agentID = url.searchParams.get("agentID");
+        if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400); }
+        const since = url.searchParams.get("since");
+        const sinceTs = since ? Math.floor(new Date(since).getTime() / 1000) : Math.floor(Date.now() / 1000) - 86400;
+        const rows = getSyndicatesByAgent.all({ $agentID: agentID, $since: sinceTs }) as Array<{
+          id: string; agentID: string; pattern: string; members: string; totalStake: number; detected_at: number;
+          windowMs?: number; wagerCount?: number; avgStake?: number; riskScore?: number; confidence?: number; signals?: string;
+        }>;
         activeRequests--;
         return json({
           agentID,
-          days,
-          access: accessHeatmap,
-          wagers: wagerHeatmap,
-          totalAccessLogEntries: logEntries.length,
-          totalWagers: wagerList.length,
-          fetchedAt: new Date().toISOString(),
-        }, 200, { "X-Request-ID": ctx.reqId });
-      } catch (err: unknown) {
-        requestFinished(ctx, "agent/heatmap", agentID, 500, err);
-        activeRequests--;
-        return json({ error: "Heatmap fetch failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
-      }
-    }
-
-    // ---- /API/PROXY/ANALYTICS/SYNDICATES ----
-    if (path === "/api/proxy/analytics/syndicates" && req.method === "POST") {
-      activeRequests++;
-      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const body = await readBody(req);
-      const agentID = String(body.agentID || body.customerID || "");
-      const lookbackHours = Math.min(Math.max(parseInt(String(body.lookbackHours || "24"), 10) || 24, 1), 168);
-      const minBettors = Math.max(parseInt(String(body.minBettors || "2"), 10) || 2, 2);
-      const minStake = Math.max(parseInt(String(body.minStake || "1000"), 10) || 1000, 0);
-      const days = Math.ceil(lookbackHours / 24);
-
-      if (!agentID) {
-        activeRequests--;
-        return json({ error: "agentID or customerID required" }, 400, { "X-Request-ID": ctx.reqId });
-      }
-
-      let finalToken = body.token ? String(body.token) : "";
-      let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
-      if (agentID && (!finalToken || !finalCf)) {
-        const stored = await getStoredCredentials(agentID);
-        if (stored) { finalToken ||= stored.token; finalCf ||= stored.cf_clearance; }
-      }
-      if (!finalToken || !finalCf) {
-        activeRequests--;
-        return json({ error: "token/cf_clearance or stored credentials required" }, 400, { "X-Request-ID": ctx.reqId });
-      }
-
-      try {
-        const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
-          method: "POST",
-          headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
-          body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
-        }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
-
-        const wagerData = await wagerRes.json().catch(() => null);
-        const wagerList = Array.isArray(wagerData?.LIST) ? wagerData.LIST : Array.isArray(wagerData?.data?.LIST) ? wagerData.data.LIST : [];
-        const storedWagers = storeAnalyticWagers(wagerList.filter(isTaxonomyRecord), agentID);
-        const cutoff = Date.now() - lookbackHours * 3600000;
-        const wagers = parseBuckeyeWagers(wagerData).filter(w => w.timestamp >= cutoff);
-        const syndicates = detectSyndicates(wagers, { minBettors, minStake });
-
-        for (const s of syndicates) {
-          insertSyndicate.run({
-            $id: s.id, $agentID: agentID, $pattern: s.pattern,
-            $members: JSON.stringify(s.members), $totalStake: s.totalStake, $commonGame: s.commonGame,
-            $windowMs: s.windowMs || 0, $wagerCount: s.wagerCount || s.members.length, $avgStake: s.avgStake || 0,
-            $riskScore: s.riskScore || 0, $confidence: s.confidence || 0, $signals: JSON.stringify(s.signals || []),
-            $detected_at: Math.floor(s.timestamp / 1000),
-          });
-        }
-
-        requestFinished(ctx, "analytics/syndicates", agentID, 200);
-        activeRequests--;
-        return json({
-          agentID, lookbackHours, minBettors, minStake,
-          totalWagers: wagers.length,
-          storedWagers: storedWagers.length,
-          syndicates: syndicates.length,
-          syndicateDetails: syndicates,
-          fetchedAt: new Date().toISOString(),
-        }, 200, { "X-Request-ID": ctx.reqId });
-      } catch (err: unknown) {
-        requestFinished(ctx, "analytics/syndicates", agentID, 500, err);
-        activeRequests--;
-        return json({ error: "Syndicate detection failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
-      }
-    }
-
-    // ---- /API/PROXY/ANALYTICS/SHARP-MONEY ----
-    if (path === "/api/proxy/analytics/sharp-money" && req.method === "POST") {
-      activeRequests++;
-      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const body = await readBody(req);
-      const agentID = String(body.agentID || body.customerID || "");
-      const gameId = String(body.gameId || "");
-      const minutesBefore = Math.min(Math.max(parseInt(String(body.minutesBefore || "60"), 10) || 60, 1), 1440);
-
-      if (!agentID) {
-        activeRequests--;
-        return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
-      }
-
-      let finalToken = body.token ? String(body.token) : "";
-      let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
-      if (agentID && (!finalToken || !finalCf)) {
-        const stored = await getStoredCredentials(agentID);
-        if (stored) { finalToken ||= stored.token; finalCf ||= stored.cf_clearance; }
-      }
-      if (!finalToken || !finalCf) {
-        activeRequests--;
-        return json({ error: "token/cf_clearance or stored credentials required" }, 400, { "X-Request-ID": ctx.reqId });
-      }
-
-      try {
-        const cutoff = Date.now() - minutesBefore * 60000;
-        const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
-          method: "POST",
-          headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
-          body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
-        }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
-
-        const wagerData = await wagerRes.json().catch(() => null);
-        const wagers = parseBuckeyeWagers(wagerData).filter(w => w.timestamp >= cutoff);
-
-        // For sharp money, we need line movements. If the caller provided them, use them.
-        // Otherwise we infer from wager patterns (same game, same type, different lines at different times).
-        const lineHistory: LineMove[] = Array.isArray(body.lineHistory) ? (body.lineHistory as LineMove[]) : [];
-        const alerts = correlateSharpMoney(lineHistory, wagers);
-
-        // If no line history provided, provide wagers grouped by game for manual analysis
-        const gameGroups = new Map<string, Wager[]>();
-        for (const w of wagers) {
-          if (gameId && w.gameId !== gameId) continue;
-          if (!gameGroups.has(w.gameId)) gameGroups.set(w.gameId, []);
-          gameGroups.get(w.gameId)!.push(w);
-        }
-
-        requestFinished(ctx, "analytics/sharp-money", agentID, 200);
-        activeRequests--;
-        return json({
-          agentID, gameId, minutesBefore,
-          totalWagers: wagers.length,
-          lineHistoryProvided: lineHistory.length > 0,
-          sharpAlerts: alerts,
-          gameSummaries: Array.from(gameGroups.entries()).map(([gid, gw]) => ({
-            gameId: gid,
-            wagerCount: gw.length,
-            totalStake: gw.reduce((s, w) => s + w.stake, 0),
-            uniqueBettors: new Set(gw.map(w => w.bettorId)).size,
+          syndicates: rows.map(r => ({
+            id: r.id,
+            pattern: r.pattern,
+            members: JSON.parse(r.members),
+            totalStake: r.totalStake,
+            windowMs: r.windowMs || 0,
+            wagerCount: r.wagerCount || 0,
+            avgStake: r.avgStake || 0,
+            riskScore: r.riskScore || 0,
+            confidence: r.confidence || 0,
+            signals: JSON.parse(r.signals || "[]"),
+            detectedAt: new Date(r.detected_at * 1000).toISOString(),
           })),
-          fetchedAt: new Date().toISOString(),
-        }, 200, { "X-Request-ID": ctx.reqId });
-      } catch (err: unknown) {
-        requestFinished(ctx, "analytics/sharp-money", agentID, 500, err);
-        activeRequests--;
-        return json({ error: "Sharp money analysis failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
-      }
-    }
-
-    // ---- /API/PROXY/ANALYTICS/EV-SIMULATION ----
-    if (path === "/api/proxy/analytics/ev-simulation" && req.method === "POST") {
-      activeRequests++;
-      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const body = await readBody(req);
-      const agentID = String(body.agentID || body.customerID || "");
-      const bettorID = String(body.bettorID || "");
-      const modelType = String(body.modelType || "bayesian");
-      const lookbackDays = Math.min(Math.max(parseInt(String(body.lookbackDays || "30"), 10) || 30, 1), 365);
-
-      if (!agentID) {
-        activeRequests--;
-        return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+        });
       }
 
-      let finalToken = body.token ? String(body.token) : "";
-      let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
-      if (agentID && (!finalToken || !finalCf)) {
-        const stored = await getStoredCredentials(agentID);
-        if (stored) { finalToken ||= stored.token; finalCf ||= stored.cf_clearance; }
-      }
-      if (!finalToken || !finalCf) {
-        activeRequests--;
-        return json({ error: "token/cf_clearance or stored credentials required" }, 400, { "X-Request-ID": ctx.reqId });
-      }
-
-      try {
-        const cutoff = Date.now() - lookbackDays * 86400000;
-        const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
-          method: "POST",
-          headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
-          body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
-        }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
-
-        const wagerData = await wagerRes.json().catch(() => null);
-        let wagers = parseBuckeyeWagers(wagerData).filter(w => w.timestamp >= cutoff);
-        if (bettorID) wagers = wagers.filter(w => w.bettorId === bettorID);
-
-        const ev = computeExpectedValue(wagers, modelType);
-
-        requestFinished(ctx, "analytics/ev-simulation", agentID, 200);
+      // ---- /API/PROXY/ANALYTICS/SYNDICATES/STATS ----
+      if (path === "/api/proxy/analytics/syndicates/stats" && req.method === "GET") {
+        activeRequests++;
+        if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const agentID = url.searchParams.get("agentID") || "";
+        if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId }); }
+        const hours = Math.min(Math.max(parseInt(url.searchParams.get("hours") || "24", 10) || 24, 1), 168);
+        const since = Math.floor(Date.now() / 1000) - hours * 3600;
+        const syndicateStats = getSyndicateStats.get({ $agentID: agentID, $since: since }) as { count: number; totalStake: number; maxRiskScore: number; latestDetectedAt: number } | null;
+        const caseRows = getIntegrityCaseStatusCounts.all({ $agentID: agentID }) as Array<{ status: string; count: number }>;
         activeRequests--;
         return json({
-          agentID, bettorID: bettorID || "all", modelType, lookbackDays,
-          totalWagers: wagers.length,
-          ev,
-          fetchedAt: new Date().toISOString(),
+          agentID,
+          windowHours: hours,
+          syndicates: {
+            count: syndicateStats?.count || 0,
+            totalStake: syndicateStats?.totalStake || 0,
+            maxRiskScore: syndicateStats?.maxRiskScore || 0,
+            latestDetectedAt: syndicateStats?.latestDetectedAt ? new Date(syndicateStats.latestDetectedAt * 1000).toISOString() : null,
+          },
+          cases: caseRows.reduce((acc, row) => ({ ...acc, [row.status]: row.count }), {} as Record<string, number>),
         }, 200, { "X-Request-ID": ctx.reqId });
-      } catch (err: unknown) {
-        requestFinished(ctx, "analytics/ev-simulation", agentID, 500, err);
+      }
+
+      // ---- /API/PROXY/INTEGRITY/CASES ----
+      if (path === "/api/proxy/integrity/cases" && req.method === "GET") {
+        activeRequests++;
+        if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const agentID = url.searchParams.get("agentID") || "";
+        if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId }); }
+        const status = normalizeCaseStatus(url.searchParams.get("status") || "");
+        const statusFilter = url.searchParams.has("status") ? status : "";
+        const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "50", 10) || 50, 1), 200);
+        const rows = getIntegrityCases.all({ $agentID: agentID, $status: statusFilter, $limit: limit }) as IntegrityCaseRow[];
         activeRequests--;
-        return json({ error: "EV simulation failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
+        return json({ agentID, status: statusFilter || "all", cases: rows.map(serializeIntegrityCase) }, 200, { "X-Request-ID": ctx.reqId });
       }
-    }
 
-    // ---- /API/PROXY/RISK/ALERTS ----
-    if (path === "/api/proxy/risk/alerts" && req.method === "POST") {
-      activeRequests++;
-      if (!CONFIG.features.riskEngine) { activeRequests--; return json({ error: "Risk engine disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const body = await readBody(req);
-      const agentID = String(body.agentID || body.customerID || "");
-      const thresholds = asTaxonomyRecord(body.thresholds) || {};
-      const webhookUrl = String(body.webhookUrl || "");
-
-      if (!agentID) {
+      if (path === "/api/proxy/integrity/cases" && req.method === "POST") {
+        activeRequests++;
+        if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const body = await readBody(req);
+        const agentID = String(body.agentID || "");
+        if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId }); }
+        const id = randomUUIDv7();
+        const status = normalizeCaseStatus(body.status);
+        const priority = normalizeCasePriority(body.priority);
+        const title = String(body.title || body.syndicateId || "Integrity review").slice(0, 160);
+        const evidence = typeof body.evidence === "string" ? body.evidence : JSON.stringify(body.evidence || {});
+        insertIntegrityCase.run({
+          $id: id,
+          $agentID: agentID,
+          $syndicateId: body.syndicateId ? String(body.syndicateId) : null,
+          $status: status,
+          $priority: priority,
+          $title: title,
+          $summary: body.summary ? String(body.summary) : "",
+          $evidence: evidence,
+          $reviewer: body.reviewer ? String(body.reviewer) : "",
+          $notes: body.notes ? String(body.notes) : "",
+        });
+        const row = getIntegrityCaseById.get({ $id: id }) as IntegrityCaseRow | null;
         activeRequests--;
-        return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+        return json({ case: row ? serializeIntegrityCase(row) : null }, 201, { "X-Request-ID": ctx.reqId });
       }
 
-      insertRiskConfig.run({
-        $agentID: agentID,
-        $customerID: String(body.customerID || agentID),
-        $thresholds: JSON.stringify(thresholds),
-        $webhook: webhookUrl || null,
-      });
-
-      requestFinished(ctx, "risk/alerts", agentID, 200);
-      activeRequests--;
-      return json({ success: true, agentID, thresholds, webhookUrl: webhookUrl || null }, 200, { "X-Request-ID": ctx.reqId });
-    }
-
-    if (path === "/api/proxy/risk/alerts" && req.method === "GET") {
-      activeRequests++;
-      if (!CONFIG.features.riskEngine) { activeRequests--; return json({ error: "Risk engine disabled" }, 403); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const agentID = url.searchParams.get("agentID");
-      if (agentID) {
-        const cfg = getRiskConfig.get({ $agentID: agentID }) as { agentID: string; thresholds: string; webhook: string | null; updated_at: number } | null;
+      if (path.startsWith("/api/proxy/integrity/cases/") && req.method === "PATCH") {
+        activeRequests++;
+        if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const id = decodeURIComponent(path.replace("/api/proxy/integrity/cases/", ""));
+        const existing = getIntegrityCaseById.get({ $id: id }) as IntegrityCaseRow | null;
+        if (!existing) { activeRequests--; return json({ error: "case not found" }, 404, { "X-Request-ID": ctx.reqId }); }
+        const body = await readBody(req);
+        const reviewer = body.reviewer !== undefined ? String(body.reviewer) : (existing.reviewer || "");
+        const appended = body.appendNote ? `[${new Date().toISOString()}] ${reviewer || "reviewer"}: ${String(body.appendNote)}` : "";
+        const notes = appended ? [existing.notes || "", appended].filter(Boolean).join("\n") : body.notes !== undefined ? String(body.notes) : (existing.notes || "");
+        const evidence = body.evidence !== undefined ? (typeof body.evidence === "string" ? body.evidence : JSON.stringify(body.evidence)) : (existing.evidence || "{}");
+        updateIntegrityCase.run({
+          $id: id,
+          $status: body.status !== undefined ? normalizeCaseStatus(body.status) : existing.status,
+          $priority: body.priority !== undefined ? normalizeCasePriority(body.priority) : existing.priority,
+          $title: body.title !== undefined ? String(body.title).slice(0, 160) : existing.title,
+          $summary: body.summary !== undefined ? String(body.summary) : (existing.summary || ""),
+          $evidence: evidence,
+          $reviewer: reviewer,
+          $notes: notes,
+        });
+        const row = getIntegrityCaseById.get({ $id: id }) as IntegrityCaseRow | null;
         activeRequests--;
-        if (!cfg) return json({ agentID, thresholds: {}, webhookUrl: null });
-        return json({ agentID: cfg.agentID, thresholds: JSON.parse(cfg.thresholds), webhookUrl: cfg.webhook, updatedAt: cfg.updated_at });
-      }
-      const all = getAllRiskConfigs.all() as Array<{ agentID: string; thresholds: string; webhook: string | null; updated_at: number }>;
-      activeRequests--;
-      return json({ configs: all.map(c => ({ agentID: c.agentID, thresholds: JSON.parse(c.thresholds), webhookUrl: c.webhook, updatedAt: c.updated_at })) });
-    }
-
-    // ---- /API/PROXY/RISK/CONFIG ----
-    if (path === "/api/proxy/risk/config" && req.method === "DELETE") {
-      activeRequests++;
-      if (!CONFIG.features.riskEngine) { activeRequests--; return json({ error: "Risk engine disabled" }, 403); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const agentID = url.searchParams.get("agentID");
-      if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400); }
-      deleteRiskConfig.run({ $agentID: agentID });
-      activeRequests--;
-      return json({ success: true, deleted: agentID });
-    }
-
-    // ---- /API/PROXY/RISK/SYNDICATES (GET cached) ----
-    if (path === "/api/proxy/risk/syndicates" && req.method === "GET") {
-      activeRequests++;
-      if (!CONFIG.features.riskEngine) { activeRequests--; return json({ error: "Risk engine disabled" }, 403); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const agentID = url.searchParams.get("agentID");
-      if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400); }
-      const since = url.searchParams.get("since");
-      const sinceTs = since ? Math.floor(new Date(since).getTime() / 1000) : Math.floor(Date.now() / 1000) - 86400;
-      const rows = getSyndicatesByAgent.all({ $agentID: agentID, $since: sinceTs }) as Array<{
-        id: string; agentID: string; pattern: string; members: string; totalStake: number; detected_at: number;
-        windowMs?: number; wagerCount?: number; avgStake?: number; riskScore?: number; confidence?: number; signals?: string;
-      }>;
-      activeRequests--;
-      return json({
-        agentID,
-        syndicates: rows.map(r => ({
-          id: r.id,
-          pattern: r.pattern,
-          members: JSON.parse(r.members),
-          totalStake: r.totalStake,
-          windowMs: r.windowMs || 0,
-          wagerCount: r.wagerCount || 0,
-          avgStake: r.avgStake || 0,
-          riskScore: r.riskScore || 0,
-          confidence: r.confidence || 0,
-          signals: JSON.parse(r.signals || "[]"),
-          detectedAt: new Date(r.detected_at * 1000).toISOString(),
-        })),
-      });
-    }
-
-    // ---- /API/PROXY/ANALYTICS/SYNDICATES/STATS ----
-    if (path === "/api/proxy/analytics/syndicates/stats" && req.method === "GET") {
-      activeRequests++;
-      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const agentID = url.searchParams.get("agentID") || "";
-      if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId }); }
-      const hours = Math.min(Math.max(parseInt(url.searchParams.get("hours") || "24", 10) || 24, 1), 168);
-      const since = Math.floor(Date.now() / 1000) - hours * 3600;
-      const syndicateStats = getSyndicateStats.get({ $agentID: agentID, $since: since }) as { count: number; totalStake: number; maxRiskScore: number; latestDetectedAt: number } | null;
-      const caseRows = getIntegrityCaseStatusCounts.all({ $agentID: agentID }) as Array<{ status: string; count: number }>;
-      activeRequests--;
-      return json({
-        agentID,
-        windowHours: hours,
-        syndicates: {
-          count: syndicateStats?.count || 0,
-          totalStake: syndicateStats?.totalStake || 0,
-          maxRiskScore: syndicateStats?.maxRiskScore || 0,
-          latestDetectedAt: syndicateStats?.latestDetectedAt ? new Date(syndicateStats.latestDetectedAt * 1000).toISOString() : null,
-        },
-        cases: caseRows.reduce((acc, row) => ({ ...acc, [row.status]: row.count }), {} as Record<string, number>),
-      }, 200, { "X-Request-ID": ctx.reqId });
-    }
-
-    // ---- /API/PROXY/INTEGRITY/CASES ----
-    if (path === "/api/proxy/integrity/cases" && req.method === "GET") {
-      activeRequests++;
-      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const agentID = url.searchParams.get("agentID") || "";
-      if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId }); }
-      const status = normalizeCaseStatus(url.searchParams.get("status") || "");
-      const statusFilter = url.searchParams.has("status") ? status : "";
-      const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "50", 10) || 50, 1), 200);
-      const rows = getIntegrityCases.all({ $agentID: agentID, $status: statusFilter, $limit: limit }) as IntegrityCaseRow[];
-      activeRequests--;
-      return json({ agentID, status: statusFilter || "all", cases: rows.map(serializeIntegrityCase) }, 200, { "X-Request-ID": ctx.reqId });
-    }
-
-    if (path === "/api/proxy/integrity/cases" && req.method === "POST") {
-      activeRequests++;
-      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const body = await readBody(req);
-      const agentID = String(body.agentID || "");
-      if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId }); }
-      const id = randomUUIDv7();
-      const status = normalizeCaseStatus(body.status);
-      const priority = normalizeCasePriority(body.priority);
-      const title = String(body.title || body.syndicateId || "Integrity review").slice(0, 160);
-      const evidence = typeof body.evidence === "string" ? body.evidence : JSON.stringify(body.evidence || {});
-      insertIntegrityCase.run({
-        $id: id,
-        $agentID: agentID,
-        $syndicateId: body.syndicateId ? String(body.syndicateId) : null,
-        $status: status,
-        $priority: priority,
-        $title: title,
-        $summary: body.summary ? String(body.summary) : "",
-        $evidence: evidence,
-        $reviewer: body.reviewer ? String(body.reviewer) : "",
-        $notes: body.notes ? String(body.notes) : "",
-      });
-      const row = getIntegrityCaseById.get({ $id: id }) as IntegrityCaseRow | null;
-      activeRequests--;
-      return json({ case: row ? serializeIntegrityCase(row) : null }, 201, { "X-Request-ID": ctx.reqId });
-    }
-
-    if (path.startsWith("/api/proxy/integrity/cases/") && req.method === "PATCH") {
-      activeRequests++;
-      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const id = decodeURIComponent(path.replace("/api/proxy/integrity/cases/", ""));
-      const existing = getIntegrityCaseById.get({ $id: id }) as IntegrityCaseRow | null;
-      if (!existing) { activeRequests--; return json({ error: "case not found" }, 404, { "X-Request-ID": ctx.reqId }); }
-      const body = await readBody(req);
-      const reviewer = body.reviewer !== undefined ? String(body.reviewer) : (existing.reviewer || "");
-      const appended = body.appendNote ? `[${new Date().toISOString()}] ${reviewer || "reviewer"}: ${String(body.appendNote)}` : "";
-      const notes = appended ? [existing.notes || "", appended].filter(Boolean).join("\n") : body.notes !== undefined ? String(body.notes) : (existing.notes || "");
-      const evidence = body.evidence !== undefined ? (typeof body.evidence === "string" ? body.evidence : JSON.stringify(body.evidence)) : (existing.evidence || "{}");
-      updateIntegrityCase.run({
-        $id: id,
-        $status: body.status !== undefined ? normalizeCaseStatus(body.status) : existing.status,
-        $priority: body.priority !== undefined ? normalizeCasePriority(body.priority) : existing.priority,
-        $title: body.title !== undefined ? String(body.title).slice(0, 160) : existing.title,
-        $summary: body.summary !== undefined ? String(body.summary) : (existing.summary || ""),
-        $evidence: evidence,
-        $reviewer: reviewer,
-        $notes: notes,
-      });
-      const row = getIntegrityCaseById.get({ $id: id }) as IntegrityCaseRow | null;
-      activeRequests--;
-      return json({ case: row ? serializeIntegrityCase(row) : null }, 200, { "X-Request-ID": ctx.reqId });
-    }
-
-    // ---- /API/PROXY/ANALYTICS/PREDICTIVE-SHARPNESS ----
-    if (path === "/api/proxy/analytics/predictive-sharpness" && req.method === "POST") {
-      activeRequests++;
-      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const body = await readBody(req);
-      const agentID = String(body.agentID || body.customerID || "");
-      const bettorID = String(body.bettorID || "");
-      const lookbackDays = Math.min(Math.max(parseInt(String(body.lookbackDays || "90"), 10) || 90, 1), 365);
-
-      if (!agentID) {
-        activeRequests--;
-        return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+        return json({ case: row ? serializeIntegrityCase(row) : null }, 200, { "X-Request-ID": ctx.reqId });
       }
 
-      let finalToken = body.token ? String(body.token) : "";
-      let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
-      if (agentID && (!finalToken || !finalCf)) {
-        const stored = await getStoredCredentials(agentID);
-        if (stored) { finalToken ||= stored.token; finalCf ||= stored.cf_clearance; }
-      }
-      if (!finalToken || !finalCf) {
-        activeRequests--;
-        return json({ error: "token/cf_clearance or stored credentials required" }, 400, { "X-Request-ID": ctx.reqId });
-      }
+      // ---- /API/PROXY/ANALYTICS/PREDICTIVE-SHARPNESS ----
+      if (path === "/api/proxy/analytics/predictive-sharpness" && req.method === "POST") {
+        activeRequests++;
+        if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const body = await readBody(req);
+        const agentID = String(body.agentID || body.customerID || "");
+        const bettorID = String(body.bettorID || "");
+        const lookbackDays = Math.min(Math.max(parseInt(String(body.lookbackDays || "90"), 10) || 90, 1), 365);
 
-      try {
-        const since = Math.floor(Date.now() / 1000) - lookbackDays * 86400;
-        const cutoff = Date.now() - lookbackDays * 86400000;
-
-        let wagers: Wager[] = [];
-        if (bettorID) {
-          const dbRows = getWagerAnalytics.all({ $bettorId: bettorID, $since: since }) as Array<Record<string, unknown>>;
-          if (dbRows.length >= 30) {
-            wagers = dbRows.map(r => ({
-              bettorId: String(r.bettorId || ""),
-              gameId: String(r.gameId || ""),
-              wagerType: String(r.wagerType || ""),
-              side: String(r.side || ""),
-              line: Number(r.line || 0),
-              odds: Number(r.odds || 0),
-              stake: Number(r.stake || 0),
-              timestamp: Number(r.timestamp || 0) * 1000,
-              profit: Number(r.profit || 0),
-              sport: String(r.sport || ""),
-            }));
-          }
+        if (!agentID) {
+          activeRequests--;
+          return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
         }
 
-        if (wagers.length < 30) {
+        let finalToken = body.token ? String(body.token) : "";
+        let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
+        if (agentID && (!finalToken || !finalCf)) {
+          const stored = await getStoredCredentials(agentID);
+          if (stored) { finalToken ||= stored.token; finalCf ||= stored.cf_clearance; }
+        }
+        if (!finalToken || !finalCf) {
+          activeRequests--;
+          return json({ error: "token/cf_clearance or stored credentials required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        try {
+          const since = Math.floor(Date.now() / 1000) - lookbackDays * 86400;
+          const cutoff = Date.now() - lookbackDays * 86400000;
+
+          let wagers: Wager[] = [];
+          if (bettorID) {
+            const dbRows = getWagerAnalytics.all({ $bettorId: bettorID, $since: since }) as Array<Record<string, unknown>>;
+            if (dbRows.length >= 30) {
+              wagers = dbRows.map(r => ({
+                bettorId: String(r.bettorId || ""),
+                gameId: String(r.gameId || ""),
+                wagerType: String(r.wagerType || ""),
+                side: String(r.side || ""),
+                line: Number(r.line || 0),
+                odds: Number(r.odds || 0),
+                stake: Number(r.stake || 0),
+                timestamp: Number(r.timestamp || 0) * 1000,
+                profit: Number(r.profit || 0),
+                sport: String(r.sport || ""),
+              }));
+            }
+          }
+
+          if (wagers.length < 30) {
+            const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
+              method: "POST",
+              headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
+              body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
+            }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
+            const wagerData = await wagerRes.json().catch(() => null);
+            let parsed = parseBuckeyeWagers(wagerData).filter(w => w.timestamp >= cutoff);
+            if (bettorID) parsed = parsed.filter(w => w.bettorId === bettorID);
+            wagers = parsed;
+          }
+
+          const wagerAnalytics: WagerAnalytic[] = wagers.map(w => ({
+            stake: w.stake,
+            profit: w.profit || 0,
+            sport: w.sport || "",
+            wagerType: w.wagerType || "",
+            timestamp: w.timestamp,
+          }));
+
+          const result = computePredictiveSharpness(wagerAnalytics);
+
+          if (bettorID) {
+            insertSharpness.run({
+              $bettorId: bettorID, $sharpScore: result.score, $wagerCount: wagerAnalytics.length,
+              $winRate: result.factors.winRate, $roi: result.factors.recentROI,
+            });
+          }
+
+          requestFinished(ctx, "analytics/predictive-sharpness", agentID, 200);
+          activeRequests--;
+          return json({
+            bettorID: bettorID || "all",
+            agentID,
+            lookbackDays,
+            totalWagers: wagerAnalytics.length,
+            ...result,
+            fetchedAt: new Date().toISOString(),
+          }, 200, { "X-Request-ID": ctx.reqId });
+        } catch (err: unknown) {
+          requestFinished(ctx, "analytics/predictive-sharpness", agentID, 500, err);
+          activeRequests--;
+          return json({ error: "Predictive sharpness failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
+        }
+      }
+
+      // ---- /API/PROXY/LINE-RULES (CRUD) ----
+      if (path === "/api/proxy/line-rules" && req.method === "GET") {
+        activeRequests++;
+        if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const agentID = url.searchParams.get("agentID");
+        const rules = agentID
+          ? getLineRulesByAgent.all({ $agentID: agentID })
+          : getAllLineRules.all();
+        activeRequests--;
+        return json({ rules });
+      }
+
+      if (path === "/api/proxy/line-rules" && req.method === "POST") {
+        activeRequests++;
+        if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const body = await readBody(req);
+        const agentID = String(body.agentID || "");
+        const sport = String(body.sport || "NFL");
+        const league = String(body.league || "");
+        const lineType = String(body.lineType || "SPREAD");
+        const condition = String(body.condition || "sharp_money_threshold");
+        const threshold = Number(body.threshold || 5000);
+        const adjustmentPercent = Number(body.adjustmentPercent || 5);
+        const maxMovePercent = Number(body.maxMovePercent || 10);
+        const enabled = body.enabled === false ? 0 : 1;
+
+        if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400); }
+
+        const result = insertLineRule.run({
+          $agentID: agentID, $sport: sport, $league: league, $lineType: lineType,
+          $condition: condition, $threshold: threshold, $adjustmentPercent: adjustmentPercent,
+          $maxMovePercent: maxMovePercent, $enabled: enabled,
+        });
+
+        activeRequests--;
+        return json({ success: true, id: Number(result.lastInsertRowid), agentID, sport, league, lineType, condition, threshold, adjustmentPercent, maxMovePercent, enabled }, 201);
+      }
+
+      if (path === "/api/proxy/line-rules" && req.method === "PUT") {
+        activeRequests++;
+        if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const body = await readBody(req);
+        const id = Number(body.id);
+        const agentID = String(body.agentID || "");
+        if (!id || !agentID) { activeRequests--; return json({ error: "id and agentID required" }, 400); }
+
+        updateLineRule.run({
+          $id: id, $agentID: agentID,
+          $sport: String(body.sport || "NFL"), $league: String(body.league || ""),
+          $lineType: String(body.lineType || "SPREAD"), $condition: String(body.condition || "sharp_money_threshold"),
+          $threshold: Number(body.threshold || 5000), $adjustmentPercent: Number(body.adjustmentPercent || 5),
+          $maxMovePercent: Number(body.maxMovePercent || 10), $enabled: body.enabled === false ? 0 : 1,
+        });
+
+        activeRequests--;
+        return json({ success: true, id });
+      }
+
+      if (path === "/api/proxy/line-rules" && req.method === "DELETE") {
+        activeRequests++;
+        if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const id = url.searchParams.get("id");
+        const agentID = url.searchParams.get("agentID");
+        if (!id || !agentID) { activeRequests--; return json({ error: "id and agentID required" }, 400); }
+        deleteLineRule.run({ $id: Number(id), $agentID: agentID });
+        activeRequests--;
+        return json({ success: true, deleted: Number(id) });
+      }
+
+      // ---- /API/PROXY/LINE-ADJUSTMENTS/LOG ----
+      if (path === "/api/proxy/line-adjustments/log" && req.method === "GET") {
+        activeRequests++;
+        if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const gameId = url.searchParams.get("gameId");
+        const since = url.searchParams.get("since");
+        const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "50", 10), 1), 500);
+
+        if (gameId) {
+          const rows = getLineAdjLog.all({ $gameId: gameId, $limit: limit });
+          activeRequests--;
+          return json({ gameId, adjustments: rows });
+        }
+        const sinceTs = since ? Math.floor(new Date(since).getTime() / 1000) : Math.floor(Date.now() / 1000) - 86400;
+        const rows = getRecentLineAdjLog.all({ $since: sinceTs, $limit: limit });
+        activeRequests--;
+        return json({ adjustments: rows });
+      }
+
+      // ---- /API/PROXY/ANALYTICS/BACKTEST ----
+      if (path === "/api/proxy/analytics/backtest" && req.method === "POST") {
+        activeRequests++;
+        if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const body = await readBody(req);
+        const agentID = String(body.agentID || body.customerID || "");
+        const days = Math.min(Math.max(parseInt(String(body.days || "7"), 10) || 7, 1), 90);
+        const ruleParams = Array.isArray(body.rules) ? body.rules as BacktestRule[] : [];
+
+        if (!agentID) {
+          activeRequests--;
+          return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        let finalToken = body.token ? String(body.token) : "";
+        let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
+        if (agentID && (!finalToken || !finalCf)) {
+          const stored = await getStoredCredentials(agentID);
+          if (stored) { finalToken ||= stored.token; finalCf ||= stored.cf_clearance; }
+        }
+        if (!finalToken || !finalCf) {
+          activeRequests--;
+          return json({ error: "token/cf_clearance or stored credentials required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        try {
+          const since = Math.floor(Date.now() / 1000) - days * 86400;
+          const cutoff = Date.now() - days * 86400000;
+
           const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
             method: "POST",
             headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
             body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
           }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
           const wagerData = await wagerRes.json().catch(() => null);
-          let parsed = parseBuckeyeWagers(wagerData).filter(w => w.timestamp >= cutoff);
-          if (bettorID) parsed = parsed.filter(w => w.bettorId === bettorID);
-          wagers = parsed;
+          const wagers = parseBuckeyeWagers(wagerData).filter(w => w.timestamp >= cutoff);
+
+          const lineHistoryRows = getLineHistorySince.all({ $since: since }) as Array<{ gameId: string; lineType: string; side: string; oldLine: number; newLine: number; oldOdds: number; newOdds: number; timestamp: number }>;
+          const lineHistory: LineMove[] = lineHistoryRows.map(r => ({
+            timestamp: r.timestamp * 1000,
+            lineType: r.lineType,
+            side: r.side,
+            oldLine: r.oldLine,
+            newLine: r.newLine,
+            oldOdds: r.oldOdds,
+            newOdds: r.newOdds,
+            gameId: r.gameId,
+          }));
+
+          const rules = ruleParams.length > 0 ? ruleParams : (getAllLineRules.all() as Array<{ id: number; agentID: string; sport: string; league: string; lineType: string; condition: string; threshold: number; adjustmentPercent: number; maxMovePercent: number; enabled: number }>).map(r => ({
+            sport: r.sport, league: r.league, lineType: r.lineType, condition: r.condition,
+            threshold: r.threshold, adjustmentPercent: r.adjustmentPercent, maxMovePercent: r.maxMovePercent,
+          }));
+
+          const simulation = simulateLineAdjustments(wagers, rules, lineHistory);
+
+          requestFinished(ctx, "analytics/backtest", agentID, 200);
+          activeRequests--;
+          return json({
+            agentID, days,
+            wagersAnalyzed: wagers.length,
+            lineHistorySize: lineHistory.length,
+            rulesTested: rules.length,
+            simulation,
+            fetchedAt: new Date().toISOString(),
+          }, 200, { "X-Request-ID": ctx.reqId });
+        } catch (err: unknown) {
+          requestFinished(ctx, "analytics/backtest", agentID, 500, err);
+          activeRequests--;
+          return json({ error: "Backtest failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
+        }
+      }
+
+      // ---- /ADMIN/RATE-LIMIT ----
+      if (path === "/admin/rate-limit") {
+        const authErr = adminApiKeyAuth(req);
+        if (authErr) return authErr;
+
+        if (req.method === "GET") {
+          const all = getAllRateLimitOverridesStmt.all() as Array<{ endpoint: string; limit: number; window: number; updated_at: number }>;
+          return json({ overrides: all });
         }
 
-        const wagerAnalytics: WagerAnalytic[] = wagers.map(w => ({
-          stake: w.stake,
-          profit: w.profit || 0,
-          sport: w.sport || "",
-          wagerType: w.wagerType || "",
-          timestamp: w.timestamp,
-        }));
-
-        const result = computePredictiveSharpness(wagerAnalytics);
-
-        if (bettorID) {
-          insertSharpness.run({
-            $bettorId: bettorID, $sharpScore: result.score, $wagerCount: wagerAnalytics.length,
-            $winRate: result.factors.winRate, $roi: result.factors.recentROI,
-          });
+        if (req.method === "POST") {
+          const parsed = await safeParseBody(req, RateLimitOverrideSchema);
+          if (!parsed.success) return json({ error: parsed.error }, 400);
+          const { endpoint, limit, window } = parsed.data;
+          setRateLimitOverrideStmt.run({ $endpoint: endpoint, $limit: limit, $window: window });
+          rateLimitOverrides.set(endpoint, { limit, window });
+          return json({ success: true, endpoint, limit, window });
         }
 
-        requestFinished(ctx, "analytics/predictive-sharpness", agentID, 200);
-        activeRequests--;
-        return json({
-          bettorID: bettorID || "all",
-          agentID,
-          lookbackDays,
-          totalWagers: wagerAnalytics.length,
-          ...result,
-          fetchedAt: new Date().toISOString(),
-        }, 200, { "X-Request-ID": ctx.reqId });
-      } catch (err: unknown) {
-        requestFinished(ctx, "analytics/predictive-sharpness", agentID, 500, err);
-        activeRequests--;
-        return json({ error: "Predictive sharpness failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
-      }
-    }
+        if (req.method === "DELETE") {
+          const endpoint = url.searchParams.get("endpoint");
+          if (!endpoint) return json({ error: "endpoint query param required" }, 400);
+          deleteRateLimitOverrideInline.run({ $endpoint: endpoint });
+          rateLimitOverrides.delete(endpoint);
+          return json({ success: true, deleted: endpoint });
+        }
 
-    // ---- /API/PROXY/LINE-RULES (CRUD) ----
-    if (path === "/api/proxy/line-rules" && req.method === "GET") {
-      activeRequests++;
-      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const agentID = url.searchParams.get("agentID");
-      const rules = agentID
-        ? getLineRulesByAgent.all({ $agentID: agentID })
-        : getAllLineRules.all();
-      activeRequests--;
-      return json({ rules });
-    }
-
-    if (path === "/api/proxy/line-rules" && req.method === "POST") {
-      activeRequests++;
-      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const body = await readBody(req);
-      const agentID = String(body.agentID || "");
-      const sport = String(body.sport || "NFL");
-      const league = String(body.league || "");
-      const lineType = String(body.lineType || "SPREAD");
-      const condition = String(body.condition || "sharp_money_threshold");
-      const threshold = Number(body.threshold || 5000);
-      const adjustmentPercent = Number(body.adjustmentPercent || 5);
-      const maxMovePercent = Number(body.maxMovePercent || 10);
-      const enabled = body.enabled === false ? 0 : 1;
-
-      if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400); }
-
-      const result = insertLineRule.run({
-        $agentID: agentID, $sport: sport, $league: league, $lineType: lineType,
-        $condition: condition, $threshold: threshold, $adjustmentPercent: adjustmentPercent,
-        $maxMovePercent: maxMovePercent, $enabled: enabled,
-      });
-
-      activeRequests--;
-      return json({ success: true, id: Number(result.lastInsertRowid), agentID, sport, league, lineType, condition, threshold, adjustmentPercent, maxMovePercent, enabled }, 201);
-    }
-
-    if (path === "/api/proxy/line-rules" && req.method === "PUT") {
-      activeRequests++;
-      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const body = await readBody(req);
-      const id = Number(body.id);
-      const agentID = String(body.agentID || "");
-      if (!id || !agentID) { activeRequests--; return json({ error: "id and agentID required" }, 400); }
-
-      updateLineRule.run({
-        $id: id, $agentID: agentID,
-        $sport: String(body.sport || "NFL"), $league: String(body.league || ""),
-        $lineType: String(body.lineType || "SPREAD"), $condition: String(body.condition || "sharp_money_threshold"),
-        $threshold: Number(body.threshold || 5000), $adjustmentPercent: Number(body.adjustmentPercent || 5),
-        $maxMovePercent: Number(body.maxMovePercent || 10), $enabled: body.enabled === false ? 0 : 1,
-      });
-
-      activeRequests--;
-      return json({ success: true, id });
-    }
-
-    if (path === "/api/proxy/line-rules" && req.method === "DELETE") {
-      activeRequests++;
-      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const id = url.searchParams.get("id");
-      const agentID = url.searchParams.get("agentID");
-      if (!id || !agentID) { activeRequests--; return json({ error: "id and agentID required" }, 400); }
-      deleteLineRule.run({ $id: Number(id), $agentID: agentID });
-      activeRequests--;
-      return json({ success: true, deleted: Number(id) });
-    }
-
-    // ---- /API/PROXY/LINE-ADJUSTMENTS/LOG ----
-    if (path === "/api/proxy/line-adjustments/log" && req.method === "GET") {
-      activeRequests++;
-      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const gameId = url.searchParams.get("gameId");
-      const since = url.searchParams.get("since");
-      const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "50", 10), 1), 500);
-
-      if (gameId) {
-        const rows = getLineAdjLog.all({ $gameId: gameId, $limit: limit });
-        activeRequests--;
-        return json({ gameId, adjustments: rows });
-      }
-      const sinceTs = since ? Math.floor(new Date(since).getTime() / 1000) : Math.floor(Date.now() / 1000) - 86400;
-      const rows = getRecentLineAdjLog.all({ $since: sinceTs, $limit: limit });
-      activeRequests--;
-      return json({ adjustments: rows });
-    }
-
-    // ---- /API/PROXY/ANALYTICS/BACKTEST ----
-    if (path === "/api/proxy/analytics/backtest" && req.method === "POST") {
-      activeRequests++;
-      if (!CONFIG.features.analytics) { activeRequests--; return json({ error: "Analytics disabled" }, 403, { "X-Request-ID": ctx.reqId }); }
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const body = await readBody(req);
-      const agentID = String(body.agentID || body.customerID || "");
-      const days = Math.min(Math.max(parseInt(String(body.days || "7"), 10) || 7, 1), 90);
-      const ruleParams = Array.isArray(body.rules) ? body.rules as BacktestRule[] : [];
-
-      if (!agentID) {
-        activeRequests--;
-        return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId });
+        return json({ error: "Method not allowed" }, 405);
       }
 
-      let finalToken = body.token ? String(body.token) : "";
-      let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
-      if (agentID && (!finalToken || !finalCf)) {
-        const stored = await getStoredCredentials(agentID);
-        if (stored) { finalToken ||= stored.token; finalCf ||= stored.cf_clearance; }
-      }
-      if (!finalToken || !finalCf) {
-        activeRequests--;
-        return json({ error: "token/cf_clearance or stored credentials required" }, 400, { "X-Request-ID": ctx.reqId });
-      }
-
-      try {
-        const since = Math.floor(Date.now() / 1000) - days * 86400;
-        const cutoff = Date.now() - days * 86400000;
-
-        const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
-          method: "POST",
-          headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
-          body: toForm({ operation: "getBetTicker", agentID, agentOwner: agentID, agentSite: "1" }),
-        }), { reqId: ctx.reqId, endpoint: "getBetTicker" });
-        const wagerData = await wagerRes.json().catch(() => null);
-        const wagers = parseBuckeyeWagers(wagerData).filter(w => w.timestamp >= cutoff);
-
-        const lineHistoryRows = getLineHistorySince.all({ $since: since }) as Array<{ gameId: string; lineType: string; side: string; oldLine: number; newLine: number; oldOdds: number; newOdds: number; timestamp: number }>;
-        const lineHistory: LineMove[] = lineHistoryRows.map(r => ({
-          timestamp: r.timestamp * 1000,
-          lineType: r.lineType,
-          side: r.side,
-          oldLine: r.oldLine,
-          newLine: r.newLine,
-          oldOdds: r.oldOdds,
-          newOdds: r.newOdds,
-          gameId: r.gameId,
+      // ---- /ADMIN/WS ----
+      if (path === "/admin/ws" && req.method === "GET") {
+        const authErr = adminApiKeyAuth(req);
+        if (authErr) return authErr;
+        const clients = Array.from(subscribers.entries()).map(([id, sub]) => ({
+          id: id.slice(0, 8),
+          customerID: sub.customerID,
+          connected: sub.ws.readyState === 1,
+          batched: !!sub.batchInterval,
         }));
+        return json({ count: clients.length, clients });
+      }
 
-        const rules = ruleParams.length > 0 ? ruleParams : (getAllLineRules.all() as Array<{ id: number; agentID: string; sport: string; league: string; lineType: string; condition: string; threshold: number; adjustmentPercent: number; maxMovePercent: number; enabled: number }>).map(r => ({
-          sport: r.sport, league: r.league, lineType: r.lineType, condition: r.condition,
-          threshold: r.threshold, adjustmentPercent: r.adjustmentPercent, maxMovePercent: r.maxMovePercent,
-        }));
-
-        const simulation = simulateLineAdjustments(wagers, rules, lineHistory);
-
-        requestFinished(ctx, "analytics/backtest", agentID, 200);
-        activeRequests--;
+      // ---- /ADMIN/TRACES ----
+      if (path === "/admin/traces" && req.method === "GET") {
+        const authErr = adminApiKeyAuth(req);
+        if (authErr) return authErr;
+        const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "100", 10), 1), 500);
         return json({
-          agentID, days,
-          wagersAnalyzed: wagers.length,
-          lineHistorySize: lineHistory.length,
-          rulesTested: rules.length,
-          simulation,
-          fetchedAt: new Date().toISOString(),
-        }, 200, { "X-Request-ID": ctx.reqId });
-      } catch (err: unknown) {
-        requestFinished(ctx, "analytics/backtest", agentID, 500, err);
-        activeRequests--;
-        return json({ error: "Backtest failed", details: err instanceof Error ? err.message : String(err) }, 502, { "X-Request-ID": ctx.reqId });
-      }
-    }
-
-    // ---- /ADMIN/RATE-LIMIT ----
-    if (path === "/admin/rate-limit") {
-      const authErr = adminApiKeyAuth(req);
-      if (authErr) return authErr;
-
-      if (req.method === "GET") {
-        const all = getAllRateLimitOverridesStmt.all() as Array<{ endpoint: string; limit: number; window: number; updated_at: number }>;
-        return json({ overrides: all });
+          service: CONFIG.otel.serviceName,
+          otelEnabled: CONFIG.otel.enabled,
+          endpoint: CONFIG.otel.endpoint,
+          spans: tracer.getRecent(limit),
+        });
       }
 
-      if (req.method === "POST") {
-        const parsed = await safeParseBody(req, RateLimitOverrideSchema);
-        if (!parsed.success) return json({ error: parsed.error }, 400);
-        const { endpoint, limit, window } = parsed.data;
-        setRateLimitOverrideStmt.run({ $endpoint: endpoint, $limit: limit, $window: window });
-        rateLimitOverrides.set(endpoint, { limit, window });
-        return json({ success: true, endpoint, limit, window });
+      // ---- /ADMIN/REQUESTS ----
+      if (path === "/admin/requests" && req.method === "GET") {
+        const authErr = adminApiKeyAuth(req);
+        if (authErr) return authErr;
+        const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "100", 10), 1), 500);
+        const statsMinutes = Math.min(Math.max(parseInt(url.searchParams.get("statsMinutes") || "5", 10), 1), 60);
+        return json({
+          recent: requestListener.getRecent(limit),
+          stats: requestListener.getStats(statsMinutes),
+        });
       }
 
-      if (req.method === "DELETE") {
-        const endpoint = url.searchParams.get("endpoint");
-        if (!endpoint) return json({ error: "endpoint query param required" }, 400);
-        deleteRateLimitOverrideInline.run({ $endpoint: endpoint });
-        rateLimitOverrides.delete(endpoint);
-        return json({ success: true, deleted: endpoint });
-      }
+      // ---- /API/PROXY/RENEWTOKEN ----
+      if (path === "/api/proxy/renewToken" && req.method === "POST") {
+        activeRequests++;
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+        const body = await readBody(req);
+        const { customerID: bodyCustID, cf_clearance: bodyCf, token: bodyToken } = body;
 
-      return json({ error: "Method not allowed" }, 405);
-    }
+        let finalToken = bodyToken ? String(bodyToken) : "";
+        let finalCf = bodyCf ? extractCfClearanceValue(String(bodyCf)) : "";
+        const customerKey = bodyCustID ? String(bodyCustID) : "";
 
-    // ---- /ADMIN/WS ----
-    if (path === "/admin/ws" && req.method === "GET") {
-      const authErr = adminApiKeyAuth(req);
-      if (authErr) return authErr;
-      const clients = Array.from(subscribers.entries()).map(([id, sub]) => ({
-        id: id.slice(0, 8),
-        customerID: sub.customerID,
-        connected: sub.ws.readyState === 1,
-        batched: !!sub.batchInterval,
-      }));
-      return json({ count: clients.length, clients });
-    }
+        if (customerKey && (!finalToken || !finalCf)) {
+          const stored = await getStoredCredentials(customerKey);
+          if (!stored) { activeRequests--; return json({ error: "No token found for this customerID" }, 404); }
+          finalToken ||= stored.token;
+          finalCf ||= stored.cf_clearance;
+        }
 
-    // ---- /ADMIN/TRACES ----
-    if (path === "/admin/traces" && req.method === "GET") {
-      const authErr = adminApiKeyAuth(req);
-      if (authErr) return authErr;
-      const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "100", 10), 1), 500);
-      return json({
-        service: CONFIG.otel.serviceName,
-        otelEnabled: CONFIG.otel.enabled,
-        endpoint: CONFIG.otel.endpoint,
-        spans: tracer.getRecent(limit),
-      });
-    }
+        if (!finalToken || !finalCf) { activeRequests--; return json({ error: "Missing token or cf_clearance" }, 400); }
 
-    // ---- /ADMIN/REQUESTS ----
-    if (path === "/admin/requests" && req.method === "GET") {
-      const authErr = adminApiKeyAuth(req);
-      if (authErr) return authErr;
-      const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "100", 10), 1), 500);
-      const statsMinutes = Math.min(Math.max(parseInt(url.searchParams.get("statsMinutes") || "5", 10), 1), 60);
-      return json({
-        recent: requestListener.getRecent(limit),
-        stats: requestListener.getStats(statsMinutes),
-      });
-    }
+        const upstreamUrl = `${CONFIG.baseUrl}/cloud/api/System/renewToken`;
+        const formData = toForm({ operation: "renewToken", agentID: customerKey || "BILLY666", agentOwner: customerKey || "BILLY666", agentSite: "1" });
 
-    // ---- /API/PROXY/RENEWTOKEN ----
-    if (path === "/api/proxy/renewToken" && req.method === "POST") {
-      activeRequests++;
-      const authErr = apiKeyAuth(req);
-      if (authErr) { activeRequests--; return authErr; }
-      const body = await readBody(req);
-      const { customerID: bodyCustID, cf_clearance: bodyCf, token: bodyToken } = body;
+        try {
+          const upstream = await buckeyeCall(() => buckeyeFetch(upstreamUrl, {
+            method: "POST",
+            headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
+            body: formData,
+          }), { reqId: ctx.reqId, endpoint: "renewToken" });
 
-      let finalToken = bodyToken ? String(bodyToken) : "";
-      let finalCf = bodyCf ? extractCfClearanceValue(String(bodyCf)) : "";
-      const customerKey = bodyCustID ? String(bodyCustID) : "";
+          const text = await upstream.text();
+          const data = JSON.parse(text) as { token?: string; code?: string };
 
-      if (customerKey && (!finalToken || !finalCf)) {
-        const stored = await getStoredCredentials(customerKey);
-        if (!stored) { activeRequests--; return json({ error: "No token found for this customerID" }, 404); }
-        finalToken ||= stored.token;
-        finalCf ||= stored.cf_clearance;
-      }
-
-      if (!finalToken || !finalCf) { activeRequests--; return json({ error: "Missing token or cf_clearance" }, 400); }
-
-      const upstreamUrl = `${CONFIG.baseUrl}/cloud/api/System/renewToken`;
-      const formData = toForm({ operation: "renewToken", agentID: customerKey || "BILLY666", agentOwner: customerKey || "BILLY666", agentSite: "1" });
-
-      try {
-        const upstream = await buckeyeCall(() => buckeyeFetch(upstreamUrl, {
-          method: "POST",
-          headers: browserHeaders(finalToken, `cf_clearance=${finalCf}`),
-          body: formData,
-        }), { reqId: ctx.reqId, endpoint: "renewToken" });
-
-        const text = await upstream.text();
-        const data = JSON.parse(text) as { token?: string; code?: string };
-
-        if (upstream.ok && (data.token || data.code)) {
-          const newToken = String(data.token || data.code);
-  const expiresAt = Math.floor(Date.now() / 1000) + PROXY_CONSTANTS.TOKEN_EXPIRY_SECONDS;
-          if (customerKey && finalCf) {
-            await rememberProxyCredentialSecrets(customerKey, { cfClearance: finalCf });
+          if (upstream.ok && (data.token || data.code)) {
+            const newToken = String(data.token || data.code);
+            const expiresAt = Math.floor(Date.now() / 1000) + PROXY_CONSTANTS.TOKEN_EXPIRY_SECONDS;
+            if (customerKey && finalCf) {
+              await rememberProxyCredentialSecrets(customerKey, { cfClearance: finalCf });
+            }
+            insertToken.run({
+              $customerID: customerKey || "BILLY666",
+              $cf_clearance: null,
+              $auth_code: null,
+              $bearer_token: newToken,
+              $expires_at: expiresAt,
+            });
+            invalidateTokenCache(customerKey || "BILLY666");
+            scheduleTokenRenewal(customerKey || "BILLY666", expiresAt);
+            activeRequests--;
+            return json({ success: true, token: newToken });
+          } else {
+            activeRequests--;
+            return json({ error: "Renewal failed", details: data }, upstream.status);
           }
-          insertToken.run({
-            $customerID: customerKey || "BILLY666",
-            $cf_clearance: null,
-            $auth_code: null,
-            $bearer_token: newToken,
-            $expires_at: expiresAt,
-          });
-          invalidateTokenCache(customerKey || "BILLY666");
-          scheduleTokenRenewal(customerKey || "BILLY666", expiresAt);
+        } catch (err: unknown) {
           activeRequests--;
-          return json({ success: true, token: newToken });
-        } else {
-          activeRequests--;
-          return json({ error: "Renewal failed", details: data }, upstream.status);
+          return json({ error: "Proxy error", details: err instanceof Error ? err.message : String(err) }, 500);
         }
-      } catch (err: unknown) {
-        activeRequests--;
-        return json({ error: "Proxy error", details: err instanceof Error ? err.message : String(err) }, 500);
       }
-    }
 
-    activeRequests--;
-    return json({ error: "Not found" }, 404);
-  } catch (err: unknown) {
-    activeRequests--;
-    logger.error("Unhandled fetch error", { error: err instanceof Error ? err.message : String(err), path: url.pathname, reqId: ctx.reqId });
-    return json({ error: "Internal Server Error", code: "INTERNAL_ERROR" }, 500);
-  } finally {
-    endRequestSpan(ctx.reqId, 404);
-  }
+      // ---- /API/PROXY/DISCOVER-ENDPOINTS ----
+      if (path === "/api/proxy/discover-endpoints" && req.method === "POST") {
+        activeRequests++;
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+
+        const KNOWN_BUCKEYE_ENDPOINTS = [
+          `${CONFIG.baseUrl}/cloud/api/Manager/getPerformancePlayer`,
+          `${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`,
+          `${CONFIG.baseUrl}/cloud/api/Manager/getPlayerLimits`,
+          `${CONFIG.baseUrl}/cloud/api/Manager/setPlayerLimits`,
+          `${CONFIG.baseUrl}/cloud/api/Manager/updatePlayerStatus`,
+          `${CONFIG.baseUrl}/cloud/api/Manager/getPlayerDetails`,
+          `${CONFIG.baseUrl}/cloud/api/Manager/getAgentPerformance`,
+        ];
+
+        const session = getLatestTokenWrite.get({ $customerID: "BILLY666" }) as TokenRow | null;
+        if (!session || !session.bearer_token) {
+          activeRequests--;
+          return json({ error: "No active session" }, 401, { "X-Request-ID": ctx.reqId });
+        }
+
+        const results = await Promise.all(
+          KNOWN_BUCKEYE_ENDPOINTS.map(async (url) => {
+            try {
+              const res = await fetch(url, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/x-www-form-urlencoded",
+                  "Authorization": `Bearer ${session.bearer_token}`,
+                },
+                body: new URLSearchParams({
+                  operation: url.split("/").pop() || "",
+                  RRO: "1",
+                  PlayerID: "TEST_DISCOVERY",
+                  MaxExposure: "0",
+                }).toString(),
+              });
+              return {
+                endpoint: url,
+                status: res.status,
+                statusText: res.statusText,
+                accessible: res.status !== 404 && res.status !== 403,
+              };
+            } catch (err: any) {
+              return {
+                endpoint: url,
+                status: 0,
+                statusText: err.message,
+                accessible: false,
+              };
+            }
+          })
+        );
+
+        activeRequests--;
+        return json({
+          scanned: results.length,
+          accessible: results.filter(r => r.accessible).map(r => r.endpoint),
+          blocked: results.filter(r => !r.accessible).map(r => ({ endpoint: r.endpoint, status: r.status })),
+          timestamp: new Date().toISOString(),
+        }, 200, { "X-Request-ID": ctx.reqId });
+      }
+
+      // ---- /API/ENFORCEMENT/QUEUE ----
+      if (path === "/api/enforcement/queue" && req.method === "POST") {
+        activeRequests++;
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+
+        const body = await readBody(req);
+        const status = cleanString(body.status) || null;
+        const risk_level = cleanString(body.risk_level) || null;
+        const limit = Math.min(100, Math.max(1, rowNumber(body, ["limit"], 50)));
+
+        const queue = getEnforcementQueue.all({ $status: status, $risk_level: risk_level, $limit: limit }) as Array<{
+          id: number; position_id: number | null; customer_id: string; risk_level: string;
+          suggested_max_exposure: number | null; suggested_wager_limit: number | null;
+          suggested_action: string | null; ai_confidence: number | null; ai_summary: string | null;
+          status: string; viewed_at: string | null; viewed_by: string | null;
+          applied_at: string | null; applied_by: string | null; buckeye_admin_url: string | null;
+          reminder_count: number; last_reminder_at: string | null; created_at: string; expires_at: string;
+        }>;
+
+        activeRequests--;
+        return json({ count: queue.length, queue }, 200, { "X-Request-ID": ctx.reqId });
+      }
+
+      // ---- /API/ENFORCEMENT/MARK-VIEWED ----
+      if (path === "/api/enforcement/mark-viewed" && req.method === "POST") {
+        activeRequests++;
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+
+        const body = await readBody(req);
+        const queue_id = rowNumber(body, ["queue_id"], 0);
+        const trader_name = cleanString(body.trader_name) || "unknown";
+
+        if (!queue_id) {
+          activeRequests--;
+          return json({ error: "queue_id required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        updateEnforcementViewed.run({ $id: queue_id, $viewed_by: trader_name });
+        activeRequests--;
+        return json({ ok: true, queue_id, viewed_by: trader_name }, 200, { "X-Request-ID": ctx.reqId });
+      }
+
+      // ---- /API/ENFORCEMENT/MARK-APPLIED ----
+      if (path === "/api/enforcement/mark-applied" && req.method === "POST") {
+        activeRequests++;
+        const authErr = apiKeyAuth(req);
+        if (authErr) { activeRequests--; return authErr; }
+
+        const body = await readBody(req);
+        const queue_id = rowNumber(body, ["queue_id"], 0);
+        const trader_name = cleanString(body.trader_name) || "unknown";
+
+        if (!queue_id) {
+          activeRequests--;
+          return json({ error: "queue_id required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+
+        updateEnforcementApplied.run({ $id: queue_id, $applied_by: trader_name });
+        activeRequests--;
+        return json({ ok: true, queue_id, applied_by: trader_name }, 200, { "X-Request-ID": ctx.reqId });
+      }
+
+      activeRequests--;
+      return json({ error: "Not found" }, 404);
+    } catch (err: unknown) {
+      activeRequests--;
+      logger.error("Unhandled fetch error", { error: err instanceof Error ? err.message : String(err), path: url.pathname, reqId: ctx.reqId });
+      return json({ error: "Internal Server Error", code: "INTERNAL_ERROR" }, 500);
+    } finally {
+      endRequestSpan(ctx.reqId, 404);
+    }
   },
 
   error(error: Error) {
