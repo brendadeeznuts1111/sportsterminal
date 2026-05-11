@@ -152,6 +152,7 @@ function fakeScraperManager(): BuckeyeScraperManager {
         agents: [{
           agentId: 'TEST',
           isPolling: true,
+          pollingScheduled: true,
           lastPoll: new Date().toISOString(),
           errorCount: 0,
           consecutiveErrors: 0,

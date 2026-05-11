@@ -10,7 +10,7 @@ import { OddsPoller } from './odds/OddsPoller';
 import { BuckeyeScraperManager } from './scrapers/ScraperManager';
 import { restoreBuckeyeAgentsFromVault } from './services/BuckeyeVaultRestore';
 import { BunSecretVault } from './services/BunSecretVault';
-import { CommandCenterCron } from './services/CommandCenterCron';
+import { initRiskCommandCenterCron } from './services/CommandCenterCron';
 import { PerformanceCache } from './services/PerformanceCache';
 import { startSandboxJanitor, startSandboxQueueProcessor } from './services/SandboxService';
 import { streamHub } from './services/StreamHub';
@@ -335,13 +335,14 @@ async function startServer() {
   server.ref();
 
   // Start Risk Command Center background jobs
-  const commandCenterCron = new CommandCenterCron(db, {
+  const commandCenterCron = initRiskCommandCenterCron(db, {
     featureCandidateMs: 5 * 60_000,
     featureExtractMs: 10 * 60_000,
+    positionExpiryMs: 5 * 60_000,
     portfolioRefreshMs: 15 * 60_000,
+    alertCleanupMs: 24 * 60 * 60_000,
     heartbeatMs: 5_000,
   });
-  commandCenterCron.start();
 
   console.log(`🚀 Backend running at http://${HOST}:${PORT}`);
 

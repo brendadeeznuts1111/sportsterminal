@@ -55,7 +55,9 @@ export class PlayerSearchService {
     const fuzzy = `%${q}%`;
 
     // Single SQL with three UNION'd buckets so ranking is deterministic and
-    // the row count is bounded by `cap` per bucket.
+    // the row count is bounded by `cap` per bucket. This deliberately stays
+    // ASCII/LIKE based for now; switch to FTS5 search_tokens when roster size
+    // or Unicode/misspelling tolerance needs outgrow simple wildcard matching.
     const rows = await this.db.all<PlayerRow & { match_type: string; rank: number }>(
       `SELECT * FROM (
          SELECT

@@ -796,7 +796,8 @@ async function generateCustomerSummary(customer: CustomerRow): Promise<Record<st
         tags,
         profile: parseJson<Record<string, unknown>>(customer.profile_json, {}),
       }),
-      apiKey
+      apiKey,
+      120_000
     );
     const parsed = parseJsonObjectFromText(raw);
     const tier = stringValue(parsed.risk_level) || extractRiskTier(raw);
@@ -875,38 +876,32 @@ function scoreCustomer(customer: CustomerRow): number {
   return Math.max(0, Math.min(100, score));
 }
 
-async function callKimi(systemPrompt: string, userContent: string, apiKey: string): Promise<string> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15_000);
-  try {
-    const response = await fetch('https://api.moonshot.cn/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'kimi-latest',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userContent },
-        ],
-        temperature: 0.1,
-        max_tokens: 512,
-      }),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Kimi API ${response.status}: ${body.slice(0, 500)}`);
-    }
-    const data = await response.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    return data.choices?.[0]?.message?.content || '';
-  } finally {
-    clearTimeout(timeout);
+async function callKimi(systemPrompt: string, userContent: string, apiKey: string, timeoutMs = 15_000): Promise<string> {
+  const response = await fetch('https://api.moonshot.cn/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'kimi-for-coding',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userContent },
+      ],
+      temperature: 0.1,
+      max_tokens: 1024,
+    }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Kimi API ${response.status}: ${body.slice(0, 500)}`);
   }
+  const data = await response.json() as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  return data.choices?.[0]?.message?.content || '';
 }
 
 function extractRiskTier(text: string): string {

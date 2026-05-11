@@ -25,6 +25,7 @@ import { LiveFeatureService } from '../../services/LiveFeatureService';
 import { PlayerSearchService } from '../../services/PlayerSearchService';
 import { PositionService } from '../../services/PositionService';
 import { ShadowAgentService } from '../../services/ShadowAgentService';
+import { RiskCommandCenter } from '../../services/RiskCommandCenter';
 import { ApiError, corsHeaders, handleAsync, readJsonBody, requireAdminTokenIfConfigured } from '../helpers';
 
 export function registerCommandCenterRoutes(
@@ -189,6 +190,69 @@ export function registerCommandCenterRoutes(
         name: body.name,
       });
     }, corsHeaders);
+  }
+
+  // ─── Risk Command Center ───────────────────────────────────────────
+  const rcc = new RiskCommandCenter(db);
+
+  if (url.pathname === '/api/risk/summary' && request.method === 'GET') {
+    return handleAsync(async () => rcc.generateRiskSummary(), corsHeaders);
+  }
+
+  if (url.pathname === '/api/risk/positions' && request.method === 'GET') {
+    const status = url.searchParams.get('status') || undefined;
+    const customerId = url.searchParams.get('customer_id') || undefined;
+    const limit = clampInt(url.searchParams.get('limit'), 50, 1, 200);
+    const offset = clampInt(url.searchParams.get('offset'), 0, 0, 10_000);
+    const service = new PositionService(db);
+    return handleAsync(async () => service.listPositions({ status, customer_id: customerId, limit, offset }), corsHeaders);
+  }
+
+  if (url.pathname === '/api/risk/positions' && request.method === 'POST') {
+    return handleAsync(async () => {
+      const body = await readJsonBody<{
+        position_id?: number;
+        action?: string;
+        max_exposure?: number;
+        wager_limit?: number;
+        note?: string;
+        trader_name?: string;
+      }>(request);
+      if (!body.position_id || !body.action) throw new ApiError(400, 'position_id and action required');
+      const service = new PositionService(db);
+      return service.executePosition({
+        position_id: body.position_id,
+        action: body.action,
+        max_exposure: body.max_exposure,
+        wager_limit: body.wager_limit,
+        note: body.note,
+        trader_name: body.trader_name,
+      });
+    }, corsHeaders);
+  }
+
+  if (url.pathname === '/api/risk/violations' && request.method === 'GET') {
+    const customerId = url.searchParams.get('customer_id') || undefined;
+    const limit = clampInt(url.searchParams.get('limit'), 50, 1, 200);
+    if (customerId) {
+      return handleAsync(async () => rcc.getViolationsForCustomer(customerId, limit), corsHeaders);
+    }
+    return handleAsync(async () => rcc.getViolationCountsByType(24), corsHeaders);
+  }
+
+  if (url.pathname === '/api/risk/timeseries' && request.method === 'GET') {
+    const days = clampInt(url.searchParams.get('days'), 30, 1, 90);
+    return handleAsync(async () => rcc.getBookPnLTimeseries(days), corsHeaders);
+  }
+
+  if (/^\/api\/risk\/players\/[^/]+$/.test(url.pathname) && request.method === 'GET') {
+    const customerId = url.pathname.split('/').pop();
+    if (!customerId) throw new ApiError(400, 'customer_id required');
+    return handleAsync(async () => rcc.getPlayerDetail(decodeURIComponent(customerId)), corsHeaders);
+  }
+
+  if (url.pathname === '/api/risk/webhooks/health' && request.method === 'GET') {
+    return handleAsync(async () => rcc.getWebhookCircuitBreakerState(), corsHeaders);
   }
 
   return null;

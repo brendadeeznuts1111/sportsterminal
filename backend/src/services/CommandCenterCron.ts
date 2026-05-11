@@ -10,12 +10,16 @@ import { createManagedInterval, type ManagedIntervalTask } from './Scheduler';
 import { AutoEnforcementService } from './AutoEnforcementService';
 import { LiveFeatureService } from './LiveFeatureService';
 import { PositionService } from './PositionService';
+import { RiskAlertService } from './RiskAlertService';
+import { RiskCommandCenter } from './RiskCommandCenter';
 import { streamHub } from './StreamHub';
 
 export interface CommandCenterCronOptions {
   featureCandidateMs?: number;
   featureExtractMs?: number;
+  positionExpiryMs?: number;
   portfolioRefreshMs?: number;
+  alertCleanupMs?: number;
   heartbeatMs?: number;
   emitTicker?: boolean;
 }
@@ -25,11 +29,15 @@ export class CommandCenterCron {
   private readonly positionService: PositionService;
   private readonly enforcement: AutoEnforcementService;
   private readonly liveFeatures: LiveFeatureService;
+  private readonly riskAlerts: RiskAlertService;
+  private readonly rcc: RiskCommandCenter;
 
   constructor(private readonly db: Database, private readonly opts: CommandCenterCronOptions = {}) {
     this.positionService = new PositionService(db);
     this.enforcement = new AutoEnforcementService(db);
     this.liveFeatures = new LiveFeatureService(db);
+    this.riskAlerts = new RiskAlertService(db);
+    this.rcc = new RiskCommandCenter(db);
   }
 
   start(): void {
@@ -37,7 +45,9 @@ export class CommandCenterCron {
 
     const featureCandidateMs = this.opts.featureCandidateMs ?? COMMAND_CENTER_MAP.schedules.featureCandidateMs;
     const featureExtractMs = this.opts.featureExtractMs ?? COMMAND_CENTER_MAP.schedules.featureExtractMs;
+    const positionExpiryMs = this.opts.positionExpiryMs ?? COMMAND_CENTER_MAP.schedules.positionExpiryMs;
     const portfolioRefreshMs = this.opts.portfolioRefreshMs ?? COMMAND_CENTER_MAP.schedules.portfolioRefreshMs;
+    const alertCleanupMs = this.opts.alertCleanupMs ?? COMMAND_CENTER_MAP.schedules.alertCleanupMs;
     const heartbeatMs = this.opts.heartbeatMs ?? COMMAND_CENTER_MAP.schedules.heartbeatMs;
 
     this.tasks.push(createManagedInterval(
@@ -71,24 +81,63 @@ export class CommandCenterCron {
     ));
 
     this.tasks.push(createManagedInterval(
+      'command-center.position-expiry',
+      positionExpiryMs,
+      async () => {
+        const expired = await this.rcc.expireStalePositions();
+        if (expired > 0) {
+          console.log(`[${COMMAND_CENTER_MAP.logEvents.positionExpiry}] expired=${expired}`);
+          streamHub.publish('positions', {
+            event: COMMAND_CENTER_MAP.sse.events.position,
+            data: { type: 'position_expiry', expired, at: Date.now() },
+          });
+        }
+      },
+      { initialDelayMs: positionExpiryMs, onError: logSchedulerError('position-expiry') }
+    ));
+
+    this.tasks.push(createManagedInterval(
       'command-center.portfolio-refresh',
       portfolioRefreshMs,
       async () => {
-        const [expired, enforcement] = await Promise.all([
-          this.positionService.expirePendingPositions(),
-          this.enforcement.enforceAll(),
-        ]);
+        const enforcement = await this.enforcement.enforceAll();
         streamHub.publish('positions', {
           event: COMMAND_CENTER_MAP.sse.events.position,
-          data: {
-            type: 'portfolio_refresh',
-            expired,
-            enforcement,
-            at: Date.now(),
-          },
+          data: { type: 'portfolio_refresh', enforcement, at: Date.now() },
         });
       },
       { initialDelayMs: portfolioRefreshMs, onError: logSchedulerError('portfolio-refresh') }
+    ));
+
+    this.tasks.push(createManagedInterval(
+      'command-center.alert-cleanup',
+      alertCleanupMs,
+      async () => {
+        const deleted = await this.riskAlerts.cleanupOldAlerts(COMMAND_CENTER_MAP.schedules.alertRetentionDays);
+        if (deleted > 0) {
+          console.log(`[${COMMAND_CENTER_MAP.logEvents.alertCleanup}] deleted=${deleted}`);
+        }
+      },
+      { initialDelayMs: alertCleanupMs, onError: logSchedulerError('alert-cleanup') }
+    ));
+
+    this.tasks.push(createManagedInterval(
+      'command-center.violation-dedup',
+      5 * 60_000,
+      async () => {
+        const result = await this.db.run(
+          `DELETE FROM wager_violations
+            WHERE rowid NOT IN (
+              SELECT MIN(rowid)
+                FROM wager_violations
+               GROUP BY wager_id, violation_type
+            )`
+        );
+        if (result.changes > 0) {
+          console.log(`[command-center.violation-dedup] removed ${result.changes} duplicate violations`);
+        }
+      },
+      { initialDelayMs: 60_000, onError: logSchedulerError('violation-dedup') }
     ));
 
     if (heartbeatMs > 0 && this.opts.emitTicker !== false) {
@@ -106,7 +155,7 @@ export class CommandCenterCron {
     }
 
     console.log(
-      `[${COMMAND_CENTER_MAP.logEvents.cronStarted}] featureCandidates=${featureCandidateMs}ms features=${featureExtractMs}ms portfolio=${portfolioRefreshMs}ms heartbeat=${heartbeatMs}ms`
+      `[${COMMAND_CENTER_MAP.logEvents.cronStarted}] featureCandidates=${featureCandidateMs}ms features=${featureExtractMs}ms positionExpiry=${positionExpiryMs}ms portfolio=${portfolioRefreshMs}ms alertCleanup=${alertCleanupMs}ms heartbeat=${heartbeatMs}ms`
     );
   }
 
@@ -116,6 +165,15 @@ export class CommandCenterCron {
     }
     this.tasks = [];
   }
+}
+
+export function initRiskCommandCenterCron(
+  db: Database,
+  opts: CommandCenterCronOptions = {}
+): CommandCenterCron {
+  const cron = new CommandCenterCron(db, opts);
+  cron.start();
+  return cron;
 }
 
 function logSchedulerError(name: string): (error: unknown) => void {

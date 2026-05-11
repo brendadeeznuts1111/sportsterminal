@@ -5,10 +5,9 @@
  * weekly figures, master snapshots, and agent performance detail.
  */
 
-import { getApiBaseUrl, fetchJson, fetchBlob } from '../api.js';
-import { escapeHtml, money, timeAgo, formatCompactDollars, setText } from '../utils.js';
-import { state, get, set } from './state.js';
-import { schedule } from './render-scheduler.js';
+import { fetchBlob, fetchJson, getApiBaseUrl } from '../api.js';
+import { escapeHtml, money, setText, timeAgo } from '../utils.js';
+import { get, set } from './state.js';
 
 // ==================== STATE INITIALIZATION ====================
 if (!get('performanceState')) {

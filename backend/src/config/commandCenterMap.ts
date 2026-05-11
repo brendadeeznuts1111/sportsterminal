@@ -59,8 +59,12 @@ export const COMMAND_CENTER_MAP = {
   schedules: {
     featureCandidateMs: 5 * 60_000,
     featureExtractMs: 10 * 60_000,
+    positionExpiryMs: 5 * 60_000,
     portfolioRefreshMs: 15 * 60_000,
+    alertCleanupMs: 24 * 60 * 60_000,
     heartbeatMs: 5_000,
+    dataFreshnessMaxAgeSeconds: 15 * 60,
+    alertRetentionDays: 90,
   },
   flags: {
     kimiApiKey: 'KIMI_API_KEY',
@@ -72,6 +76,8 @@ export const COMMAND_CENTER_MAP = {
     cronStarted: 'command_center.cron.started',
     statusChecked: 'command_center.status.checked',
     featureRefresh: 'command_center.features.refreshed',
+    positionExpiry: 'command_center.positions.expired',
+    alertCleanup: 'command_center.alerts.cleaned',
     portfolioRefresh: 'command_center.portfolio.refreshed',
     analyzeLive: 'command_center.analyze_live',
     shadowAbStarted: 'command_center.shadow_ab.started',

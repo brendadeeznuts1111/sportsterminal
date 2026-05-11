@@ -363,8 +363,6 @@ export class LiveFeatureService {
     const apiKey = Bun.env.KIMI_API_KEY;
     if (!apiKey) return heuristic;
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), KIMI_TIMEOUT_MS);
     try {
       const response = await fetch('https://api.moonshot.cn/v1/chat/completions', {
         method: 'POST',
@@ -373,7 +371,7 @@ export class LiveFeatureService {
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          model: 'kimi-latest',
+          model: 'kimi-for-coding',
           messages: [
             { role: 'system', content: LIVE_RISK_SYSTEM_PROMPT },
             {
@@ -394,9 +392,9 @@ export class LiveFeatureService {
             },
           ],
           temperature: 0.1,
-          max_tokens: 700,
+          max_tokens: 1024,
         }),
-        signal: controller.signal,
+        signal: AbortSignal.timeout(KIMI_TIMEOUT_MS),
       });
 
       if (!response.ok) {
@@ -414,8 +412,6 @@ export class LiveFeatureService {
         source: 'kimi_failed',
         raw_response: err instanceof Error ? err.message : String(err),
       };
-    } finally {
-      clearTimeout(timeout);
     }
   }
 }

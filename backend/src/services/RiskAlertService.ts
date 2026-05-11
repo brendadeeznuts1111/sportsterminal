@@ -7,6 +7,7 @@
 import type { Database } from '../database';
 import { COMMAND_CENTER_MAP } from '../config/commandCenterMap';
 import { streamHub } from './StreamHub';
+import { webhookCircuitBreaker } from './WebhookCircuitBreaker';
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -27,6 +28,25 @@ export interface AlertLogEntry {
   payload: string;
   response_status: number;
   sent_at: string;
+}
+
+export interface WebhookDeliveryHealth {
+  id: number;
+  name: string;
+  platform: string;
+  enabled: boolean;
+  state: 'closed' | 'degraded' | 'open';
+  attempts: number;
+  successes: number;
+  failures: number;
+  last_attempt_at: string | null;
+}
+
+export interface WebhookCircuitBreakerState {
+  window_hours: number;
+  open_count: number;
+  degraded_count: number;
+  webhooks: WebhookDeliveryHealth[];
 }
 
 interface WebhookRow {
@@ -68,6 +88,12 @@ export class RiskAlertService {
     let failed = 0;
 
     for (const hook of webhooks) {
+      if (!webhookCircuitBreaker.canDeliver(hook.url)) {
+        console.warn(`[RiskAlert] Circuit open for webhook ${hook.name}, skipping`);
+        failed++;
+        continue;
+      }
+
       try {
         const payload = this.formatPayload(hook.platform, input);
         const payloadJson = JSON.stringify(payload);
@@ -88,12 +114,15 @@ export class RiskAlertService {
         });
 
         if (response.ok) {
+          webhookCircuitBreaker.recordSuccess(hook.url);
           sent++;
         } else {
+          webhookCircuitBreaker.recordFailure(hook.url);
           failed++;
         }
       } catch (err) {
         console.error(`[RiskAlert] Webhook failed for ${hook.name}:`, err);
+        webhookCircuitBreaker.recordFailure(hook.url);
         await this.logDelivery({
           customer_id: input.customer_id,
           risk_level: input.risk_level,
@@ -149,8 +178,15 @@ export class RiskAlertService {
         response_status: response.status,
       });
 
+      if (response.ok) {
+        webhookCircuitBreaker.recordSuccess(hook.url);
+      } else {
+        webhookCircuitBreaker.recordFailure(hook.url);
+      }
+
       return { success: response.ok, status: response.status };
     } catch (err) {
+      webhookCircuitBreaker.recordFailure(hook.url);
       return {
         success: false,
         error: err instanceof Error ? err.message : 'Network error',
@@ -187,6 +223,74 @@ export class RiskAlertService {
     );
 
     return rows;
+  }
+
+  async cleanupOldAlerts(retentionDays = COMMAND_CENTER_MAP.schedules.alertRetentionDays): Promise<number> {
+    const days = Math.min(Math.max(retentionDays, 1), 3650);
+    const result = await this.db.run(
+      `DELETE FROM risk_alert_log WHERE sent_at < datetime('now', ?)`,
+      [`-${days} days`]
+    );
+    return result.changes;
+  }
+
+  async getDeliveryHealth(windowHours = 24): Promise<WebhookCircuitBreakerState> {
+    const hours = Math.min(Math.max(windowHours, 1), 720);
+    const rows = await this.db.all<{
+      id: number;
+      name: string;
+      platform: string;
+      enabled: number;
+      attempts: number;
+      successes: number;
+      failures: number;
+      last_attempt_at: string | null;
+    }>(
+      `SELECT
+         h.id,
+         h.name,
+         h.platform,
+         h.enabled,
+         COUNT(l.id) AS attempts,
+         COALESCE(SUM(CASE WHEN l.response_status BETWEEN 200 AND 299 THEN 1 ELSE 0 END), 0) AS successes,
+         COALESCE(SUM(CASE WHEN l.response_status = 0 OR l.response_status >= 400 THEN 1 ELSE 0 END), 0) AS failures,
+         MAX(l.sent_at) AS last_attempt_at
+       FROM alert_webhooks h
+       LEFT JOIN risk_alert_log l
+         ON l.webhook_id = h.id
+        AND l.sent_at >= datetime('now', ?)
+       GROUP BY h.id, h.name, h.platform, h.enabled
+       ORDER BY failures DESC, attempts DESC, h.name ASC`,
+      [`-${hours} hours`]
+    );
+
+    const webhooks = rows.map((row) => {
+      const failures = Number(row.failures || 0);
+      const successes = Number(row.successes || 0);
+      const state: WebhookDeliveryHealth['state'] = failures >= 3 && successes === 0
+        ? 'open'
+        : failures > 0
+          ? 'degraded'
+          : 'closed';
+      return {
+        id: row.id,
+        name: row.name,
+        platform: row.platform,
+        enabled: Boolean(row.enabled),
+        state,
+        attempts: Number(row.attempts || 0),
+        successes,
+        failures,
+        last_attempt_at: row.last_attempt_at,
+      };
+    });
+
+    return {
+      window_hours: hours,
+      open_count: webhooks.filter((hook) => hook.state === 'open').length,
+      degraded_count: webhooks.filter((hook) => hook.state === 'degraded').length,
+      webhooks,
+    };
   }
 
   // ─── Private ───────────────────────────────────────────────────────
@@ -231,6 +335,7 @@ export class RiskAlertService {
       : input.risk_level === 'BLACK'
         ? 'AUTO-BLOCKED'
         : 'REVIEW REQUIRED';
+    const playerUrl = this.getPlayerUrl(input.customer_id);
 
     switch (platform) {
       case 'discord':
@@ -239,6 +344,7 @@ export class RiskAlertService {
           embeds: [
             {
               title: `🚨 ${input.risk_level} RISK ALERT`,
+              ...(playerUrl ? { url: playerUrl } : {}),
               color: colorMap[input.risk_level] || 0xFF0000,
               fields: [
                 { name: 'Customer', value: input.customer_id, inline: true },
@@ -260,6 +366,7 @@ export class RiskAlertService {
             `Customer: \`${input.customer_id}\``,
             `Confidence: ${(input.confidence * 100).toFixed(0)}%`,
             `Action: ${actionLabel}`,
+            ...(playerUrl ? [`Player: ${playerUrl}`] : []),
             '',
             input.summary || 'No summary available',
           ].join('\n'),
@@ -277,7 +384,7 @@ export class RiskAlertService {
               type: 'section',
               text: {
                 type: 'mrkdwn',
-                text: `*Customer:* ${input.customer_id}\n*Confidence:* ${(input.confidence * 100).toFixed(0)}%\n*Action:* ${actionLabel}`,
+                text: `*Customer:* ${input.customer_id}\n*Confidence:* ${(input.confidence * 100).toFixed(0)}%\n*Action:* ${actionLabel}${playerUrl ? `\n*Player:* ${playerUrl}` : ''}`,
               },
             },
             {
@@ -295,10 +402,17 @@ export class RiskAlertService {
           confidence: input.confidence,
           suggested_action: input.suggested_action,
           summary: input.summary,
+          player_url: playerUrl,
           timestamp: new Date().toISOString(),
           source: 'sports-terminal-risk-command-center',
         };
     }
+  }
+
+  private getPlayerUrl(customerId: string): string | null {
+    const base = (Bun.env.TERMINAL_BASE_URL || Bun.env.PUBLIC_BASE_URL || '').trim();
+    if (!base) return null;
+    return `${base.replace(/\/+$/, '')}/player/${encodeURIComponent(customerId)}`;
   }
 
   private async logDelivery(entry: {

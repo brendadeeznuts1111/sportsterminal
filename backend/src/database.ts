@@ -56,7 +56,10 @@ export class AppDatabase {
   constructor(url: string) {
     this.dialect = isPostgresUrl(url) ? 'postgres' : 'sqlite';
     if (this.dialect === 'sqlite') {
-      this.db = new SQL(toSqliteUrl(url));
+      const sqliteUrl = toSqliteUrl(url);
+      this.db = isInMemorySqliteUrl(sqliteUrl)
+        ? new SQL(sqliteUrl, { max: 1 })
+        : new SQL(sqliteUrl);
     } else {
       this.db = new SQL(url);
     }
@@ -67,6 +70,13 @@ export class AppDatabase {
   }
 
   async exec(sql: string): Promise<void> {
+    if (this.dialect === 'sqlite') {
+      for (const statement of splitSqliteStatements(sql)) {
+        await this.db.unsafe(statement);
+      }
+      return;
+    }
+
     await this.db.unsafe(sql);
   }
 
@@ -103,6 +113,13 @@ export class AppDatabase {
 }
 
 export type Database = AppDatabase;
+
+function splitSqliteStatements(sql: string): string[] {
+  return sql
+    .split(';')
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+}
 
 export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
   const db = new AppDatabase(url);
@@ -741,6 +758,7 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
     CREATE INDEX IF NOT EXISTS idx_closing_lines_game_market ON closing_lines(game_id, market, side);
     CREATE INDEX IF NOT EXISTS idx_agent_rules_enabled ON agent_rules(enabled);
     CREATE INDEX IF NOT EXISTS idx_agent_actions_created ON agent_actions(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_actions_action_player ON agent_actions(action, player_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_sandbox_customers_scenario ON sandbox_customers(scenario_id);
     CREATE INDEX IF NOT EXISTS idx_sandbox_customers_status ON sandbox_customers(scenario_id, summary_status);
     CREATE INDEX IF NOT EXISTS idx_sandbox_snapshots_lookup ON sandbox_snapshots(scenario_id, customer_id);
@@ -909,6 +927,8 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
       raw_response TEXT,
       reviewed INTEGER DEFAULT 0,
       reviewer TEXT,
+      reviewer_id TEXT,
+      reviewed_at TEXT,
       review_note TEXT,
       flagged_at TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -937,6 +957,7 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
       chase_flag INTEGER NOT NULL DEFAULT 0,
       archetype TEXT NOT NULL DEFAULT 'unknown',
       risk_tier TEXT NOT NULL DEFAULT 'UNKNOWN',
+      clv REAL NOT NULL DEFAULT 0,
       source_json TEXT NOT NULL DEFAULT '{}'
     );
 
@@ -1000,6 +1021,20 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
       sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (webhook_id) REFERENCES alert_webhooks(id) ON DELETE SET NULL
     );
+
+    -- Risk Command Center: wager violations with deduplication
+    CREATE TABLE IF NOT EXISTS wager_violations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      wager_id INTEGER NOT NULL,
+      customer_id TEXT NOT NULL,
+      violation_type TEXT NOT NULL,
+      details TEXT NOT NULL DEFAULT '{}',
+      detected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(wager_id, violation_type)
+    );
+    CREATE INDEX IF NOT EXISTS idx_violations_customer ON wager_violations(customer_id, detected_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_violations_type ON wager_violations(violation_type, detected_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_wv_unique_violation ON wager_violations(wager_id, violation_type);
   `);
 
     console.log('📊 Database tables created');
@@ -1014,9 +1049,15 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
 }
 
 function toSqliteUrl(filename: string): string {
+  if (filename === ':memory:' || filename === 'sqlite://:memory:') {
+    return `sqlite://file:sportsterminal-${crypto.randomUUID()}?mode=memory&cache=shared`;
+  }
   if (filename.startsWith('sqlite://')) return filename;
-  if (filename === ':memory:') return 'sqlite://:memory:';
   return `sqlite://${filename.replace(/\\/g, '/')}`;
+}
+
+function isInMemorySqliteUrl(url: string): boolean {
+  return url === 'sqlite://:memory:' || url.startsWith('sqlite://:memory:?') || url.includes('mode=memory');
 }
 
 async function createPostMigrationIndexes(db: AppDatabase): Promise<void> {
@@ -1053,16 +1094,18 @@ export async function migrateDatabase(db: Database) {
   try {
     // Check if odds_snapshots has spread_home_price
     const columns = await db.all<PragmaColumnRow>(`PRAGMA table_info(odds_snapshots)`);
-    const hasSpreadHomePrice = columns.some((c) => c.name === 'spread_home_price');
-    const hasSpreadAwayPrice = columns.some((c) => c.name === 'spread_away_price');
+    if (columns.length > 0) {
+      const hasSpreadHomePrice = columns.some((c) => c.name === 'spread_home_price');
+      const hasSpreadAwayPrice = columns.some((c) => c.name === 'spread_away_price');
 
-    if (!hasSpreadHomePrice) {
-      await db.exec(`ALTER TABLE odds_snapshots ADD COLUMN spread_home_price REAL`);
-      console.log('📊 Migration: added spread_home_price to odds_snapshots');
-    }
-    if (!hasSpreadAwayPrice) {
-      await db.exec(`ALTER TABLE odds_snapshots ADD COLUMN spread_away_price REAL`);
-      console.log('📊 Migration: added spread_away_price to odds_snapshots');
+      if (!hasSpreadHomePrice) {
+        await db.exec(`ALTER TABLE odds_snapshots ADD COLUMN spread_home_price REAL`);
+        console.log('📊 Migration: added spread_home_price to odds_snapshots');
+      }
+      if (!hasSpreadAwayPrice) {
+        await db.exec(`ALTER TABLE odds_snapshots ADD COLUMN spread_away_price REAL`);
+        console.log('📊 Migration: added spread_away_price to odds_snapshots');
+      }
     }
 
     const wagerColumns = await db.all<PragmaColumnRow>(`PRAGMA table_info(wagers)`);
@@ -1483,6 +1526,42 @@ export async function migrateDatabase(db: Database) {
         ]
       );
     }
+    // Risk Command Center: migrate new columns
+    const riskFlagColumns = await db.all<PragmaColumnRow>(`PRAGMA table_info(ai_risk_flags)`);
+    const riskFlagColumnNames = new Set(riskFlagColumns.map((c) => c.name));
+    if (!riskFlagColumnNames.has('reviewer_id')) {
+      await db.exec(`ALTER TABLE ai_risk_flags ADD COLUMN reviewer_id TEXT`);
+      console.log('📊 Migration: added reviewer_id to ai_risk_flags');
+    }
+    if (!riskFlagColumnNames.has('reviewed_at')) {
+      await db.exec(`ALTER TABLE ai_risk_flags ADD COLUMN reviewed_at TEXT`);
+      console.log('📊 Migration: added reviewed_at to ai_risk_flags');
+    }
+
+    const featureColumns = await db.all<PragmaColumnRow>(`PRAGMA table_info(customer_features)`);
+    const featureColumnNames = new Set(featureColumns.map((c) => c.name));
+    if (!featureColumnNames.has('clv')) {
+      await db.exec(`ALTER TABLE customer_features ADD COLUMN clv REAL NOT NULL DEFAULT 0`);
+      console.log('📊 Migration: added clv to customer_features');
+    }
+
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS wager_violations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        wager_id INTEGER NOT NULL,
+        customer_id TEXT NOT NULL,
+        violation_type TEXT NOT NULL,
+        details TEXT NOT NULL DEFAULT '{}',
+        detected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(wager_id, violation_type)
+      )
+    `);
+    await dedupeWagerViolations(db);
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_violations_customer ON wager_violations(customer_id, detected_at DESC)`);
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_violations_type ON wager_violations(violation_type, detected_at DESC)`);
+    await db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wv_unique_violation ON wager_violations(wager_id, violation_type)`);
+    console.log('📊 Migration: ensured wager_violations table');
+
     await seedBuckeyeSportTypes(db);
   } catch (err) {
     console.error('📊 Migration error:', err);
@@ -1563,6 +1642,17 @@ async function removeLegacyWagerTypeConstraint(db: Database): Promise<void> {
     await db.exec('ROLLBACK').catch(() => { });
     throw err;
   }
+}
+
+async function dedupeWagerViolations(db: Database): Promise<void> {
+  await db.exec(`
+    DELETE FROM wager_violations
+    WHERE id NOT IN (
+      SELECT MIN(id)
+      FROM wager_violations
+      GROUP BY wager_id, violation_type
+    )
+  `);
 }
 
 export async function seedBuckeyeSportTypes(db: Database): Promise<void> {

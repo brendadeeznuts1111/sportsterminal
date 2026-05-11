@@ -39,6 +39,8 @@ export class CommandCenterStatusService {
     ]);
 
     const metrics = this.scraperManager.getMetrics();
+    const lastPoll = latestAgentPoll(metrics.agents);
+    const dataFreshness = getDataFreshness(metrics, lastPoll);
     const features = Number(tableCounts.customer_features || 0);
     const wagerCustomers = distinctCustomers?.count || 0;
     const featureCoverage = wagerCustomers > 0 ? features / wagerCustomers : 0;
@@ -48,6 +50,8 @@ export class CommandCenterStatusService {
 
     return {
       ok: true,
+      health: dataFreshness.health,
+      warning: dataFreshness.warning,
       checked_at: new Date().toISOString(),
       map: {
         endpoints: Object.keys(COMMAND_CENTER_MAP.endpoints).length,
@@ -63,6 +67,7 @@ export class CommandCenterStatusService {
         distinct_wager_customers: wagerCustomers,
         feature_coverage_ratio: Number(featureCoverage.toFixed(4)),
         flowing: Boolean(latestWager),
+        data_freshness: dataFreshness,
       },
       streams: {
         subscribers: streamHub.count,
@@ -76,7 +81,7 @@ export class CommandCenterStatusService {
         authenticated_agents: metrics.agents.filter((agent) => agent.authenticated).length,
         polling_agents: metrics.agents.filter((agent) => agent.pollingScheduled).length,
         polls_in_flight: metrics.agents.filter((agent) => agent.isPolling).length,
-        last_poll: latestAgentPoll(metrics.agents),
+        last_poll: lastPoll,
         counters: metrics.counters,
       },
       routes: COMMAND_CENTER_MAP.endpoints,
@@ -128,4 +133,63 @@ function latestAgentPoll(agents: ReturnType<BuckeyeScraperManager['getMetrics']>
     .filter((value): value is string => Boolean(value))
     .sort();
   return timestamps.at(-1) || null;
+}
+
+function getDataFreshness(
+  metrics: ReturnType<BuckeyeScraperManager['getMetrics']>,
+  lastPoll: string | null
+): {
+  overall: 'fresh' | 'stale' | 'disconnected' | 'unknown';
+  health: 'healthy' | 'warning' | 'critical';
+  last_poll: string | null;
+  last_poll_age_seconds: number | null;
+  max_age_seconds: number;
+  warning: string | null;
+} {
+  const maxAgeSeconds = COMMAND_CENTER_MAP.schedules.dataFreshnessMaxAgeSeconds;
+  const lastPollAgeSeconds = lastPoll
+    ? Math.max(0, (Date.now() - new Date(lastPoll).getTime()) / 1000)
+    : null;
+
+  if (metrics.activeAgents === 0 || metrics.agents.every((agent) => !agent.authenticated)) {
+    return {
+      overall: 'disconnected',
+      health: 'critical',
+      last_poll: lastPoll,
+      last_poll_age_seconds: lastPollAgeSeconds,
+      max_age_seconds: maxAgeSeconds,
+      warning: 'WARNING: Buckeye ingestion is disconnected; risk output may be stale.',
+    };
+  }
+
+  if (lastPollAgeSeconds == null) {
+    return {
+      overall: 'unknown',
+      health: 'warning',
+      last_poll: null,
+      last_poll_age_seconds: null,
+      max_age_seconds: maxAgeSeconds,
+      warning: 'No Buckeye poll has completed yet.',
+    };
+  }
+
+  if (lastPollAgeSeconds > maxAgeSeconds) {
+    return {
+      overall: 'stale',
+      health: 'critical',
+      last_poll: lastPoll,
+      last_poll_age_seconds: Number(lastPollAgeSeconds.toFixed(3)),
+      max_age_seconds: maxAgeSeconds,
+      warning: `WARNING: Buckeye ingestion last completed ${Math.round(lastPollAgeSeconds)} seconds ago.`,
+    };
+  }
+
+  return {
+    overall: 'fresh',
+    health: 'healthy',
+    last_poll: lastPoll,
+    last_poll_age_seconds: Number(lastPollAgeSeconds.toFixed(3)),
+    max_age_seconds: maxAgeSeconds,
+    warning: null,
+  };
 }

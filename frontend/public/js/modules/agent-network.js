@@ -5,10 +5,9 @@
  * zone2 performance/billing, and agent search.
  */
 
-import { getApiBaseUrl, fetchJson } from '../api.js';
-import { escapeHtml, money, formatCompactDollars, setText } from '../utils.js';
-import { state, get, set } from './state.js';
-import { schedule } from './render-scheduler.js';
+import { fetchJson, getApiBaseUrl } from '../api.js';
+import { escapeHtml, formatCompactDollars, money, setText } from '../utils.js';
+import { get, set } from './state.js';
 
 // ==================== STATE INITIALIZATION ====================
 if (!get('agentTreeData')) set('agentTreeData', []);

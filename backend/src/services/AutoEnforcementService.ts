@@ -194,6 +194,17 @@ export class AutoEnforcementService {
 
   private async logEnforcement(breach: BreachRecord): Promise<void> {
     try {
+      const duplicate = await this.db.get<{ id: number }>(
+        `SELECT id
+           FROM agent_actions
+          WHERE action = 'auto_enforce'
+            AND player_id = ?
+            AND details_json LIKE ?
+          LIMIT 1`,
+        [breach.customer_id, `%"position_id":${breach.position_id}%`]
+      );
+      if (duplicate) return;
+
       await this.db.run(
         `INSERT INTO agent_actions (rule_id, wager_number, player_id, action, severity, details_json)
          VALUES (NULL, NULL, ?, 'auto_enforce', ?, ?)`,

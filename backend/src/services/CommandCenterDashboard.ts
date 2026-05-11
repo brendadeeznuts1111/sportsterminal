@@ -6,6 +6,7 @@
  */
 
 import type { Database } from '../database';
+import { RiskAlertService, type WebhookCircuitBreakerState } from './RiskAlertService';
 
 // ─── DTOs ────────────────────────────────────────────────────────────
 
@@ -70,8 +71,10 @@ export class CommandCenterDashboard {
     auto_blocks_24h: number;
     breaches_24h: number;
     sse_subscribers?: number;
+    webhookCircuitBreaker: WebhookCircuitBreakerState;
   }> {
-    const [openRow, pendingRow, autoRow, breachesRow] = await Promise.all([
+    const riskAlerts = new RiskAlertService(this.db);
+    const [openRow, pendingRow, autoRow, breachesRow, webhookCircuitBreaker] = await Promise.all([
       this.db.get<{ n: number }>(
         `SELECT COUNT(*) AS n FROM risk_positions WHERE status = 'applied'`
       ),
@@ -89,6 +92,7 @@ export class CommandCenterDashboard {
           WHERE action = 'auto_enforce'
             AND created_at >= datetime('now', '-24 hours')`
       ),
+      riskAlerts.getDeliveryHealth(24),
     ]);
 
     return {
@@ -96,6 +100,7 @@ export class CommandCenterDashboard {
       pending_review: pendingRow?.n ?? 0,
       auto_blocks_24h: autoRow?.n ?? 0,
       breaches_24h: breachesRow?.n ?? 0,
+      webhookCircuitBreaker,
     };
   }
 

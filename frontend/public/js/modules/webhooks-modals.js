@@ -5,10 +5,9 @@
  * proxy secrets, vault status, and connection management.
  */
 
-import { getApiBaseUrl, fetchJson, fetchDelete, fetchBlob } from '../api.js';
-import { escapeHtml, money, timeAgo } from '../utils.js';
-import { state, get, set } from './state.js';
-import { schedule } from './render-scheduler.js';
+import { getApiBaseUrl } from '../api.js';
+import { escapeHtml } from '../utils.js';
+import { get } from './state.js';
 
 // ==================== TRADE MODAL ====================
 export function openTradeModal(selection, book, odds) {
