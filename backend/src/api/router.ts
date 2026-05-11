@@ -148,6 +148,10 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
     return registerAgentAccessLogRoutes(url, request, deps.scraperManager);
   });
 
+  router.get('/api/agents/risk-summary', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+
   router.get('/api/agents/:agentId/performance', async (url, request) => {
     return registerAgentPerformanceRoutes(url, request, deps.scraperManager);
   });
@@ -178,6 +182,18 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
 
   router.get('/api/players/:playerId/intelligence-map', async (url, request) => {
     return registerPlayerIntelligenceMapRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/players/:playerId/features', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/players/:playerId/clv-history', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/players/:playerId/reclassify', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
   });
 
   router.get('/api/players/:playerId/deposits', async (url, request) => {
@@ -836,12 +852,30 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
   router.post('/api/enforcement/run', async (url, request) => {
     return registerCommandCenterRoutes(url, request, deps.scraperManager);
   });
+  router.get('/api/enforcement/queue', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.post('/api/enforcement/queue', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.post('/api/enforcement/mark-viewed', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.post('/api/enforcement/mark-applied', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.post('/api/enforcement/escalate', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
 
   // ─── AB test ────────────────────────────────────────────────────
   router.post('/api/ab-test/run', async (url, request) => {
     return registerCommandCenterRoutes(url, request, deps.scraperManager);
   });
   router.post('/api/agent/analyze-live', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.post('/api/agent/debug/player-snapshot', async (url, request) => {
     return registerCommandCenterRoutes(url, request, deps.scraperManager);
   });
   router.post('/api/agent/shadow-ab', async (url, request) => {

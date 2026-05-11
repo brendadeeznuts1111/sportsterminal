@@ -21,6 +21,7 @@ import { getAbTestRunner } from '../../services/AbTestRunner';
 import { AutoEnforcementService } from '../../services/AutoEnforcementService';
 import { CommandCenterDashboard } from '../../services/CommandCenterDashboard';
 import { CommandCenterStatusService } from '../../services/CommandCenterStatusService';
+import { EnforcementQueueService } from '../../services/EnforcementQueueService';
 import { LiveFeatureService } from '../../services/LiveFeatureService';
 import { PlayerSearchService } from '../../services/PlayerSearchService';
 import { PositionService } from '../../services/PositionService';
@@ -105,6 +106,77 @@ export function registerCommandCenterRoutes(
     return handleAsync(async () => service.search(q, limit), corsHeaders);
   }
 
+  if (/^\/api\/players\/[^/]+\/features$/.test(url.pathname) && request.method === 'GET') {
+    const customerId = decodeURIComponent(url.pathname.split('/').at(-2) || '');
+    const service = new LiveFeatureService(db);
+    return handleAsync(async () => {
+      const features = await service.getOrExtractFeatures(customerId, url.searchParams.get('refresh') === '1');
+      const featureJson = safeParseFeatureJson(features.feature_json);
+      return {
+        customer_id: customerId,
+        extracted_at: features.extracted_at,
+        feature_version: features.feature_version,
+        archetype: features.archetype,
+        risk_tier: features.risk_tier,
+        features: featureJson,
+      };
+    }, corsHeaders);
+  }
+
+  if (/^\/api\/players\/[^/]+\/clv-history$/.test(url.pathname) && request.method === 'GET') {
+    const customerId = decodeURIComponent(url.pathname.split('/').at(-2) || '');
+    const limit = clampInt(url.searchParams.get('limit'), 10, 1, 100);
+    const service = new LiveFeatureService(db);
+    return handleAsync(async () => ({
+      customer_id: customerId,
+      history: await service.getClvHistory(customerId, limit),
+    }), corsHeaders);
+  }
+
+  if (/^\/api\/players\/[^/]+\/reclassify$/.test(url.pathname) && request.method === 'POST') {
+    const customerId = decodeURIComponent(url.pathname.split('/').at(-2) || '');
+    const service = new LiveFeatureService(db);
+    return handleAsync(async () => {
+      const features = await service.extractFeaturesForCustomer(customerId);
+      return {
+        customer_id: customerId,
+        archetype: features.archetype,
+        risk_tier: features.risk_tier,
+        extracted_at: features.extracted_at,
+        features: safeParseFeatureJson(features.feature_json),
+      };
+    }, corsHeaders);
+  }
+
+  if (url.pathname === '/api/agent/debug/player-snapshot' && request.method === 'POST') {
+    return handleAsync(async () => {
+      const body = await readJsonBody<{ customer_id?: string; forceRefresh?: boolean }>(request);
+      if (!body.customer_id) throw new ApiError(400, 'customer_id is required');
+      const service = new LiveFeatureService(db);
+      return service.buildPlayerSnapshot(body.customer_id, Boolean(body.forceRefresh));
+    }, corsHeaders);
+  }
+
+  if (url.pathname === '/api/agents/risk-summary' && request.method === 'GET') {
+    const limit = clampInt(url.searchParams.get('limit'), 25, 1, 100);
+    return handleAsync(async () => {
+      const rows = await db.all(
+        `SELECT COALESCE(f.agent_id, w.agent_id, w.agent_login, 'unknown') AS agent_id,
+                COUNT(*) AS high_risk_count,
+                MAX(f.created_at) AS last_flagged_at
+         FROM ai_risk_flags f
+         LEFT JOIN wagers w ON CAST(w.wager_number AS TEXT) = CAST(f.wager_number AS TEXT)
+         WHERE f.risk_level IN ('RED', 'BLACK')
+           AND date(COALESCE(f.created_at, f.flagged_at)) = date('now')
+         GROUP BY COALESCE(f.agent_id, w.agent_id, w.agent_login, 'unknown')
+         ORDER BY high_risk_count DESC
+         LIMIT ?`,
+        [limit]
+      );
+      return { agents: rows };
+    }, corsHeaders);
+  }
+
   // ─── Auto-enforcement ─────────────────────────────────────────────
   if (url.pathname === '/api/enforcement/breaches' && request.method === 'GET') {
     const limit = clampInt(url.searchParams.get('limit'), 50, 1, 200);
@@ -128,6 +200,60 @@ export function registerCommandCenterRoutes(
     if (adminResponse) return adminResponse;
     const service = new AutoEnforcementService(db);
     return handleAsync(async () => service.enforceAll(), corsHeaders);
+  }
+
+  if (url.pathname === COMMAND_CENTER_MAP.endpoints.enforcementQueue.path && (request.method === 'GET' || request.method === 'POST')) {
+    return handleAsync(async () => {
+      const body = request.method === 'POST'
+        ? await readJsonBody<{ status?: string | null; risk_level?: string | null; limit?: number; offset?: number }>(request)
+        : {};
+      const service = new EnforcementQueueService(db);
+      return service.list({
+        status: body.status || url.searchParams.get('status') || undefined,
+        risk_level: body.risk_level || url.searchParams.get('risk_level') || undefined,
+        limit: Number(body.limit || url.searchParams.get('limit') || 50),
+        offset: Number(body.offset || url.searchParams.get('offset') || 0),
+      });
+    }, corsHeaders);
+  }
+
+  if (url.pathname === COMMAND_CENTER_MAP.endpoints.enforcementMarkViewed.path && request.method === 'POST') {
+    return handleAsync(async () => {
+      const body = await readJsonBody<{ queue_id?: number; trader_name?: string }>(request);
+      if (!body.queue_id) throw new ApiError(400, 'queue_id is required');
+      const service = new EnforcementQueueService(db);
+      return service.markViewed(body.queue_id, body.trader_name);
+    }, corsHeaders);
+  }
+
+  if (url.pathname === COMMAND_CENTER_MAP.endpoints.enforcementMarkApplied.path && request.method === 'POST') {
+    return handleAsync(async () => {
+      const body = await readJsonBody<{
+        queue_id?: number;
+        trader_name?: string;
+        actual_max_exposure?: number;
+        actual_wager_limit?: number;
+        note?: string;
+      }>(request);
+      if (!body.queue_id) throw new ApiError(400, 'queue_id is required');
+      const service = new EnforcementQueueService(db);
+      return service.markApplied({
+        id: body.queue_id,
+        traderName: body.trader_name,
+        actualMaxExposure: body.actual_max_exposure,
+        actualWagerLimit: body.actual_wager_limit,
+        note: body.note,
+      });
+    }, corsHeaders);
+  }
+
+  if (url.pathname === COMMAND_CENTER_MAP.endpoints.enforcementEscalate.path && request.method === 'POST') {
+    return handleAsync(async () => {
+      const body = await readJsonBody<{ queue_id?: number; trader_name?: string; note?: string }>(request);
+      if (!body.queue_id) throw new ApiError(400, 'queue_id is required');
+      const service = new EnforcementQueueService(db);
+      return service.escalate(body.queue_id, body.trader_name, body.note);
+    }, corsHeaders);
   }
 
   // ─── AB test (Worker-based) ───────────────────────────────────────
@@ -274,4 +400,18 @@ function windowToHours(value: string | null, fallback: number): number {
 
 function commandCenterError(status: number, error: { code: string; message: string }): ApiError {
   return new ApiError(status, `${error.code}: ${error.message}`);
+}
+
+function safeParseFeatureJson(raw: string): Record<string, number> {
+  try {
+    const parsed = JSON.parse(raw || '{}') as Record<string, unknown>;
+    const features: Record<string, number> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      const n = Number(value);
+      if (Number.isFinite(n)) features[key] = n;
+    }
+    return features;
+  } catch {
+    return {};
+  }
 }

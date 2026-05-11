@@ -304,7 +304,7 @@ export class BuckeyeScraperManager {
   private db: Database;
   private broadcast: (msg: object) => void;
   private pollIntervalMs: number = 5000;
-  private tokenRenewalMs: number = 15 * 60 * 1000; // 15 minutes
+  private tokenRenewalMs: number = 5 * 60 * 1000; // 5 minutes (matches Buckeye frontend)
   private accessLogIntervalMs: number = 5 * 60 * 1000;
   private performanceIntervalMs: number = 15 * 60 * 1000;
   private player360IntervalMs: number = 10 * 60 * 1000;

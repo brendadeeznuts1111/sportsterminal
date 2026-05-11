@@ -640,6 +640,9 @@ export class BuckeyeAPI {
       const body = new URLSearchParams({
         operation: 'renewToken',
         RRO: '1',
+        agentID: this.agentId,
+        agentOwner: this.agentId,
+        agentSite: '1',
       });
 
       const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/System/renewToken`, {
@@ -655,6 +658,12 @@ export class BuckeyeAPI {
           this.log('Token renewed');
           return true;
         }
+      }
+
+      // On 401/403, session is dead — require re-authentication
+      if (response.status === 401 || response.status === 403) {
+        this.loggedIn = false;
+        console.warn(`[BuckeyeAPI] Token renewal returned ${response.status}, session expired`);
       }
 
       return false;
