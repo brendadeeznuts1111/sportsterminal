@@ -243,7 +243,29 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
       checksum TEXT,
       metadata TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS background_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_name TEXT NOT NULL,
+      status TEXT CHECK(status IN ('running','completed','failed')) NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      error TEXT,
+      details TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS hierarchy_sync_config (
+      id INTEGER PRIMARY KEY CHECK(id = 1),
+      enabled INTEGER NOT NULL DEFAULT 1,
+      interval_minutes INTEGER NOT NULL DEFAULT 30,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
+
+    await db.run(
+      `INSERT OR IGNORE INTO hierarchy_sync_config (id, enabled, interval_minutes)
+       VALUES (1, 1, 30)`
+    );
 
     // Migration: add seq_number to players if missing (pre-2026-05-09 schema)
     try {
@@ -1069,6 +1091,10 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
       reviewed_at TEXT,
       review_note TEXT,
       flagged_at TEXT,
+      agent_level INTEGER,
+      agent_type TEXT,
+      agent_live_betting_rate REAL,
+      agent_prop_builder_rate REAL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -1096,6 +1122,10 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
       archetype TEXT NOT NULL DEFAULT 'unknown',
       risk_tier TEXT NOT NULL DEFAULT 'UNKNOWN',
       clv REAL NOT NULL DEFAULT 0,
+      agent_level INTEGER,
+      agent_type TEXT,
+      agent_live_betting_rate REAL,
+      agent_prop_builder_rate REAL,
       feature_json TEXT NOT NULL DEFAULT '{}',
       source_json TEXT NOT NULL DEFAULT '{}'
     );
@@ -1706,6 +1736,8 @@ export async function migrateDatabase(db: Database) {
     CREATE INDEX IF NOT EXISTS idx_agent_closure_ancestor_depth ON agent_closure(provider, ancestor, depth);
     CREATE INDEX IF NOT EXISTS idx_player_agent_map_agent ON player_agent_map(provider, agent_id);
     CREATE INDEX IF NOT EXISTS idx_player_agent_map_login ON player_agent_map(provider, player_login);
+      CREATE INDEX IF NOT EXISTS idx_background_jobs_name_started ON background_jobs(job_name, started_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_background_jobs_status_started ON background_jobs(status, started_at DESC);
       CREATE INDEX IF NOT EXISTS idx_checkpoints_provider_entity ON ingestion_checkpoints(provider, entity_type);
       CREATE INDEX IF NOT EXISTS idx_buckeye_sport_types_label ON buckeye_sport_types(label);
       CREATE INDEX IF NOT EXISTS idx_raw_logs_endpoint_time ON raw_api_logs(endpoint, fetched_at);
@@ -1745,6 +1777,22 @@ export async function migrateDatabase(db: Database) {
       await db.exec(`ALTER TABLE ai_risk_flags ADD COLUMN reviewed_at TEXT`);
       console.log('Migration: added reviewed_at to ai_risk_flags');
     }
+    if (!riskFlagColumnNames.has('agent_level')) {
+      await db.exec(`ALTER TABLE ai_risk_flags ADD COLUMN agent_level INTEGER`);
+      console.log('Migration: added agent_level to ai_risk_flags');
+    }
+    if (!riskFlagColumnNames.has('agent_type')) {
+      await db.exec(`ALTER TABLE ai_risk_flags ADD COLUMN agent_type TEXT`);
+      console.log('Migration: added agent_type to ai_risk_flags');
+    }
+    if (!riskFlagColumnNames.has('agent_live_betting_rate')) {
+      await db.exec(`ALTER TABLE ai_risk_flags ADD COLUMN agent_live_betting_rate REAL`);
+      console.log('Migration: added agent_live_betting_rate to ai_risk_flags');
+    }
+    if (!riskFlagColumnNames.has('agent_prop_builder_rate')) {
+      await db.exec(`ALTER TABLE ai_risk_flags ADD COLUMN agent_prop_builder_rate REAL`);
+      console.log('Migration: added agent_prop_builder_rate to ai_risk_flags');
+    }
 
     const featureColumns = await db.all<PragmaColumnRow>(`PRAGMA table_info(customer_features)`);
     const featureColumnNames = new Set(featureColumns.map((c) => c.name));
@@ -1755,6 +1803,22 @@ export async function migrateDatabase(db: Database) {
     if (!featureColumnNames.has('feature_json')) {
       await db.exec(`ALTER TABLE customer_features ADD COLUMN feature_json TEXT NOT NULL DEFAULT '{}'`);
       console.log('Migration: added feature_json to customer_features');
+    }
+    if (!featureColumnNames.has('agent_level')) {
+      await db.exec(`ALTER TABLE customer_features ADD COLUMN agent_level INTEGER`);
+      console.log('Migration: added agent_level to customer_features');
+    }
+    if (!featureColumnNames.has('agent_type')) {
+      await db.exec(`ALTER TABLE customer_features ADD COLUMN agent_type TEXT`);
+      console.log('Migration: added agent_type to customer_features');
+    }
+    if (!featureColumnNames.has('agent_live_betting_rate')) {
+      await db.exec(`ALTER TABLE customer_features ADD COLUMN agent_live_betting_rate REAL`);
+      console.log('Migration: added agent_live_betting_rate to customer_features');
+    }
+    if (!featureColumnNames.has('agent_prop_builder_rate')) {
+      await db.exec(`ALTER TABLE customer_features ADD COLUMN agent_prop_builder_rate REAL`);
+      console.log('Migration: added agent_prop_builder_rate to customer_features');
     }
 
     await db.exec(`
