@@ -180,7 +180,15 @@ Compatibility aliases are supported: `ENABLE_RETRY` maps to the enhanced proxy r
 
 ## Security
 
-- `Bun.secrets` stores Buckeye password, token, and Cloudflare cookie presence per vaulted agent.
+- `Bun.secrets` stores backend Buckeye password, token, and Cloudflare cookie presence per vaulted agent.
+- The standalone proxy uses `com.sports-terminal.buckeye-proxy` for static proxy secrets (`proxy-admin-key`, Buckeye credentials, Kimi key, and `cf-clearance`), with environment-variable fallback for CI/headless deployments.
+- `GET`, `POST`, and `DELETE /api/secrets` manage standalone proxy secrets and require `X-API-Key`.
+- The standalone proxy prewarms Buckeye, Kimi, backend, and localhost network targets on startup and exposes DNS/WebSocket pressure stats at `GET /api/agent/network-stats`.
+- `bunfig.toml` sets `console.depth = 6` for deeper operator log inspection and `BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS=300` for stable upstream DNS caching.
+- Backend-to-proxy bridge calls can opt into Bun's object-style forward proxy with `PROXY_FETCH_PROXY_URL`; `PROXY_FETCH_PROXY_TOKEN` sets `Proxy-Authorization` and falls back to `PROXY_API_KEY`.
+- IP surveillance uses persisted Buckeye `getWebLog` evidence plus live lookup endpoints: `GET /api/agent/ip-suspicious` and `GET /api/agent/ip-lookup?ip=...` or `?player=...`. Responses include local GeoIP labels, IP reputation, player timelines, JSON/CSV export via `GET /api/agent/ip-export`, and operator blocking via `POST /api/agent/ip-block`.
+- Full weblog ingestion accepts Buckeye log types `A`, `B`, `C`, `I`, and `F`; account changes and failed login bursts are stored in SQLite and can trigger player flags/alerts.
+- Configurable agent rules live at `GET/POST/DELETE /api/agent/rules`; the wager loop evaluates shared-IP, CLV beater, failed-login, velocity, and account-change conditions against each new wager.
 - `GET /api/buckeye/vault-status` returns presence flags only. It never returns secret values.
 - `DELETE /api/buckeye/vault-status?agentId=...` clears one vaulted agent. `all=1` clears all vaulted Buckeye secrets.
 - WebSocket connections require a valid HS256 JWT in production mode.

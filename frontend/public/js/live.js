@@ -15,6 +15,8 @@ let liveData = { events: [], scores: [], sports: [] };
 let livePollInterval = null;
 let liveFlashPrev = new Map();
 
+import { fetchPost } from './api.js';
+
 function escapeHtml(s) {
   const d = document.createElement('div');
   d.textContent = String(s ?? '');
@@ -28,41 +30,32 @@ function formatScore(n) {
 
 async function fetchLiveScores() {
   try {
-    const res = await fetch('/api/proxy/Report/getScoresLiveDynamic', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ operation: 'getScoresLiveDynamic', agentSite: '1', RRO: '1' }),
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
+    const json = await fetchPost('/api/proxy/Report/getScoresLiveDynamic', { operation: 'getScoresLiveDynamic', agentSite: '1', RRO: '1' });
     return json.data?.scores || json.data?.items || json.scores || [];
-  } catch { return null; }
+  } catch (err) {
+    console.warn('[Live] fetchLiveScores failed:', err instanceof Error ? err.message : err);
+    return null;
+  }
 }
 
 async function fetchDynamicLive() {
   try {
-    const res = await fetch('/api/proxy/Manager/getDynamicLive', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ operation: 'getDynamicLive', agentSite: '1', RRO: '1', live: '1' }),
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
+    const json = await fetchPost('/api/proxy/Manager/getDynamicLive', { operation: 'getDynamicLive', agentSite: '1', RRO: '1', live: '1' });
     return json.data?.events || json.data?.items || json.events || [];
-  } catch { return null; }
+  } catch (err) {
+    console.warn('[Live] fetchDynamicLive failed:', err instanceof Error ? err.message : err);
+    return null;
+  }
 }
 
 async function fetchLiveSports() {
   try {
-    const res = await fetch('/api/proxy/Manager/getSportsTypesLive', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ operation: 'getSportsTypesLive', agentSite: '1', RRO: '1' }),
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
+    const json = await fetchPost('/api/proxy/Manager/getSportsTypesLive', { operation: 'getSportsTypesLive', agentSite: '1', RRO: '1' });
     return json.data?.sports || json.data?.items || json.sports || [];
-  } catch { return null; }
+  } catch (err) {
+    console.warn('[Live] fetchLiveSports failed:', err instanceof Error ? err.message : err);
+    return null;
+  }
 }
 
 function detectFlash(ev) {

@@ -6,14 +6,72 @@ import { Database } from "bun:sqlite";
 import { heapStats as jscHeapStats, estimateShallowMemoryUsageOf } from "bun:jsc";
 import { randomUUIDv7 } from "bun";
 import { watch } from "node:fs";
-import { CONFIG, reloadFromEnv } from "./config";
+import { CONFIG, initConfig, reloadFromEnv } from "./config";
 import { CircuitBreaker, logger, hashPayload as utilsHashPayload, fetchWithRetry as utilsFetchWithRetry, requestContext, json as utilsJson, atomicWrite } from "./utils";
 import { fetchWithTimeout } from "./utils/fetchWithTimeout";
+import { PROXY_SECRET_NAMES, deleteManagedSecret, extractCfClearanceValue, getManagedSecret, getManagedSecretNames, getScopedSecret, proxySecretEnvFallback, setManagedSecret, setScopedSecret, shouldUseKeychain } from "./utils/secrets";
 import { getAllEndpoints, ENDPOINT_COUNTS, TEST_SUMMARY } from "./endpoint-index";
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 import { z } from "zod";
 
+await initConfig();
+
+// ==========================================
+// CONSTANTS (was magic numbers scattered)
+// ==========================================
+const PROXY_CONSTANTS = {
+  TRACE_MAX_SPANS: 1000,
+  RISK_ENGINE_INTERVAL_MS: 30000,
+  LINE_ADJUSTMENT_INTERVAL_MS: 60000,
+  LOG_PRUNE_THRESHOLD: 50000,
+  LOG_PRUNE_BATCH: 10000,
+  LOG_PRUNE_INTERVAL_MS: 3600000,
+  WAL_CHECKPOINT_INTERVAL_MS: 3600000,
+  IDEMPOTENCY_TTL_SECONDS: 86400,
+  TOKEN_EXPIRY_SECONDS: 7200,
+  COMPRESSION_THRESHOLD_BYTES: 1024,
+  WRITE_OPTIMIZE_COUNTER: 1000,
+  DB_BUSY_TIMEOUT_MS: 5000,
+  DB_BUSY_TIMEOUT_PROXY_MS: 30000,
+  SPEED_SCORE_FAST_MS: 60000,
+  SPEED_SCORE_MEDIUM_MS: 180000,
+  RECONNECT_DELAY_MS: 3000,
+  RECONNECT_MAX_DELAY_MS: 30000,
+  WS_BATCH_MIN_MS: 100,
+  WS_BATCH_MAX_MS: 5000,
+  WS_IDLE_TIMEOUT_SECONDS: 600,
+  ADMIN_REFRESH_INTERVAL_MS: 10000,
+  WS_MAX_PAYLOAD_LENGTH_BYTES: 1024 * 1024,
+  BACKPRESSURE_LIMIT_BYTES: 8 * 1024 * 1024,
+  KIMI_API_ORIGIN: "https://api.moonshot.cn",
+  KIMI_API_PORT: 443,
+  OTEL_EXPORT_INTERVAL_MS: 10000,
+  RETRY_MAX_DELAY_MS: 10000,
+  SYNDICATE_MIN_STAKE: 1000,
+  SYNDICATE_TIME_WINDOW_MS: 300000,
+  HIGH_ROLLER_STAKE: 2000,
+} as const;
+
 type JsonObject = Record<string, unknown>;
+
+type DnsCacheStats = {
+  cacheHitsCompleted?: number;
+  cacheHitsInflight?: number;
+  cacheMisses?: number;
+  size?: number;
+  errors?: number;
+  totalCount?: number;
+  [key: string]: unknown;
+};
+
+type NetworkWarmupResult = {
+  target: string;
+  host: string;
+  port: number;
+  dnsPrefetched: boolean;
+  preconnected: boolean;
+  error?: string;
+};
 
 interface TokenRow extends JsonObject {
   customerID: string;
@@ -21,6 +79,11 @@ interface TokenRow extends JsonObject {
   bearer_token: string | null;
   created_at: number;
   expires_at: number;
+}
+
+interface ProxyCredentialValues {
+  password?: string;
+  cfClearance?: string;
 }
 
 interface CacheRow extends JsonObject {
@@ -38,7 +101,87 @@ interface WsData {
   reqId?: string;
   customerID?: string;
   authenticated?: boolean;
+  connectedAt?: number;
 }
+
+function getDnsCacheStats(): DnsCacheStats | null {
+  try {
+    return Bun.dns.getCacheStats() as DnsCacheStats;
+  } catch (error) {
+    logger.warn("DNS cache stats unavailable", { error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
+}
+
+function enrichDnsStats(stats: DnsCacheStats | null): JsonObject | null {
+  if (!stats) return null;
+  const hits = Number(stats.cacheHitsCompleted || 0);
+  const total = Number(stats.totalCount || 0);
+  const hitRatePercent = total > 0 ? Number(((hits / total) * 100).toFixed(1)) : null;
+  return {
+    ...stats,
+    hitRatePercent,
+    hitRate: hitRatePercent === null ? "N/A" : `${hitRatePercent.toFixed(1)}%`,
+  };
+}
+
+function networkTarget(origin: string): { origin: string; host: string; port: number } | null {
+  try {
+    const url = new URL(origin);
+    return {
+      origin: url.origin,
+      host: url.hostname,
+      port: Number(url.port || (url.protocol === "https:" ? 443 : 80)),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function warmNetworkTarget(origin: string): Promise<NetworkWarmupResult | null> {
+  const target = networkTarget(origin);
+  if (!target) return null;
+
+  const result: NetworkWarmupResult = {
+    target: target.origin,
+    host: target.host,
+    port: target.port,
+    dnsPrefetched: false,
+    preconnected: false,
+  };
+
+  try {
+    await Promise.resolve(Bun.dns.prefetch(target.host, target.port));
+    result.dnsPrefetched = true;
+  } catch (error) {
+    result.error = `dns: ${error instanceof Error ? error.message : String(error)}`;
+  }
+
+  try {
+    await Promise.resolve((fetch as typeof fetch & { preconnect?: (url: string, options?: { dns?: boolean; tcp?: boolean }) => unknown }).preconnect?.(target.origin, { dns: true, tcp: true }));
+    result.preconnected = true;
+  } catch (error) {
+    const details = error instanceof Error ? error.message : String(error);
+    result.error = result.error ? `${result.error}; preconnect: ${details}` : `preconnect: ${details}`;
+  }
+
+  return result;
+}
+
+async function prewarmNetworkTargets(): Promise<NetworkWarmupResult[]> {
+  const targets = Array.from(new Set([
+    CONFIG.baseUrl,
+    PROXY_CONSTANTS.KIMI_API_ORIGIN,
+    CONFIG.backendUrl,
+    `http://localhost:${CONFIG.port}`,
+  ].filter(Boolean)));
+
+  const results = (await Promise.all(targets.map((target) => warmNetworkTarget(target)))).filter((entry): entry is NetworkWarmupResult => Boolean(entry));
+  logger.info("Network warmup complete", { targets: results });
+  return results;
+}
+
+const networkWarmups = await prewarmNetworkTargets();
 
 interface IdempotencyRow {
   status: number;
@@ -112,7 +255,7 @@ interface TraceSpan {
 
 class TraceCollector {
   private spans: TraceSpan[] = [];
-  private maxSpans = 1000;
+  private maxSpans = PROXY_CONSTANTS.TRACE_MAX_SPANS;
   private exporting = false;
 
   startSpan(name: string, parentId?: string, attributes?: Record<string, unknown>): { spanId: string; end: (status?: "OK" | "ERROR", attrs?: Record<string, unknown>) => void } {
@@ -193,8 +336,8 @@ class TraceCollector {
       if (res && res.ok) {
         this.spans = this.spans.filter(s => s.endTime === undefined);
       }
-    } catch {
-      // silent fail — OTel is best-effort
+    } catch (e) {
+      console.warn("[Proxy] OTel export failed:", e);
     } finally {
       this.exporting = false;
     }
@@ -622,14 +765,14 @@ async function buckeyeCall<T>(fn: () => Promise<T>, meta: JsonObject = {}): Prom
 // ==========================================
 const db = new Database(CONFIG.dbPath, { create: true });
 db.run("PRAGMA journal_mode = WAL;");
-db.run("PRAGMA busy_timeout = 5000;");
+db.run(`PRAGMA busy_timeout = ${PROXY_CONSTANTS.DB_BUSY_TIMEOUT_MS};`);
 db.run("PRAGMA foreign_keys = ON;");
 
 // Graceful startup wait — ensure WAL checkpoint is idle before accepting traffic.
 let walReady = CONFIG.dbPath === ":memory:";
 if (!walReady) {
   for (let i = 0; i < 50; i++) {
-    const result = db.query("PRAGMA wal_checkpoint(PASSIVE)").get() as any;
+    const result = db.query("PRAGMA wal_checkpoint(PASSIVE)").get() as { busy?: number } | null;
     if (result && Number(result.busy ?? 0) === 0) {
       walReady = true;
       break;
@@ -646,11 +789,11 @@ logger.info("SQLite WAL ready");
 // PRAGMA optimize after every 1000 writes to keep query planner sharp
 let writeCounter = 0;
 const originalDbRun = db.run.bind(db);
-db.run = function (...args: any[]) {
+db.run = function (...args: unknown[]) {
   writeCounter++;
   const result = originalDbRun.apply(this, args);
-  if (writeCounter % 1000 === 0) {
-    try { originalDbRun.call(this, "PRAGMA optimize"); } catch {}
+  if (writeCounter % PROXY_CONSTANTS.WRITE_OPTIMIZE_COUNTER === 0) {
+    try { originalDbRun.call(this, "PRAGMA optimize"); } catch (e) { console.warn("[Proxy] PRAGMA optimize failed:", e); }
   }
   return result;
 };
@@ -660,7 +803,7 @@ for (let i = 0; i < 3; i++) {
   const conn = CONFIG.dbPath === ":memory:" ? db : new Database(CONFIG.dbPath, { readonly: true });
   if (conn !== db) {
     conn.run("PRAGMA journal_mode = WAL;");
-    conn.run("PRAGMA busy_timeout = 30000;");
+    conn.run(`PRAGMA busy_timeout = ${PROXY_CONSTANTS.DB_BUSY_TIMEOUT_PROXY_MS};`);
   }
   readPool.push(conn);
 }
@@ -881,7 +1024,7 @@ for (const column of [
   "ALTER TABLE syndicate_cache ADD COLUMN confidence INTEGER DEFAULT 0",
   "ALTER TABLE syndicate_cache ADD COLUMN signals TEXT DEFAULT '[]'",
 ]) {
-  try { db.run(column); } catch { /* column exists */ }
+  try { db.run(column); } catch (e) { console.debug("[Proxy] Migration column may already exist:", e); }
 }
 
 // Prepared statements
@@ -907,11 +1050,11 @@ const countCustomerEndpointRequests = db.prepare(`SELECT COUNT(*) AS count FROM 
 const checkRateStmt = dbRead.prepare(`SELECT count, window_start FROM rate_limit WHERE key = $key`);
 const upsertRateStmt = db.prepare(`INSERT INTO rate_limit (key, count, window_start) VALUES ($key, 1, $now) ON CONFLICT(key) DO UPDATE SET count = count + 1, window_start = CASE WHEN excluded.window_start > window_start THEN excluded.window_start ELSE window_start END`);
 
-const getIdempotency = dbRead.prepare(`SELECT status, response_json, created_at FROM idempotency WHERE key = $key AND (unixepoch() - created_at) < 86400`);
+const getIdempotency = dbRead.prepare(`SELECT status, response_json, created_at FROM idempotency WHERE key = $key AND (unixepoch() - created_at) < ${PROXY_CONSTANTS.IDEMPOTENCY_TTL_SECONDS}`);
 const setIdempotency = db.prepare(`INSERT OR REPLACE INTO idempotency (key, endpoint, customerID, status, response_json) VALUES ($key, $endpoint, $customerID, $status, $response_json)`);
 
 const purgeExpiredCache = db.prepare(`DELETE FROM api_cache WHERE (unixepoch() - cached_at) > ttl_seconds`);
-const purgeOldIdempotency = db.prepare(`DELETE FROM idempotency WHERE (unixepoch() - created_at) > 86400`);
+const purgeOldIdempotency = db.prepare(`DELETE FROM idempotency WHERE (unixepoch() - created_at) > ${PROXY_CONSTANTS.IDEMPOTENCY_TTL_SECONDS}`);
 const purgeOldRequestLogs = db.prepare(`DELETE FROM request_log WHERE (unixepoch() - logged_at) > 604800`);
 const tokenCount = dbRead.prepare(`SELECT COUNT(*) as total FROM tokens WHERE bearer_token IS NOT NULL`);
 const getWarmableTokens = dbRead.prepare(`SELECT customerID, MAX(expires_at) AS expires_at FROM tokens WHERE bearer_token IS NOT NULL AND expires_at > unixepoch() GROUP BY customerID ORDER BY expires_at DESC LIMIT 20`);
@@ -981,7 +1124,7 @@ function findRateLimitOverride(endpoint: string): { limit: number; window: numbe
 // WAL CHECKPOINT + CACHE PURGE INTERVALS
 // ==========================================
 if (CONFIG.features.walCheckpoint) {
-  setInterval(() => { try { db.run("PRAGMA wal_checkpoint(TRUNCATE)"); } catch {} }, 3600000);
+  setInterval(() => { try { db.run("PRAGMA wal_checkpoint(TRUNCATE)"); } catch (e) { console.warn("[Proxy] WAL checkpoint failed:", e); } }, PROXY_CONSTANTS.WAL_CHECKPOINT_INTERVAL_MS);
 }
 
 setInterval(() => {
@@ -1019,14 +1162,14 @@ setInterval(() => {
     const logDb = new Database("logs.sqlite", { readonly: true });
     const logCount = logDb.query("SELECT COUNT(*) as c FROM logs").get() as { c: number } | null;
     logDb.close();
-    if (logCount && logCount.c > 50000) {
+    if (logCount && logCount.c > PROXY_CONSTANTS.LOG_PRUNE_THRESHOLD) {
       const writeDb = new Database("logs.sqlite");
-      writeDb.run("DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY id LIMIT 10000)");
+      writeDb.run(`DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY id LIMIT ${PROXY_CONSTANTS.LOG_PRUNE_BATCH})`);
       writeDb.close();
       logger.log("info", "background", "Pruned old log rows", { before: logCount.c });
     }
-  } catch {
-    // logs.sqlite may not exist
+  } catch (e) {
+    console.debug("[Proxy] Log pruning skipped — logs.sqlite may not exist:", e);
   }
 }, 3600000);
 
@@ -1050,13 +1193,13 @@ async function runRiskEngine(): Promise<void> {
     const configs = getAllRiskConfigs.all() as Array<{ agentID: string; thresholds: string; webhook: string | null }>;
     for (const cfg of configs) {
       const thresholds = JSON.parse(cfg.thresholds || "{}");
-      const stored = getLatestTokenWrite.get({ $customerID: cfg.agentID }) as TokenRow | null;
-      if (!stored?.bearer_token) continue;
+      const stored = await getStoredCredentials(cfg.agentID);
+      if (!stored) continue;
 
       try {
         const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
           method: "POST",
-          headers: browserHeaders(stored.bearer_token || "", `cf_clearance=${stored.cf_clearance || ""}`),
+          headers: browserHeaders(stored.token, `cf_clearance=${stored.cf_clearance}`),
           body: toForm({ operation: "getBetTicker", agentID: cfg.agentID, agentOwner: cfg.agentID, agentSite: "1" }),
         }), { reqId: "risk-engine", endpoint: "getBetTicker" });
         const wagerData = await wagerRes.json().catch(() => null);
@@ -1094,7 +1237,7 @@ async function runRiskEngine(): Promise<void> {
 }
 
 if (CONFIG.features.riskEngine) {
-  riskEngineTimer = setInterval(() => { void runRiskEngine().catch(() => {}); }, 30000) as unknown as Timer;
+  riskEngineTimer = setInterval(() => { void runRiskEngine().catch(() => {}); }, PROXY_CONSTANTS.RISK_ENGINE_INTERVAL_MS) as unknown as Timer;
 }
 
 // ==========================================
@@ -1103,12 +1246,12 @@ if (CONFIG.features.riskEngine) {
 const tokenRenewalTimers = new Map<string, Timer>();
 
 async function renewTokenForCustomer(customerID: string, reqId = "token-renewal"): Promise<boolean> {
-  const stored = getLatestTokenWrite.get({ $customerID: customerID }) as TokenRow | null;
-  if (!stored?.bearer_token || !stored.cf_clearance) return false;
+  const stored = await getStoredCredentials(customerID);
+  if (!stored) return false;
 
   const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/System/renewToken`, {
     method: "POST",
-    headers: browserHeaders(stored.bearer_token || "", `cf_clearance=${stored.cf_clearance || ""}`),
+    headers: browserHeaders(stored.token, `cf_clearance=${stored.cf_clearance}`),
     body: toForm({ operation: "renewToken", agentID: customerID, agentOwner: customerID, agentSite: "1" }),
   }), { reqId, endpoint: "renewToken" });
 
@@ -1118,7 +1261,7 @@ async function renewTokenForCustomer(customerID: string, reqId = "token-renewal"
   if (!upstream.ok || !token) return false;
 
   const expiresAt = Math.floor(Date.now() / 1000) + 7200;
-  insertToken.run({ $customerID: customerID, $cf_clearance: stored.cf_clearance, $auth_code: null, $bearer_token: String(token), $expires_at: expiresAt });
+  insertToken.run({ $customerID: customerID, $cf_clearance: null, $auth_code: null, $bearer_token: String(token), $expires_at: expiresAt });
   invalidateTokenCache(customerID);
   scheduleTokenRenewal(customerID, expiresAt);
   logger.info("Token pre-renewed", { reqId, customerID, expiresAt });
@@ -1262,7 +1405,7 @@ async function getCacheWithSWR(
 // ==========================================
 const cors = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+  "Access-Control-Allow-Methods": "POST, GET, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, X-Request-ID, X-Stream, Idempotency-Key",
 };
 
@@ -1287,7 +1430,8 @@ function browserHeaders(token = "undefined", cookie = "") {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
     "X-Requested-With": "XMLHttpRequest",
   };
-  if (cookie) h["Cookie"] = cookie;
+  const resolvedCookie = cookie || (CONFIG.cfClearance ? `cf_clearance=${CONFIG.cfClearance}` : "");
+  if (resolvedCookie) h["Cookie"] = resolvedCookie;
   return h;
 }
 
@@ -1371,7 +1515,7 @@ function json(data: unknown, status = 200, headers: Record<string, string> = {},
   const body = JSON.stringify(data, null, 2);
   const responseHeaders: Record<string, string> = { "Content-Type": "application/json", ...cors, ...headers };
   const gzip = Bun.gzipSync;
-  if (CONFIG.features.responseCompression && gzip && acceptEncoding.includes("gzip") && body.length > 1024) {
+  if (CONFIG.features.responseCompression && gzip && acceptEncoding.includes("gzip") && body.length > PROXY_CONSTANTS.COMPRESSION_THRESHOLD_BYTES) {
     const compressed = gzip(body);
     const bytes = new Uint8Array(compressed.byteLength);
     bytes.set(compressed);
@@ -1656,7 +1800,7 @@ function buildSyndicateFromCluster(cluster: Wager[], minBettors: number, minStak
   const windowMs = Math.max(0, last.timestamp - first.timestamp);
   const avgStake = totalStake / cluster.length;
   const stakeMultiplier = minStake > 0 ? totalStake / minStake : 1;
-  const speedScore = windowMs <= 60000 ? 25 : windowMs <= 180000 ? 15 : 8;
+  const speedScore = windowMs <= PROXY_CONSTANTS.SPEED_SCORE_FAST_MS ? 25 : windowMs <= PROXY_CONSTANTS.SPEED_SCORE_MEDIUM_MS ? 15 : 8;
   const bettorScore = Math.min(30, uniqueBettors.size * 8);
   const stakeScore = Math.min(30, Math.round(stakeMultiplier * 12));
   const repeatScore = Math.min(15, cluster.length * 3);
@@ -1819,7 +1963,7 @@ function computePredictiveSharpness(wagers: WagerAnalytic[]): SharpnessResult {
 
   let score = 0;
   if (avgStake > 500) score += 15;
-  if (maxStake > 2000) score += 15;
+  if (maxStake > PROXY_CONSTANTS.HIGH_ROLLER_STAKE) score += 15;
   if (winRate > 0.55) score += 25;
   if (winRate > 0.6) score += 15;
   if (recentWinRate > 0.6) score += 20;
@@ -1939,13 +2083,13 @@ async function evaluateLineAdjustments(): Promise<void> {
     if (rules.length === 0) return;
 
     for (const rule of rules) {
-      const stored = getLatestTokenWrite.get({ $customerID: rule.agentID }) as TokenRow | null;
-      if (!stored?.bearer_token) continue;
+      const stored = await getStoredCredentials(rule.agentID);
+      if (!stored) continue;
 
       try {
         const wagerRes = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/Manager/getBetTicker`, {
           method: "POST",
-          headers: browserHeaders(stored.bearer_token || "", `cf_clearance=${stored.cf_clearance || ""}`),
+          headers: browserHeaders(stored.token, `cf_clearance=${stored.cf_clearance}`),
           body: toForm({ operation: "getBetTicker", agentID: rule.agentID, agentOwner: rule.agentID, agentSite: "1" }),
         }), { reqId: "line-engine", endpoint: "getBetTicker" });
         const wagerData = await wagerRes.json().catch(() => null);
@@ -2009,18 +2153,16 @@ async function evaluateLineAdjustments(): Promise<void> {
             }
 
             for (const [, sub] of subscribers) {
-              try {
-                sub.ws.send(JSON.stringify({
-                  type: "line_adjustment",
-                  gameId,
-                  lineType: rule.lineType,
-                  ruleId: rule.id,
-                  condition: rule.condition,
-                  stake: gameStake,
-                  threshold: rule.threshold,
-                  timestamp: Date.now(),
-                }));
-              } catch { /* ws closed */ }
+              safeSendJson(sub.ws, {
+                type: "line_adjustment",
+                gameId,
+                lineType: rule.lineType,
+                ruleId: rule.id,
+                condition: rule.condition,
+                stake: gameStake,
+                threshold: rule.threshold,
+                timestamp: Date.now(),
+              }, "line-adjustment");
             }
           }
         }
@@ -2074,6 +2216,110 @@ function getCachedToken(customerID: string): TokenRow | null {
 
 function invalidateTokenCache(customerID: string): void {
   tokenMemCache.delete(customerID);
+}
+
+const proxySecretMemory = new Map<string, string>();
+
+function proxySecretCacheKey(name: string, customerID?: string | null): string {
+  const normalizedCustomer = String(customerID || "").trim().toUpperCase();
+  return normalizedCustomer ? `${normalizedCustomer}:${name}` : name;
+}
+
+function rememberProxySecretInMemory(name: string, value: string, customerID?: string | null): void {
+  if (!value) return;
+  const normalizedCustomer = String(customerID || "").trim().toUpperCase();
+  proxySecretMemory.set(proxySecretCacheKey(name, normalizedCustomer || null), value);
+}
+
+async function readProxySecret(name: typeof PROXY_SECRET_NAMES[keyof typeof PROXY_SECRET_NAMES], customerID?: string | null): Promise<string> {
+  const scopedKey = proxySecretCacheKey(name, customerID);
+  const fromMemory = proxySecretMemory.get(scopedKey) || proxySecretMemory.get(name);
+  if (fromMemory) return name === PROXY_SECRET_NAMES.cfClearance ? extractCfClearanceValue(fromMemory) : fromMemory;
+
+  const fromConfig =
+    name === PROXY_SECRET_NAMES.password ? CONFIG.password :
+    name === PROXY_SECRET_NAMES.cfClearance ? CONFIG.cfClearance :
+    undefined;
+  if (fromConfig) return name === PROXY_SECRET_NAMES.cfClearance ? extractCfClearanceValue(fromConfig) : fromConfig;
+
+  if (shouldUseKeychain()) {
+    const fromKeychain = await getScopedSecret(name, customerID);
+    if (fromKeychain) {
+      const value = name === PROXY_SECRET_NAMES.cfClearance ? extractCfClearanceValue(fromKeychain) : fromKeychain;
+      rememberProxySecretInMemory(name, value, customerID);
+      return value;
+    }
+  }
+
+  const fromEnv = proxySecretEnvFallback(name);
+  if (fromEnv) {
+    const value = name === PROXY_SECRET_NAMES.cfClearance ? extractCfClearanceValue(fromEnv) : fromEnv;
+    rememberProxySecretInMemory(name, value, customerID);
+    if (shouldUseKeychain()) {
+      await setScopedSecret(name, value, customerID);
+    }
+    return value;
+  }
+
+  return "";
+}
+
+async function rememberProxyCredentialSecrets(customerID: string, values: ProxyCredentialValues): Promise<void> {
+  const password = values.password ? String(values.password) : "";
+  const cfClearance = values.cfClearance ? extractCfClearanceValue(String(values.cfClearance)) : "";
+
+  if (password) {
+    rememberProxySecretInMemory(PROXY_SECRET_NAMES.password, password, customerID);
+    if (shouldUseKeychain()) await setScopedSecret(PROXY_SECRET_NAMES.password, password, customerID);
+  }
+  if (cfClearance) {
+    rememberProxySecretInMemory(PROXY_SECRET_NAMES.cfClearance, cfClearance, customerID);
+    if (shouldUseKeychain()) await setScopedSecret(PROXY_SECRET_NAMES.cfClearance, cfClearance, customerID);
+  }
+}
+
+async function loadProxyCredentials(customerID: string, incoming: ProxyCredentialValues = {}): Promise<Required<ProxyCredentialValues>> {
+  const incomingPassword = incoming.password ? String(incoming.password) : "";
+  const incomingCf = incoming.cfClearance ? extractCfClearanceValue(String(incoming.cfClearance)) : "";
+  return {
+    password: incomingPassword || await readProxySecret(PROXY_SECRET_NAMES.password, customerID),
+    cfClearance: incomingCf || await readProxySecret(PROXY_SECRET_NAMES.cfClearance, customerID),
+  };
+}
+
+function applyManagedSecretToConfig(name: string, value: string | null): void {
+  const next = value || undefined;
+  switch (name) {
+    case PROXY_SECRET_NAMES.proxyAdminKey:
+      CONFIG.apiKey = next || Bun.env.PROXY_API_KEY || "dev-key-123";
+      CONFIG.adminApiKey = next || Bun.env.ADMIN_API_KEY || CONFIG.apiKey;
+      break;
+    case PROXY_SECRET_NAMES.buckeyeApiKey:
+      CONFIG.buckeyeApiKey = next;
+      break;
+    case PROXY_SECRET_NAMES.buckeyeCustomerId:
+      CONFIG.customerId = next;
+      CONFIG.agentId ||= next;
+      CONFIG.agentOwner ||= next;
+      break;
+    case PROXY_SECRET_NAMES.password:
+      CONFIG.password = next;
+      break;
+    case PROXY_SECRET_NAMES.agentId:
+      CONFIG.agentId = next || CONFIG.customerId;
+      break;
+    case PROXY_SECRET_NAMES.agentOwner:
+      CONFIG.agentOwner = next || CONFIG.customerId;
+      break;
+    case PROXY_SECRET_NAMES.kimiApiKey:
+      CONFIG.kimiApiKey = next;
+      break;
+    case PROXY_SECRET_NAMES.cfClearance:
+    case "buckeye-cf-clearance":
+      CONFIG.cfClearance = next ? extractCfClearanceValue(next) : undefined;
+      if (CONFIG.cfClearance) rememberProxySecretInMemory(PROXY_SECRET_NAMES.cfClearance, CONFIG.cfClearance);
+      break;
+  }
 }
 
 function memCacheKey(endpoint: string, payload: JsonObject): string {
@@ -3010,10 +3256,13 @@ function looksLikeJson(text: string): boolean {
   return trimmed.startsWith("{") || trimmed.startsWith("[");
 }
 
-function getStoredCredentials(customerID: string): { token: string; cf_clearance: string } | null {
+async function getStoredCredentials(customerID: string): Promise<{ token: string; cf_clearance: string } | null> {
   const stored = getCachedToken(customerID);
-  if (!stored?.bearer_token || !stored.cf_clearance) return null;
-  return { token: stored.bearer_token, cf_clearance: stored.cf_clearance };
+  if (!stored?.bearer_token) return null;
+  const cfClearance = await readProxySecret(PROXY_SECRET_NAMES.cfClearance, customerID)
+    || extractCfClearanceValue(stored.cf_clearance || "");
+  if (!cfClearance) return null;
+  return { token: stored.bearer_token, cf_clearance: cfClearance };
 }
 
 function applyEndpointDefaults(endpointKey: string, endpoint: string, payload: JsonObject): JsonObject {
@@ -3240,7 +3489,7 @@ function processSyndicateCluster(cluster: StoredWagerAnalytic[], syndicates: Syn
   const windowMs = Math.max(0, (last.timestamp - first.timestamp) * 1000);
   const avgStake = totalStake / cluster.length;
   const stakeMultiplier = minStake > 0 ? totalStake / minStake : 1;
-  const speedScore = windowMs <= 60000 ? 25 : windowMs <= 180000 ? 15 : 8;
+  const speedScore = windowMs <= PROXY_CONSTANTS.SPEED_SCORE_FAST_MS ? 25 : windowMs <= PROXY_CONSTANTS.SPEED_SCORE_MEDIUM_MS ? 15 : 8;
   const bettorScore = Math.min(30, members.length * 8);
   const stakeScore = Math.min(30, Math.round(stakeMultiplier * 12));
   const repeatScore = Math.min(15, cluster.length * 3);
@@ -3468,7 +3717,7 @@ async function buckeyeFetch(url: string, options: RequestInit, retries = CONFIG.
     } catch (err: unknown) {
       if (i === retries - 1) throw err;
       if (!CONFIG.features.autoRetry) throw err;
-      const delay = Math.min(CONFIG.retryBaseMs * Math.pow(2, i) + Math.random() * 500, 10000);
+      const delay = Math.min(CONFIG.retryBaseMs * Math.pow(2, i) + Math.random() * 500, PROXY_CONSTANTS.RETRY_MAX_DELAY_MS);
       await Bun.sleep(delay);
     }
   }
@@ -3727,6 +3976,8 @@ async function fetchWithFallback(baseUrl: string, endpoint: string, payload: Jso
 // 9. HEALTH / METRICS / READINESS
 // ==========================================
 async function dependencyHealth() {
+  const dnsStats = getDnsCacheStats();
+  const dns = enrichDnsStats(dnsStats);
   const [buckeyeOk, databaseOk] = await Promise.all([
     fetch(CONFIG.baseUrl, { method: "HEAD" }).then((res) => res.ok).catch(() => false),
     Promise.resolve().then(() => getReadDb().query("SELECT 1 AS ok").get() !== undefined).catch(() => false),
@@ -3739,6 +3990,13 @@ async function dependencyHealth() {
       database: databaseOk,
       circuitBreaker: circuitBreaker.getStatus(),
       activeRequests,
+      network: {
+        pendingRequests: server.pendingRequests,
+        pendingWebSockets: server.pendingWebSockets,
+        dns,
+        dnsStats,
+        warmups: networkWarmups,
+      },
       shuttingDown,
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
@@ -3747,13 +4005,45 @@ async function dependencyHealth() {
   };
 }
 
+function networkHealthMetrics(): JsonObject {
+  const dnsStats = getDnsCacheStats();
+  const dns = enrichDnsStats(dnsStats);
+  return {
+    pendingRequests: server.pendingRequests,
+    pendingWebSockets: server.pendingWebSockets,
+    activeRequests,
+    dns,
+    dnsStats,
+    http: {
+      pendingRequests: server.pendingRequests,
+      activeRequests,
+    },
+    ws: {
+      pendingWebSockets: server.pendingWebSockets,
+    },
+    warmups: networkWarmups,
+    websocket: {
+      sessions: sessions.size,
+      subscribers: subscribers.size,
+      backpressureEvents: wsBackpressureEvents,
+      droppedMessages: wsDroppedMessages,
+      idleTimeoutSeconds: PROXY_CONSTANTS.WS_IDLE_TIMEOUT_SECONDS,
+      maxPayloadLengthBytes: PROXY_CONSTANTS.WS_MAX_PAYLOAD_LENGTH_BYTES,
+      backpressureLimitBytes: PROXY_CONSTANTS.BACKPRESSURE_LIMIT_BYTES,
+    },
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+  };
+}
+
 function runtimeMetrics() {
   const memory = process.memoryUsage();
   const cpu = process.cpuUsage();
   let jsc: unknown = {};
   let heap: unknown = {};
-  try { jsc = (Bun as unknown as { jsc?: { getVMStats?: () => unknown } }).jsc?.getVMStats?.() || {}; } catch { jsc = {}; }
-  try { heap = jscHeapStats(); } catch { heap = {}; }
+  try { jsc = (Bun as unknown as { jsc?: { getVMStats?: () => unknown } }).jsc?.getVMStats?.() || {}; } catch (e) { console.debug("[Proxy] JSC stats unavailable:", e); jsc = {}; }
+  try { heap = jscHeapStats(); } catch (e) { console.debug("[Proxy] Heap stats unavailable:", e); heap = {}; }
+  const dnsStats = getDnsCacheStats();
   const serverLoad = {
     pendingRequests: server.pendingRequests,
     pendingWebSockets: server.pendingWebSockets,
@@ -3795,9 +4085,20 @@ function runtimeMetrics() {
     jsc,
     heap,
     server: serverLoad,
+    network: {
+      dnsStats,
+      warmups: networkWarmups,
+    },
     uptime: process.uptime(),
     activeRequests,
     wsSessions: sessions.size,
+    wsBackpressureEvents,
+    wsDroppedMessages,
+    wsLimits: {
+      idleTimeoutSeconds: PROXY_CONSTANTS.WS_IDLE_TIMEOUT_SECONDS,
+      maxPayloadLengthBytes: PROXY_CONSTANTS.WS_MAX_PAYLOAD_LENGTH_BYTES,
+      backpressureLimitBytes: PROXY_CONSTANTS.BACKPRESSURE_LIMIT_BYTES,
+    },
     tickerHistory: tickerHistory.length,
     requests: { total: totalRequests, errors: errorRequests },
     dbLog: { total: dbRow?.count ?? 0, errors: errRow?.count ?? 0 },
@@ -3825,6 +4126,7 @@ function prometheusMetrics(): string {
   const errRow = statusErrorRequestCount.get() as CountRow | null;
   const avgRow = avgRequestDuration.get() as { avg?: number | null } | null;
   const circuitState = circuitBreaker.getStatus().state;
+  const dnsStats = getDnsCacheStats();
   const lines: string[] = [
     "# HELP buckeye_requests_total Total requests recorded by the Buckeye proxy",
     "# TYPE buckeye_requests_total counter",
@@ -3841,6 +4143,24 @@ function prometheusMetrics(): string {
     "# HELP buckeye_active_websockets Active proxy websocket subscriptions and sessions",
     "# TYPE buckeye_active_websockets gauge",
     `buckeye_active_websockets ${numberMetric(subscribers.size + sessions.size)}`,
+    "# HELP buckeye_dns_cache_hits_completed_total Completed DNS cache hits",
+    "# TYPE buckeye_dns_cache_hits_completed_total counter",
+    `buckeye_dns_cache_hits_completed_total ${numberMetric(dnsStats?.cacheHitsCompleted)}`,
+    "# HELP buckeye_dns_cache_misses_total DNS cache misses",
+    "# TYPE buckeye_dns_cache_misses_total counter",
+    `buckeye_dns_cache_misses_total ${numberMetric(dnsStats?.cacheMisses)}`,
+    "# HELP buckeye_dns_cache_errors_total DNS cache errors",
+    "# TYPE buckeye_dns_cache_errors_total counter",
+    `buckeye_dns_cache_errors_total ${numberMetric(dnsStats?.errors)}`,
+    "# HELP buckeye_dns_cache_entries Current DNS cache entries",
+    "# TYPE buckeye_dns_cache_entries gauge",
+    `buckeye_dns_cache_entries ${numberMetric(dnsStats?.size)}`,
+    "# HELP buckeye_websocket_backpressure_events_total WebSocket sends queued under backpressure",
+    "# TYPE buckeye_websocket_backpressure_events_total counter",
+    `buckeye_websocket_backpressure_events_total ${numberMetric(wsBackpressureEvents)}`,
+    "# HELP buckeye_websocket_dropped_messages_total WebSocket sends dropped or failed",
+    "# TYPE buckeye_websocket_dropped_messages_total counter",
+    `buckeye_websocket_dropped_messages_total ${numberMetric(wsDroppedMessages)}`,
     "# HELP buckeye_memory_rss_bytes Resident memory usage",
     "# TYPE buckeye_memory_rss_bytes gauge",
     `buckeye_memory_rss_bytes ${numberMetric(memory.rss)}`,
@@ -3869,10 +4189,10 @@ function prometheusMetrics(): string {
     `buckeye_pending_requests ${numberMetric(server.pendingRequests)}`,
     "# HELP buckeye_jsc_objects_total JS object count from JSC heap stats",
     "# TYPE buckeye_jsc_objects_total gauge",
-    `buckeye_jsc_objects_total ${numberMetric((heap as any).objectCount ?? 0)}`,
+    `buckeye_jsc_objects_total ${numberMetric((heap as { objectCount?: number }).objectCount ?? 0)}`,
     "# HELP buckeye_jsc_heap_capacity_bytes JSC heap capacity",
     "# TYPE buckeye_jsc_heap_capacity_bytes gauge",
-    `buckeye_jsc_heap_capacity_bytes ${numberMetric((heap as any).heapCapacity ?? 0)}`,
+    `buckeye_jsc_heap_capacity_bytes ${numberMetric((heap as { heapCapacity?: number }).heapCapacity ?? 0)}`,
   ];
 
   return `${lines.join("\n")}\n`;
@@ -3913,6 +4233,12 @@ function buildOpenApiSpec() {
     "/openapi.json": { get: { summary: "OpenAPI document", responses: { "200": { description: "OpenAPI JSON" } } } },
     "/dashboard": { get: { summary: "Live dashboard HTML", responses: { "200": { description: "HTML dashboard" } } } },
     "/admin": { get: { summary: "Protected proxy admin dashboard", security: [{ apiKey: [] }], responses: { "200": { description: "HTML admin dashboard" }, "401": { description: "Unauthorized" } } } },
+    "/api/agent/network-stats": { get: { summary: "Protected Bun network health stats", security: [{ apiKey: [] }], responses: { "200": { description: "DNS, preconnect, HTTP, and WebSocket network stats" }, "401": { description: "Unauthorized" } } } },
+    "/api/secrets": {
+      get: { summary: "List managed proxy secrets", security: [{ apiKey: [] }], responses: { "200": { description: "Secret values keyed by name" } } },
+      post: { summary: "Set a managed proxy secret", security: [{ apiKey: [] }], responses: { "200": { description: "Secret saved" }, "400": { description: "Invalid secret payload" } } },
+      delete: { summary: "Delete a managed proxy secret", security: [{ apiKey: [] }], responses: { "200": { description: "Secret deleted" }, "400": { description: "Missing secret name" } } },
+    },
     "/api/proxy/admin/summary": { get: { summary: "Protected admin summary", security: [{ apiKey: [] }], responses: { "200": { description: "Admin summary JSON" } } } },
     "/api/proxy/admin/config": { get: { summary: "Protected redacted proxy config", security: [{ apiKey: [] }], responses: { "200": { description: "Redacted config JSON" } } } },
     "/api/proxy/admin/logs": { get: { summary: "Protected recent proxy request logs", security: [{ apiKey: [] }], responses: { "200": { description: "Recent request logs" } } } },
@@ -4167,7 +4493,8 @@ function buildAdminHtml(): string {
       ]);
       if (!summaryRes.ok || !configRes.ok) throw new Error('Admin refresh failed');
       render(await summaryRes.json(), (await configRes.json()).config);
-    } catch {
+    } catch (e) {
+      console.warn("[Proxy] Admin refresh failed, using boot data:", e);
       render(boot.summary, boot.config);
     }
   }
@@ -4191,7 +4518,7 @@ function buildAdminHtml(): string {
   });
   render(boot.summary, boot.config);
   refresh();
-  setInterval(refresh, 10000);
+  setInterval(refresh, PROXY_CONSTANTS.ADMIN_REFRESH_INTERVAL_MS);
 </script>
 </body>
 </html>`;
@@ -4207,6 +4534,44 @@ const TICKER_HISTORY_SIZE = 50;
 const tickerHistory: Array<{ timestamp: number; data: unknown }> = [];
 let tickBatch: unknown[] = [];
 var tickBatchTimer: Timer | null = null;
+let wsBackpressureEvents = 0;
+let wsDroppedMessages = 0;
+
+function safeSendWs(ws: ServerWebSocket<WsData>, payload: string | ArrayBuffer | Uint8Array, label: string): boolean {
+  if (ws.readyState !== 1) return false;
+
+  try {
+    const result = ws.send(payload, CONFIG.features.wsCompression);
+    if (result === 0) {
+      wsDroppedMessages++;
+      logger.warn("WebSocket send dropped", { label, remoteAddress: ws.remoteAddress });
+      try { ws.close(1011, "Send failed"); } catch { /* already closed */ }
+      return false;
+    }
+    if (result === -1) {
+      wsBackpressureEvents++;
+      logger.warn("WebSocket backpressure", { label, remoteAddress: ws.remoteAddress });
+    }
+    return true;
+  } catch (err: unknown) {
+    wsDroppedMessages++;
+    logger.warn("WebSocket send error", { label, remoteAddress: ws.remoteAddress, error: err instanceof Error ? err.message : String(err) });
+    return false;
+  }
+}
+
+function safeSendJson(ws: ServerWebSocket<WsData>, payload: JsonObject, label: string): boolean {
+  return safeSendWs(ws, JSON.stringify(payload), label);
+}
+
+function broadcastWs(payload: string, label: string): void {
+  for (const sub of subscribers.values()) {
+    safeSendWs(sub.ws, payload, label);
+  }
+  for (const ws of sessions.keys()) {
+    safeSendWs(ws, payload, label);
+  }
+}
 
 function rememberTicker(data: unknown) {
   tickerHistory.push({ timestamp: Date.now(), data });
@@ -4218,20 +4583,14 @@ function flushBatch() {
   const payload = JSON.stringify({ type: "batch", count: tickBatch.length, ticks: tickBatch });
   tickBatch = [];
   tickBatchTimer = null;
-  for (const sub of subscribers.values()) {
-    if (sub.ws.readyState === 1) sub.ws.send(payload);
-  }
-  for (const ws of sessions.keys()) ws.send(payload);
+  broadcastWs(payload, "ticker-batch");
 }
 
 function enqueueTick(data: unknown) {
   rememberTicker(data);
   if (!CONFIG.features.wsBatching) {
     const tick = JSON.stringify({ type: "tick", timestamp: Date.now(), data });
-    for (const sub of subscribers.values()) {
-      if (sub.ws.readyState === 1) sub.ws.send(tick);
-    }
-    for (const ws of sessions.keys()) ws.send(tick);
+    broadcastWs(tick, "ticker-tick");
     return;
   }
   tickBatch.push(data);
@@ -4248,10 +4607,7 @@ function pushLiveFlash(event: { id: string; sport?: string; away?: string; home?
   liveScoresCache.set(event.id, { awayScore: event.awayScore, homeScore: event.homeScore });
   if (isFlash) {
     const msg = JSON.stringify({ type: "live_flash", event, timestamp: Date.now() });
-    for (const sub of subscribers.values()) {
-      if (sub.ws.readyState === 1) sub.ws.send(msg);
-    }
-    for (const ws of sessions.keys()) ws.send(msg);
+    broadcastWs(msg, "live-flash");
   }
 }
 
@@ -4261,7 +4617,7 @@ function startTicker(sub: Sub) {
     try {
       // Token expiry check (Enhancement 34)
       if (CONFIG.features.tokenExpiryCheck && isTokenExpired(sub.customerID)) {
-        sub.ws.send(JSON.stringify({ type: "error", message: "Token expired, re-authenticate" }));
+        safeSendJson(sub.ws, { type: "error", message: "Token expired, re-authenticate" }, "token-expired");
         sub.ws.close(4001, "Token expired");
         stopTicker(sub.ws.remoteAddress || "");
         return;
@@ -4285,7 +4641,7 @@ function startTicker(sub: Sub) {
 
       enqueueTick(data);
     } catch (err: unknown) {
-      sub.ws.send(JSON.stringify({ type: "error", message: err instanceof Error ? err.message : String(err) }));
+      safeSendJson(sub.ws, { type: "error", message: err instanceof Error ? err.message : String(err) }, "ticker-error");
     }
   }, interval);
 }
@@ -4308,7 +4664,8 @@ try {
   const cert = await Bun.file("./certs/cert.pem").text();
   tls = { key, cert };
   logger.log("info", "tls", "TLS enabled");
-} catch {
+} catch (e) {
+  console.debug("[Proxy] TLS certs not found:", e);
   tls = undefined;
 }
 
@@ -4318,7 +4675,7 @@ async function findAvailablePort(startPort: number): Promise<number> {
     try {
       const test = await fetch(`http://localhost:${port}`).catch(() => null);
       if (!test) return port;
-    } catch {}
+    } catch (e) { console.debug("[Proxy] Port check failed:", e); }
   }
   return startPort;
 }
@@ -4335,23 +4692,25 @@ const server = Bun.serve<WsData>({
   tls,
 
   websocket: ({
+    data: {} as WsData,
     compress: CONFIG.features.wsCompression,
     perMessageDeflate: CONFIG.features.wsCompression ? { compress: true, decompress: true } : false,
     sendPings: true,
-    idleTimeout: 60,
-    backpressureLimit: 8 * 1024 * 1024,
+    idleTimeout: PROXY_CONSTANTS.WS_IDLE_TIMEOUT_SECONDS,
+    maxPayloadLength: PROXY_CONSTANTS.WS_MAX_PAYLOAD_LENGTH_BYTES,
+    backpressureLimit: PROXY_CONSTANTS.BACKPRESSURE_LIMIT_BYTES,
     closeOnBackpressureLimit: true,
 
     open(ws: ServerWebSocket<WsData>) {
-      if (CONFIG.features.requestLogging) logger.info("WebSocket client connected", { remoteAddress: ws.remoteAddress });
+      if (CONFIG.features.requestLogging) logger.info("WebSocket client connected", { remoteAddress: ws.remoteAddress, reqId: ws.data?.reqId, customerID: ws.data?.customerID });
     },
 
-async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
+    async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       let parsed: JsonObject;
       try {
         parsed = JSON.parse(message as string) as JsonObject;
       } catch {
-        ws.send(JSON.stringify({ type: "error", message: "Invalid JSON" }));
+        safeSendJson(ws, { type: "error", message: "Invalid JSON" }, "invalid-json");
         return;
       }
 
@@ -4360,7 +4719,7 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
 
       // Ping/pong support
       if (msgType === "ping") {
-        ws.send(JSON.stringify({ type: "pong", t: Date.now() }));
+        safeSendJson(ws, { type: "pong", t: Date.now() }, "pong");
         return;
       }
 
@@ -4368,11 +4727,11 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       if (CONFIG.features.wsValidation) {
         const validTypes = ["subscribe", "unsubscribe", "subscribe-persistent", "ping", "pong"];
         if (!validTypes.includes(msgType) && !validTypes.includes(action)) {
-          ws.send(JSON.stringify({ type: "error", message: "Invalid message type" }));
+          safeSendJson(ws, { type: "error", message: "Invalid message type" }, "invalid-message-type");
           return;
         }
         if ((msgType === "subscribe" || action === "subscribe") && (!parsed.customerID || !parsed.cf_clearance)) {
-          ws.send(JSON.stringify({ type: "error", message: "Missing customerID or cf_clearance" }));
+          safeSendJson(ws, { type: "error", message: "Missing customerID or cf_clearance" }, "missing-ws-auth");
           return;
         }
       }
@@ -4380,47 +4739,55 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       if (action === "subscribe-persistent") {
         // Old-style subscribe (from proxy.ts)
         if (CONFIG.features.requestLogging) {
-          ws.send(JSON.stringify({ type: "history", data: tickerHistory }));
+          safeSendJson(ws, { type: "history", data: tickerHistory }, "ticker-history");
         }
         const token = String(parsed.token || "");
         const cf_clearance = String(parsed.cf_clearance || "");
         const customerID = String(parsed.customerID || "");
         if (!token || !cf_clearance) {
-          ws.send(JSON.stringify({ type: "error", message: "token and cf_clearance required" }));
+          safeSendJson(ws, { type: "error", message: "token and cf_clearance required" }, "missing-persistent-auth");
           return;
         }
         startTicker({ ws, customerID, token, cf_clearance });
       } else if (msgType === "subscribe" || action === "subscribe") {
         // New-style subscribe (from enhanced)
         if (CONFIG.features.requestLogging) {
-          ws.send(JSON.stringify({ type: "history", data: tickerHistory }));
+          safeSendJson(ws, { type: "history", data: tickerHistory }, "ticker-history");
         }
         const token = String(parsed.token || "");
         const cf_clearance = String(parsed.cf_clearance || "");
         const customerID = String(parsed.customerID || "");
         if (!token || !cf_clearance) {
-          ws.send(JSON.stringify({ type: "error", message: "token and cf_clearance required" }));
+          safeSendJson(ws, { type: "error", message: "token and cf_clearance required" }, "missing-subscribe-auth");
           return;
         }
         const id = ws.remoteAddress || Math.random().toString(36).slice(2);
         stopTicker(id);
 
         // Per-subscriber batch interval (Enhancement 30)
-        const batchMs = CONFIG.features.wsClientBatching && typeof parsed.batchMs === "number" && parsed.batchMs >= 100 && parsed.batchMs <= 5000
+        const batchMs = CONFIG.features.wsClientBatching && typeof parsed.batchMs === "number" && parsed.batchMs >= PROXY_CONSTANTS.WS_BATCH_MIN_MS && parsed.batchMs <= PROXY_CONSTANTS.WS_BATCH_MAX_MS
           ? parsed.batchMs
           : CONFIG.wsBatchIntervalMs;
 
         const sub: Sub = { ws, customerID, token, cf_clearance, batchInterval: batchMs };
         subscribers.set(id, sub);
         startTicker(sub);
-        ws.send(JSON.stringify({ type: "subscribed", id, message: `Live ticker active (batch: ${batchMs}ms)` }));
+        safeSendJson(ws, { type: "subscribed", id, message: `Live ticker active (batch: ${batchMs}ms)` }, "subscribed");
       }
 
       if (msgType === "unsubscribe" || action === "unsubscribe") {
         const id = ws.remoteAddress || Math.random().toString(36).slice(2);
         stopTicker(id);
-        ws.send(JSON.stringify({ type: "unsubscribed" }));
+        safeSendJson(ws, { type: "unsubscribed" }, "unsubscribed");
       }
+    },
+
+    drain(ws: ServerWebSocket<WsData>) {
+      if (CONFIG.features.requestLogging) logger.info("WebSocket drain", { remoteAddress: ws.remoteAddress, reqId: ws.data?.reqId });
+    },
+
+    error(ws: ServerWebSocket<WsData>, error: Error) {
+      logger.warn("WebSocket error", { remoteAddress: ws.remoteAddress, reqId: ws.data?.reqId, error: error.message });
     },
 
     close(ws: ServerWebSocket<WsData>, code: number, reason: string) {
@@ -4460,7 +4827,7 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
           return new Response(JSON.stringify({ error: 'Invalid WebSocket token' }), { status: 401, headers: { 'Content-Type': 'application/json', ...cors } });
         }
 
-        const ok = server.upgrade(req, { data: { url: req.url, reqId: ctx.reqId, customerID, authenticated } satisfies WsData });
+        const ok = server.upgrade(req, { data: { url: req.url, reqId: ctx.reqId, customerID, authenticated, connectedAt: Date.now() } satisfies WsData });
         return ok ? undefined : new Response(JSON.stringify({ error: 'WebSocket upgrade failed' }), { status: 400, headers: { 'Content-Type': 'application/json', ...cors } });
       }
 
@@ -4485,7 +4852,7 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
         status: "running",
         timestamp: new Date().toISOString(),
         websocket: "/ws",
-        endpoints: ["/", "/ping", "/features", "/demo/status", "/metrics", "/metrics/prometheus", "/ready", "/health", "/config", "/ws", "/openapi.json", "/dashboard", "/admin", "/api/proxy/auth", "/api/proxy/:endpoint", "/api/proxy/{endpointKey}", "/api/proxy/taxonomy/:level", "/api/proxy/sportsLeagues", "/api/proxy/leagueLines", "/api/proxy/agentDownline", "/api/proxy/agentBilling", "/api/proxy/playerInfo", "/api/proxy/dynamicLive", "/api/proxy/scoresLive", "/api/proxy/sportsTypesLive", "/api/proxy/liveGame", "/api/proxy/gameVolume", "/api/proxy/pending", "/api/proxy/pendingReportConfig", "/api/proxy/updatePendingReportConfig", "/api/proxy/tokens", "/api/proxy/logs", "/api/proxy/admin/summary", "/api/proxy/admin/config", "/api/proxy/admin/logs", "/api/proxy/health", "/api/proxy/status", "/api/proxy/endpoints", "/api/proxy/renewToken", "/api/proxy/agent/heatmap", "/api/proxy/agents", "/api/proxy/agent/performance", "/api/proxy/bettor/details", "/api/proxy/analytics/syndicates", "/api/proxy/analytics/syndicates/stats", "/api/proxy/analytics/sharp-money", "/api/proxy/analytics/ev-simulation", "/api/proxy/analytics/predictive-sharpness", "/api/proxy/analytics/backtest", "/api/proxy/integrity/cases", "/api/proxy/integrity/cases/:id", "/api/proxy/risk/alerts", "/api/proxy/risk/config", "/api/proxy/risk/syndicates", "/api/proxy/line-rules", "/api/proxy/line-adjustments/log", "/admin/rate-limit"],
+        endpoints: ["/", "/ping", "/features", "/demo/status", "/metrics", "/metrics/prometheus", "/ready", "/health", "/config", "/ws", "/openapi.json", "/dashboard", "/admin", "/api/agent/network-stats", "/api/secrets", "/api/proxy/auth", "/api/proxy/:endpoint", "/api/proxy/{endpointKey}", "/api/proxy/taxonomy/:level", "/api/proxy/sportsLeagues", "/api/proxy/leagueLines", "/api/proxy/agentDownline", "/api/proxy/agentBilling", "/api/proxy/playerInfo", "/api/proxy/dynamicLive", "/api/proxy/scoresLive", "/api/proxy/sportsTypesLive", "/api/proxy/liveGame", "/api/proxy/gameVolume", "/api/proxy/pending", "/api/proxy/pendingReportConfig", "/api/proxy/updatePendingReportConfig", "/api/proxy/tokens", "/api/proxy/logs", "/api/proxy/admin/summary", "/api/proxy/admin/config", "/api/proxy/admin/logs", "/api/proxy/health", "/api/proxy/status", "/api/proxy/endpoints", "/api/proxy/renewToken", "/api/proxy/agent/heatmap", "/api/proxy/agents", "/api/proxy/agent/performance", "/api/proxy/bettor/details", "/api/proxy/analytics/syndicates", "/api/proxy/analytics/syndicates/stats", "/api/proxy/analytics/sharp-money", "/api/proxy/analytics/ev-simulation", "/api/proxy/analytics/predictive-sharpness", "/api/proxy/analytics/backtest", "/api/proxy/integrity/cases", "/api/proxy/integrity/cases/:id", "/api/proxy/risk/alerts", "/api/proxy/risk/config", "/api/proxy/risk/syndicates", "/api/proxy/line-rules", "/api/proxy/line-adjustments/log", "/admin/rate-limit"],
         subscribers: subscribers.size + sessions.size,
         features: { ...CONFIG.features },
         circuitBreaker: circuitBreaker.getStatus(),
@@ -4543,6 +4910,12 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       return json(runtimeMetrics());
     }
 
+    if (path === "/api/agent/network-stats" && req.method === "GET") {
+      const authErr = apiKeyAuth(req);
+      if (authErr) return authErr;
+      return json(networkHealthMetrics(), 200, { "X-Request-ID": ctx.reqId });
+    }
+
     // ---- /READY (k8s probe) ----
     if (path === "/ready") {
       const result = await readiness();
@@ -4553,6 +4926,56 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
     if (path === "/config" && req.method === "POST") {
       const updated = reloadFromEnv();
       return json({ reloaded: true, features: updated.features, tunables: { wsBatchIntervalMs: updated.wsBatchIntervalMs, maxRetries: updated.maxRetries, retryBaseMs: updated.retryBaseMs } });
+    }
+
+    // ---- /API/SECRETS ----
+    if (path === "/api/secrets") {
+      const authErr = apiKeyAuth(req);
+      if (authErr) return authErr;
+
+      if (req.method === "GET") {
+        const names = await getManagedSecretNames();
+        const redact = url.searchParams.get("redact") === "1" || url.searchParams.get("redact") === "true";
+        const secretsMap: Record<string, string | null> = {};
+        for (const name of names) {
+          const value = await getManagedSecret(name);
+          secretsMap[name] = redact && value ? "[set]" : value;
+        }
+        return json(secretsMap, 200, { "X-Request-ID": ctx.reqId });
+      }
+
+      if (req.method === "POST") {
+        const body = await readBody(req);
+        const name = cleanString(body.name);
+        const value = typeof body.value === "string" ? body.value : "";
+        if (!name || typeof body.value !== "string") {
+          return json({ error: "name and value required" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+        if (!/^[A-Za-z0-9:_-]+$/.test(name)) {
+          return json({ error: "secret name contains unsupported characters" }, 400, { "X-Request-ID": ctx.reqId });
+        }
+        try {
+          await setManagedSecret(name, value);
+          applyManagedSecretToConfig(name, value);
+          return json({ success: true, name }, 200, { "X-Request-ID": ctx.reqId });
+        } catch (err: unknown) {
+          return json({ error: "Secret write failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
+        }
+      }
+
+      if (req.method === "DELETE") {
+        const name = cleanString(url.searchParams.get("name"));
+        if (!name) return json({ error: "name required" }, 400, { "X-Request-ID": ctx.reqId });
+        try {
+          await deleteManagedSecret(name);
+          applyManagedSecretToConfig(name, null);
+          return json({ success: true, name }, 200, { "X-Request-ID": ctx.reqId });
+        } catch (err: unknown) {
+          return json({ error: "Secret delete failed", details: err instanceof Error ? err.message : String(err) }, 500, { "X-Request-ID": ctx.reqId });
+        }
+      }
+
+      return json({ error: "Method not allowed" }, 405, { "X-Request-ID": ctx.reqId });
     }
 
     // ---- /OPENAPI.JSON ----
@@ -4696,7 +5119,7 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       document.getElementById('connCount').textContent = '0';
       document.getElementById('circuitState').textContent = 'DISCONNECTED';
       document.getElementById('circuitState').className = 'value red';
-      reconnectTimer = setTimeout(connect, 3000);
+      reconnectTimer = setTimeout(connect, PROXY_CONSTANTS.RECONNECT_DELAY_MS);
     };
     ws.onerror = () => { ws?.close(); };
   }
@@ -4714,9 +5137,15 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       const authErr = apiKeyAuth(req);
       if (authErr) { activeRequests--; return authErr; }
       const body = await readBody(req);
-      const customerID = String(body.customerID || "");
-      const password = String(body.password || "");
-      const cf_clearance = String(body.cf_clearance || "");
+      const customerID = cleanString(body.customerID || body.customerId || CONFIG.customerId || CONFIG.agentId);
+      const credentials = await loadProxyCredentials(customerID, {
+        password: cleanString(body.password),
+        cfClearance: cleanString(body.cf_clearance || body.cfClearance),
+      });
+      const password = credentials.password;
+      const cf_clearance = credentials.cfClearance;
+      if (!customerID) { activeRequests--; return json({ error: "customerID required" }, 400, { "X-Request-ID": ctx.reqId }); }
+      if (!password) { activeRequests--; return json({ error: "password required" }, 400, { "X-Request-ID": ctx.reqId }); }
       if (!cf_clearance) { activeRequests--; return json({ error: "cf_clearance required" }, 400, { "X-Request-ID": ctx.reqId }); }
 
       const form = toForm({
@@ -4750,13 +5179,13 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
             }), { reqId: ctx.reqId, endpoint: "renewToken" });
             const tokenData = await tokenRes.json() as { token?: string; code?: string };
             storedToken = tokenData.token || tokenData.code || null;
-          } catch {}
+          } catch (e) { console.warn("[Proxy] Token renewal fallback failed:", e); }
         }
 
         const expiresAt = Math.floor(Date.now() / 1000) + 7200;
         insertToken.run({
           $customerID: customerID,
-          $cf_clearance: cf_clearance,
+          $cf_clearance: null,
           $auth_code: authCode,
           $bearer_token: storedToken,
           $expires_at: expiresAt,
@@ -4765,6 +5194,9 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
         scheduleTokenRenewal(customerID, expiresAt);
 
         const ok = upstream.ok || upstream.status === 302;
+        if (ok) {
+          await rememberProxyCredentialSecrets(customerID, { password, cfClearance: cf_clearance });
+        }
         activeRequests--;
         return json({ success: ok, status: upstream.status, authCode, location, bearer_token: storedToken, body: bodyText }, ok ? 200 : upstream.status, { "X-Request-ID": ctx.reqId });
       } catch (err: unknown) {
@@ -4794,9 +5226,9 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
         customerID = bodyCustomerID ? String(bodyCustomerID) : null;
 
         let finalToken = token ? String(token) : "";
-        let finalCf = cf_clearance ? String(cf_clearance) : "";
+        let finalCf = cf_clearance ? extractCfClearanceValue(String(cf_clearance)) : "";
         if (customerID && (!finalToken || !finalCf)) {
-          const stored = getStoredCredentials(customerID);
+          const stored = await getStoredCredentials(customerID);
           finalToken ||= stored?.token || "";
           finalCf ||= stored?.cf_clearance || "";
         }
@@ -4881,7 +5313,7 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
           let finalCf = cleanString(body.cf_clearance || body.cfClearance);
           const finalCfBm = cleanString(body.__cf_bm || body.cf_bm || body.cfBm);
           if (customerID && (!finalToken || !finalCf)) {
-            const stored = getStoredCredentials(customerID);
+            const stored = await getStoredCredentials(customerID);
             finalToken ||= stored?.token || "";
             finalCf ||= stored?.cf_clearance || "";
           }
@@ -5258,7 +5690,7 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
           useCache = false,
           ...bodyPayload
         } = body;
-        const rawCustomerID = body.customerID || body.agentID || body.agentOwner;
+        const rawCustomerID = body.customerID || body.agentID || body.agentOwner || CONFIG.agentId || CONFIG.customerId;
         customerID = rawCustomerID ? String(rawCustomerID).trim() : null;
         const payload = applyEndpointDefaults(endpointKey, endpoint, bodyPayload);
         const paramError = validateRequiredParams(endpointKey, endpoint, payload);
@@ -5297,10 +5729,10 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
         }
 
         let finalToken = bodyToken ? String(bodyToken) : "";
-        let finalCf = bodyCf || bodyCfCamel ? String(bodyCf || bodyCfCamel) : "";
+        let finalCf = bodyCf || bodyCfCamel ? extractCfClearanceValue(String(bodyCf || bodyCfCamel)) : "";
 
         if (customerID && (!finalToken || !finalCf)) {
-          const stored = getStoredCredentials(customerID);
+          const stored = await getStoredCredentials(customerID);
           if (stored) {
             finalToken ||= stored.token;
             finalCf ||= stored.cf_clearance;
@@ -5407,7 +5839,8 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
             const newToken = String(tokenData.token || tokenData.code || tokenData.access_token || "");
             if (newToken) {
               const expiresAt = Math.floor(Date.now() / 1000) + 3600;
-              insertToken.run({ $customerID: customerID, $cf_clearance: finalCf, $auth_code: null, $bearer_token: newToken, $expires_at: expiresAt });
+              await rememberProxyCredentialSecrets(customerID, { cfClearance: finalCf });
+              insertToken.run({ $customerID: customerID, $cf_clearance: null, $auth_code: null, $bearer_token: newToken, $expires_at: expiresAt });
               invalidateTokenCache(customerID);
               scheduleTokenRenewal(customerID, expiresAt);
               logger.info("Auto-renewed token via proxy", { customerID, reqId: ctx.reqId });
@@ -5448,10 +5881,12 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
         const token = getLatestTokenWrite.get({ $customerID: customerID }) as TokenRow | null;
         if (!token) return json({ found: false }, 404);
         const now = Math.floor(Date.now() / 1000);
+        const cfClearance = await readProxySecret(PROXY_SECRET_NAMES.cfClearance, customerID)
+          || extractCfClearanceValue(token.cf_clearance || "");
         return json({
           found: true,
           token: token.bearer_token ? token.bearer_token.substring(0, 40) + "..." : null,
-          cf_clearance: token.cf_clearance ? token.cf_clearance.substring(0, 20) + "..." : null,
+          cf_clearance: cfClearance ? cfClearance.substring(0, 20) + "..." : null,
           expired: token.expires_at < now,
           expires_in: token.expires_at - now,
           created_at: token.created_at,
@@ -5466,10 +5901,12 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
         const token = getLatestTokenWrite.get({ $customerID: customerID }) as TokenRow | null;
         if (!token) return json({ found: false }, 404);
         const now = Math.floor(Date.now() / 1000);
+        const cfClearance = await readProxySecret(PROXY_SECRET_NAMES.cfClearance, customerID)
+          || extractCfClearanceValue(token.cf_clearance || "");
         return json({
           found: true,
           token: token.bearer_token ? token.bearer_token.substring(0, 40) + "..." : null,
-          cf_clearance: token.cf_clearance ? token.cf_clearance.substring(0, 20) + "..." : null,
+          cf_clearance: cfClearance ? cfClearance.substring(0, 20) + "..." : null,
           expired: token.expires_at < now,
           expires_in: token.expires_at - now,
           created_at: token.created_at,
@@ -5603,13 +6040,13 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       }
 
       let finalToken = body.token ? String(body.token) : "";
-      let finalCf = body.cf_clearance ? String(body.cf_clearance) : "";
+      let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
 
-      if (!finalToken && agentID) {
-        const stored = getCachedToken(agentID);
+      if (agentID && (!finalToken || !finalCf)) {
+        const stored = await getStoredCredentials(agentID);
         if (stored) {
-          finalToken = stored.bearer_token || "";
-          finalCf = stored.cf_clearance || "";
+          finalToken ||= stored.token;
+          finalCf ||= stored.cf_clearance;
         }
       }
 
@@ -5690,10 +6127,10 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       }
 
       let finalToken = body.token ? String(body.token) : "";
-      let finalCf = body.cf_clearance ? String(body.cf_clearance) : "";
-      if (!finalToken && agentID) {
-        const stored = getCachedToken(agentID);
-        if (stored) { finalToken = stored.bearer_token || ""; finalCf = stored.cf_clearance || ""; }
+      let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
+      if (agentID && (!finalToken || !finalCf)) {
+        const stored = await getStoredCredentials(agentID);
+        if (stored) { finalToken ||= stored.token; finalCf ||= stored.cf_clearance; }
       }
       if (!finalToken || !finalCf) {
         activeRequests--;
@@ -5758,10 +6195,10 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       }
 
       let finalToken = body.token ? String(body.token) : "";
-      let finalCf = body.cf_clearance ? String(body.cf_clearance) : "";
-      if (!finalToken && agentID) {
-        const stored = getCachedToken(agentID);
-        if (stored) { finalToken = stored.bearer_token || ""; finalCf = stored.cf_clearance || ""; }
+      let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
+      if (agentID && (!finalToken || !finalCf)) {
+        const stored = await getStoredCredentials(agentID);
+        if (stored) { finalToken ||= stored.token; finalCf ||= stored.cf_clearance; }
       }
       if (!finalToken || !finalCf) {
         activeRequests--;
@@ -5832,10 +6269,10 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       }
 
       let finalToken = body.token ? String(body.token) : "";
-      let finalCf = body.cf_clearance ? String(body.cf_clearance) : "";
-      if (!finalToken && agentID) {
-        const stored = getCachedToken(agentID);
-        if (stored) { finalToken = stored.bearer_token || ""; finalCf = stored.cf_clearance || ""; }
+      let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
+      if (agentID && (!finalToken || !finalCf)) {
+        const stored = await getStoredCredentials(agentID);
+        if (stored) { finalToken ||= stored.token; finalCf ||= stored.cf_clearance; }
       }
       if (!finalToken || !finalCf) {
         activeRequests--;
@@ -6079,10 +6516,10 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       }
 
       let finalToken = body.token ? String(body.token) : "";
-      let finalCf = body.cf_clearance ? String(body.cf_clearance) : "";
-      if (!finalToken && agentID) {
-        const stored = getCachedToken(agentID);
-        if (stored) { finalToken = stored.bearer_token || ""; finalCf = stored.cf_clearance || ""; }
+      let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
+      if (agentID && (!finalToken || !finalCf)) {
+        const stored = await getStoredCredentials(agentID);
+        if (stored) { finalToken ||= stored.token; finalCf ||= stored.cf_clearance; }
       }
       if (!finalToken || !finalCf) {
         activeRequests--;
@@ -6273,10 +6710,10 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       }
 
       let finalToken = body.token ? String(body.token) : "";
-      let finalCf = body.cf_clearance ? String(body.cf_clearance) : "";
-      if (!finalToken && agentID) {
-        const stored = getCachedToken(agentID);
-        if (stored) { finalToken = stored.bearer_token || ""; finalCf = stored.cf_clearance || ""; }
+      let finalCf = body.cf_clearance ? extractCfClearanceValue(String(body.cf_clearance)) : "";
+      if (agentID && (!finalToken || !finalCf)) {
+        const stored = await getStoredCredentials(agentID);
+        if (stored) { finalToken ||= stored.token; finalCf ||= stored.cf_clearance; }
       }
       if (!finalToken || !finalCf) {
         activeRequests--;
@@ -6408,14 +6845,14 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       const { customerID: bodyCustID, cf_clearance: bodyCf, token: bodyToken } = body;
 
       let finalToken = bodyToken ? String(bodyToken) : "";
-      let finalCf = bodyCf ? String(bodyCf) : "";
+      let finalCf = bodyCf ? extractCfClearanceValue(String(bodyCf)) : "";
       const customerKey = bodyCustID ? String(bodyCustID) : "";
 
-      if (customerKey && !finalToken) {
-        const stored = getLatestTokenWrite.get({ $customerID: customerKey }) as TokenRow | null;
+      if (customerKey && (!finalToken || !finalCf)) {
+        const stored = await getStoredCredentials(customerKey);
         if (!stored) { activeRequests--; return json({ error: "No token found for this customerID" }, 404); }
-        finalToken = stored.bearer_token || "";
-        finalCf = stored.cf_clearance || "";
+        finalToken ||= stored.token;
+        finalCf ||= stored.cf_clearance;
       }
 
       if (!finalToken || !finalCf) { activeRequests--; return json({ error: "Missing token or cf_clearance" }, 400); }
@@ -6435,10 +6872,13 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
 
         if (upstream.ok && (data.token || data.code)) {
           const newToken = String(data.token || data.code);
-          const expiresAt = Math.floor(Date.now() / 1000) + 7200;
+  const expiresAt = Math.floor(Date.now() / 1000) + PROXY_CONSTANTS.TOKEN_EXPIRY_SECONDS;
+          if (customerKey && finalCf) {
+            await rememberProxyCredentialSecrets(customerKey, { cfClearance: finalCf });
+          }
           insertToken.run({
             $customerID: customerKey || "BILLY666",
-            $cf_clearance: finalCf,
+            $cf_clearance: null,
             $auth_code: null,
             $bearer_token: newToken,
             $expires_at: expiresAt,
@@ -6459,11 +6899,21 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
 
     activeRequests--;
     return json({ error: "Not found" }, 404);
+  } catch (err: unknown) {
+    activeRequests--;
+    logger.error("Unhandled fetch error", { error: err instanceof Error ? err.message : String(err), path: url.pathname, reqId: ctx.reqId });
+    return json({ error: "Internal Server Error", code: "INTERNAL_ERROR" }, 500);
   } finally {
     endRequestSpan(ctx.reqId, 404);
   }
   },
+
+  error(error: Error) {
+    logger.error("Bun.serve unhandled error", { error: error.message, stack: error.stack });
+    return new Response(JSON.stringify({ error: "Internal Server Error", code: "INTERNAL_ERROR" }), { status: 500, headers: { "Content-Type": "application/json", ...cors } });
+  },
 });
+server.ref();
 
 // ==========================================
 // 12. GRACEFUL SHUTDOWN
@@ -6475,21 +6925,21 @@ async function shutdown(signal: string) {
 
   // Broadcast shutdown to WS clients
   for (const [, sub] of subscribers) {
-    try { sub.ws.send(JSON.stringify({ type: "shutdown", reason: "server restart", delayMs: 5000 })); } catch {}
+    safeSendJson(sub.ws, { type: "shutdown", reason: "server restart", delayMs: 5000 }, "shutdown");
   }
   for (const ws of sessions.keys()) {
-    try { ws.send(JSON.stringify({ type: "shutdown", reason: "server restart", delayMs: 5000 })); } catch {}
+    safeSendJson(ws, { type: "shutdown", reason: "server restart", delayMs: 5000 }, "shutdown");
   }
 
   await Bun.sleep(5000);
 
   for (const [id, sub] of subscribers) {
-    try { sub.ws.close(1000, "Graceful shutdown"); } catch {}
+    try { sub.ws.close(1000, "Graceful shutdown"); } catch (e) { console.debug("[Proxy] WS close during shutdown failed:", e); }
     stopTicker(id);
   }
   for (const [ws, session] of sessions.entries()) {
     clearInterval(session.interval);
-    try { ws.close(1001, "Server shutting down"); } catch {}
+    try { ws.close(1001, "Server shutting down"); } catch (e) { console.debug("[Proxy] Session WS close during shutdown failed:", e); }
     sessions.delete(ws);
   }
 

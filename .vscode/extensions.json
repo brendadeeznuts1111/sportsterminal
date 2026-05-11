@@ -1,0 +1,40 @@
+{
+  "recommendations": [
+    // Bun runtime
+    "oven.bun-vscode",
+
+    // TypeScript / JavaScript
+    "vscode.typescript-language-features",
+    "yoavbls.pretty-ts-errors",
+    "usernamehw.errorlens",
+
+    // Linting (ESLint 10 + typescript-eslint)
+    "dbaeumer.vscode-eslint",
+
+    // SQL & Data
+    "mtxr.sqltools",
+    "mtxr.sqltools-driver-sqlite",
+
+    // Environment & Config
+    "mikestead.dotenv",
+    "tamasfe.even-better-toml",
+
+    // Markdown / Docs
+    "bierner.markdown-preview-github-styles",
+    "davidanson.vscode-markdownlint",
+
+    // PowerShell
+    "ms-vscode.powershell",
+
+    // Git & Collaboration
+    "github.copilot",
+    "github.copilot-chat",
+    "eamodio.gitlens",
+
+    // Utilities
+    "streetsidesoftware.code-spell-checker",
+    "gruntfuggly.todo-tree",
+    "alefragnani.project-manager"
+  ],
+  "unwantedRecommendations": []
+}

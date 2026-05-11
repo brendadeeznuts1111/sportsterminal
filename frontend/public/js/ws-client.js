@@ -1,3 +1,5 @@
+import { logger } from './logger.js';
+
 export class TerminalWebSocketClient {
   constructor(dependencies = {}) {
     this.ws = null;
@@ -21,11 +23,11 @@ export class TerminalWebSocketClient {
   }
 
   connect() {
-    console.log('[WS] Connecting to', this.url);
+    logger.info('WS', 'Connecting to', this.url);
     this.ws = new WebSocket(this.url);
 
     this.ws.onopen = () => {
-      console.log('[WS] Connected to', this.url);
+      logger.info('WS', 'Connected to', this.url);
       this.reconnectAttempts = 0;
       this.updateWSStatus(true);
     };
@@ -33,20 +35,20 @@ export class TerminalWebSocketClient {
     this.ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
-        console.log('[WS] Message:', msg.type);
+        logger.debug('WS', `Message: ${msg.type}`);
         this.handleMessage(msg);
       } catch {
-        console.error('[WS] Failed to parse message:', event.data);
+        logger.error('WS', 'Failed to parse message', event.data);
       }
     };
 
     this.ws.onerror = (error) => {
-      console.error('[WS] Connection error to', this.url, error);
+      logger.error('WS', `Connection error to ${this.url}`, error);
       this.updateWSStatus(false);
     };
 
     this.ws.onclose = (event) => {
-      console.log('[WS] Closed', event.code, event.reason);
+      logger.info('WS', `Closed ${event.code} ${event.reason}`);
       this.updateWSStatus(false);
       this.updateConnectionStatus('disconnected');
       this.isAuthenticated = false;
@@ -56,10 +58,10 @@ export class TerminalWebSocketClient {
 
   authenticate(agentId, username, password, cfCookie) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.error('[WS] Not connected');
+      logger.error('WS', 'Not connected');
       return;
     }
-    console.log('[WS] Authenticating...');
+    logger.info('WS', 'Authenticating...');
     this.send({
       type: 'auth',
       agentId,
@@ -71,10 +73,10 @@ export class TerminalWebSocketClient {
 
   authenticateWithToken(agentId, token, cfCookie) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.error('[WS] Not connected');
+      logger.error('WS', 'Not connected');
       return;
     }
-    console.log('[WS] Resuming session with token...');
+    logger.info('WS', 'Resuming session with token...');
     this.send({
       type: 'auth',
       agentId,
@@ -104,7 +106,7 @@ export class TerminalWebSocketClient {
         if (msg.success) {
           this.isAuthenticated = true;
           this.showToast('Authenticated - live polling started', 'success');
-          console.log('[WS] Auth successful');
+          logger.info('WS', 'Auth successful');
           this.updateConnectionStatus('connected');
           setTimeout(() => this.requestData(), 500);
         } else {
@@ -136,10 +138,10 @@ export class TerminalWebSocketClient {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
       const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
-      console.log(`[WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+      logger.warn('WS', `Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
       setTimeout(() => this.connect(), delay);
     } else {
-      console.error('[WS] Max reconnection attempts reached');
+      logger.error('WS', 'Max reconnection attempts reached');
     }
   }
 }

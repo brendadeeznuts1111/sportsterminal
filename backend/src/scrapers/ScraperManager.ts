@@ -39,6 +39,9 @@ import { RawApiLogger } from '../services/RawApiLogger';
 import { extractBuckeyeCookies, type EnhancedProxyCredentials } from '../services/ProxyClient';
 import { createManagedInterval, type ManagedIntervalTask } from '../services/Scheduler';
 import { enrichIpGeo } from '../services/GeoIpService';
+import { IPTracker } from '../services/IPTracker';
+import { computeCLV, refreshRecentClosingLines } from '../services/CLV';
+import { evaluateRules, takeAction } from '../services/RulesEngine';
 import {
   getPlayer360SourcePolicy,
   nextRefreshAt,
@@ -319,7 +322,9 @@ export class BuckeyeScraperManager {
   private performanceCache?: PerformanceCache;
   private rawApiLogger: RawApiLogger;
   private hierarchyRefreshTask?: ManagedIntervalTask;
+  private closingLineTask?: ManagedIntervalTask;
   private readonly hierarchyRefreshIntervalMs: number;
+  private readonly closingLineIntervalMs: number;
 
   private debugMode: boolean;
 
@@ -344,10 +349,20 @@ export class BuckeyeScraperManager {
     this.player360ColdBackfillPerPoll = readPositiveIntEnv('PLAYER360_COLD_BACKFILL_PER_POLL', this.player360ColdBackfillPerPoll);
     this.customerSnapshotTtlMs = readPositiveIntEnv('CUSTOMER_SNAPSHOT_TTL_MS', this.customerSnapshotTtlMs);
     this.hierarchyRefreshIntervalMs = readPositiveIntEnv('HIERARCHY_REFRESH_INTERVAL_MS', 5 * 60 * 1000);
+    this.closingLineIntervalMs = readPositiveIntEnv('CLOSING_LINE_INTERVAL_MS', 60 * 60 * 1000);
     this.webhookService = new WebhookService(db);
     this.patternService = new PatternService(db, broadcast);
     this.rawApiLogger = new RawApiLogger(db, true);
     this.actionQueue = new ActionQueue(db, broadcast, 30_000, async (request) => this.executeBetAction(request));
+    this.closingLineTask = createManagedInterval(
+      'closing-lines.refresh',
+      this.closingLineIntervalMs,
+      () => this.refreshClosingLines(),
+      {
+        initialDelayMs: this.closingLineIntervalMs,
+        onError: (error) => console.warn('[CLV] Closing-line refresh failed:', error instanceof Error ? error.message : error),
+      }
+    );
   }
 
   /**
@@ -1180,8 +1195,10 @@ export class BuckeyeScraperManager {
 
     // Persist to access_logs and run pattern analysis
     await this.patternService.persistAccessLogs(resolvedAgentId, rows, options.type || 'A');
+    await new IPTracker(this.db, this).processWebLogRows(resolvedAgentId, rows, options.type || 'A');
     const patterns = await this.patternService.analyzeAccessLogs(resolvedAgentId);
     await this.patternService.persistPatterns(patterns);
+    await this.broadcastIpTrackerAlerts(resolvedAgentId);
 
     return { data: rows, total: rows.length, novel };
   }
@@ -1769,6 +1786,7 @@ export class BuckeyeScraperManager {
       if (newChanges.length > 0) {
         for (const change of newChanges) {
           const alerts = evaluateWager(change.wager);
+          await this.evaluateAgentRules(change.wager);
           for (const alert of alerts) {
             this.alertCount++;
             await this.persistAlert(alert);
@@ -3050,6 +3068,7 @@ export class BuckeyeScraperManager {
     });
 
     const inserted = await this.patternService.persistAccessLogs(agentId, rows, 'A');
+    await new IPTracker(this.db, this).processWebLogRows(agentId, rows, 'A');
     const patterns = await this.patternService.analyzeAccessLogs(agentId);
     const persisted = await this.patternService.persistPatterns(patterns);
 
@@ -3058,6 +3077,7 @@ export class BuckeyeScraperManager {
         type: 'access_log.new',
         payload: { agentId, count: inserted, timestamp: new Date().toISOString() },
       });
+      await this.broadcastIpTrackerAlerts(agentId);
     }
 
     const newestAccess = rows
@@ -3072,6 +3092,17 @@ export class BuckeyeScraperManager {
     return { fetched: rows.length, inserted, patterns: persisted.length };
   }
 
+  private async broadcastIpTrackerAlerts(agentId: string): Promise<void> {
+    try {
+      const events = await new IPTracker(this.db, this).collectAlertEvents(agentId);
+      for (const event of events) {
+        this.broadcast(event);
+      }
+    } catch (error) {
+      console.warn('[IPTracker] Alert broadcast failed:', error instanceof Error ? error.message : String(error));
+    }
+  }
+
   /**
    * Insert alert into database.
    */
@@ -3082,6 +3113,49 @@ export class BuckeyeScraperManager {
       VALUES (?, ?, ?, ?, ?)`,
       [alert.wagerNumber, alert.ruleName, alert.severity, alert.message, new Date().toISOString()]
     );
+  }
+
+  private async evaluateAgentRules(wager: EnrichedWager): Promise<void> {
+    try {
+      const clvResult = await computeCLV(this.db, wager);
+      const ipStats = await this.getWagerIpStats(wager);
+      const triggeredRules = await evaluateRules(this.db, wager, null, ipStats, clvResult);
+      for (const rule of triggeredRules) {
+        await takeAction(this.db, rule, wager, { clvResult, ipStats }, this.broadcast);
+      }
+    } catch (error) {
+      console.warn('[RulesEngine] Evaluation failed:', error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  private async getWagerIpStats(wager: EnrichedWager): Promise<Record<string, unknown>> {
+    const row = await this.db.get<{ sharedIpCount: number | string; recentIpCount: number | string }>(
+      `SELECT
+         COUNT(DISTINCT other.login_id) AS sharedIpCount,
+         COUNT(DISTINCT mine.ip_address) AS recentIpCount
+       FROM access_logs mine
+       LEFT JOIN access_logs other
+         ON other.ip_address = mine.ip_address
+        AND other.login_id <> mine.login_id
+       WHERE mine.login_id = ?
+         AND mine.access_datetime >= datetime('now', '-1 day')`,
+      [wager.Login || wager.CustomerID]
+    );
+    return {
+      sharedIpCount: Number(row?.sharedIpCount || 0),
+      recentIpCount: Number(row?.recentIpCount || 0),
+    };
+  }
+
+  private async refreshClosingLines(): Promise<void> {
+    const result = await refreshRecentClosingLines(this.db);
+    if (result.lines > 0) {
+      this.broadcast({
+        type: 'closing_lines.updated',
+        timestamp: new Date().toISOString(),
+        payload: result,
+      });
+    }
   }
 
   private parseSport(desc: string): string {

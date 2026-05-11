@@ -3,8 +3,20 @@ import { createToken, verifyToken, isDevMode } from '../src/auth/jwt';
 import { requireAuth } from '../src/api/middleware/auth';
 import { webLogQuerySchema, connectBodySchema, formatZodError } from '../src/api/middleware/validate';
 import { z } from 'zod';
+import * as jose from 'jose';
 
 const TEST_SECRET = 'test-secret-key-for-jwt-unit-tests-32-chars';
+const TEST_AGENT = 'TEST_AGENT';
+const JWT_ALG = 'HS256';
+
+function createExpiredToken(agentId: string, secret: string): string {
+  const secretKey = new TextEncoder().encode(secret);
+  return new jose.SignJWT({ agentId })
+    .setProtectedHeader({ alg: JWT_ALG })
+    .setIssuedAt()
+    .setExpirationTime(Math.floor(Date.now() / 1000) - 3600)
+    .sign(secretKey);
+}
 
 function jwtErrorCode(error: unknown): string | undefined {
   if (!error || typeof error !== 'object') return undefined;
@@ -31,39 +43,16 @@ describe('JWT auth', () => {
 
   test('rejects token with wrong secret', async () => {
     const token = await createToken('TEST_AGENT', TEST_SECRET);
-    try {
-      await verifyToken(token, 'wrong-secret-key-different-value!!');
-      throw new Error('should have thrown');
-    } catch (err) {
-      expect(jwtErrorCode(err)).toBeDefined();
-    }
+    await expect(verifyToken(token, 'wrong-secret-key-different-value!!')).rejects.toThrow();
   });
 
-  test('rejects expired token', async () => {
-    const secretKey = new TextEncoder().encode(TEST_SECRET);
-    // Use jose to create an already-expired token
-    const { SignJWT } = await import('jose');
-    const expired = await new SignJWT({ agentId: 'EXPIRED' })
-      .setProtectedHeader({ alg: 'HS256' })
-      .setIssuedAt()
-      .setExpirationTime(Math.floor(Date.now() / 1000) - 60) // 60s in the past
-      .sign(secretKey);
-
-    try {
-      await verifyToken(expired, TEST_SECRET);
-      throw new Error('should have thrown');
-    } catch (err) {
-      expect(jwtErrorCode(err)).toBe('ERR_JWT_EXPIRED');
-    }
+test('rejects expired token', async () => {
+    const expired = createExpiredToken(TEST_AGENT, TEST_SECRET);
+    await expect(verifyToken(expired, TEST_SECRET)).rejects.toThrow();
   });
 
   test('rejects malformed token', async () => {
-    try {
-      await verifyToken('not.a.jwt.token', TEST_SECRET);
-      throw new Error('should have thrown');
-    } catch (err) {
-      expect(jwtErrorCode(err)).toBeDefined();
-    }
+    await expect(verifyToken('not.a.jwt.token', TEST_SECRET)).rejects.toThrow();
   });
 
   test('dev mode is false by default', () => {

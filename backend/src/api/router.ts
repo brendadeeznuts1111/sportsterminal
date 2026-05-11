@@ -3,70 +3,74 @@
  * Uses UrlPatternRouter for framework-agnostic URL routing.
  * Falls through to 404 if no route matches.
  */
-import { corsHeaders, requireAdminTokenIfConfigured } from './helpers';
 import { ProxyClient } from '../lib/proxyClient';
-import { RateLimiter } from './rateLimiter';
-import { requireAuth } from './middleware/auth';
-import { registerHealthRoutes } from './routes/health';
-import {
-  registerWagerStatsRoutes,
-  registerWagerListRoutes,
-  registerWagerAlertRoutes,
-  registerWagerLiveRoutes,
-} from './routes/wagers';
-import {
-  registerAgentRoutes,
-  registerAgentExposureRoutes,
-  registerAgentPerformanceRoutes,
-  registerAgentDownlineRoutes,
-  registerAgentHierarchyRoutes,
-  registerCachedAgentHierarchyTreeRoutes,
-  registerAgentRefreshRoutes,
-  registerAgentProfileRoutes,
-  registerAgentPlayersRoutes,
-  registerAgentBackfillRoutes,
-  registerAgentAccessLogRoutes,
-} from './routes/agents';
-import {
-  registerPlayerSearchRoutes,
-  registerPlayerProfileRoutes,
-  registerPlayerAgentContextRoutes,
-  registerPlayerIntelligenceMapRoutes,
-  registerPlayerDepositsRoutes,
-  registerPlayerTransactionsRoutes,
-  registerPlayerAccountSnapshotsRoutes,
-  registerPlayerLinksRoutes,
-  registerPlayerLinkCheckRoutes,
-  registerPlayerFlagsRoutes,
-  registerPlayerFlagCreateRoutes,
-  registerPlayerFlagResolveRoutes,
-  registerPlayerNotesRoutes,
-  registerPlayerNoteCreateRoutes,
-  registerPlayerExportRoutes,
-  registerPlayerDetailsRoutes,
-  registerPlayerWagersRoutes,
-  registerPlayerPnlRoutes,
-} from './routes/players';
-import {
-  registerRiskAlertRoutes,
-  registerExposureSportsRoutes,
-  registerExposureAgentsRoutes,
-} from './routes/risk';
-import { registerWebhookRoutes } from './routes/webhooks';
-import { registerOddsRoutes } from './routes/odds';
-import { registerBuckeyeRoutes } from './routes/buckeye';
-import { registerStaticRoutes } from './routes/static';
-import { registerPerformanceRoutes } from './routes/performance';
-import { registerAnalyticsRoutes } from './routes/analytics';
-import { registerFreePlayAnalysisRoutes } from './routes/freeplay';
-import { registerCrossReferenceRoutes } from './routes/cross-reference';
-import { UrlPatternRouter } from './UrlPatternRouter';
-import type { RouteHandler } from './UrlPatternRouter';
-import type { BuckeyeScraperManager } from '../scrapers/ScraperManager';
 import type { OddsPoller } from '../odds/OddsPoller';
+import type { BuckeyeScraperManager } from '../scrapers/ScraperManager';
 import type { BunSecretVault } from '../services/BunSecretVault';
 import type { PerformanceCache } from '../services/PerformanceCache';
+import { corsHeaders, requireAdminTokenIfConfigured } from './helpers';
 import { wrapRouterWithLogging } from './middleware/apiLogger';
+import { requireAuth } from './middleware/auth';
+import { RateLimiter } from './rateLimiter';
+import {
+  registerAgentAccessLogRoutes,
+  registerAgentBackfillRoutes,
+  registerAgentDownlineRoutes,
+  registerAgentExposureRoutes,
+  registerAgentHierarchyRoutes,
+  registerAgentPerformanceRoutes,
+  registerAgentPlayersRoutes,
+  registerAgentProfileRoutes,
+  registerAgentRefreshRoutes,
+  registerAgentRoutes,
+  registerCachedAgentHierarchyTreeRoutes,
+} from './routes/agents';
+import { registerAnalyticsRoutes } from './routes/analytics';
+import { registerBuckeyeRoutes } from './routes/buckeye';
+import { registerCommandCenterRoutes } from './routes/command-center';
+import { registerCrossReferenceRoutes } from './routes/cross-reference';
+import { registerFreePlayAnalysisRoutes } from './routes/freeplay';
+import { registerHealthRoutes } from './routes/health';
+import { registerOddsRoutes } from './routes/odds';
+import { registerPerformanceRoutes } from './routes/performance';
+import {
+  registerPlayerAccountSnapshotsRoutes,
+  registerPlayerAgentContextRoutes,
+  registerPlayerDepositsRoutes,
+  registerPlayerDetailsRoutes,
+  registerPlayerExportRoutes,
+  registerPlayerFlagCreateRoutes,
+  registerPlayerFlagResolveRoutes,
+  registerPlayerFlagsRoutes,
+  registerPlayerIntelligenceMapRoutes,
+  registerPlayerLinkCheckRoutes,
+  registerPlayerLinksRoutes,
+  registerPlayerNoteCreateRoutes,
+  registerPlayerNotesRoutes,
+  registerPlayerPnlRoutes,
+  registerPlayerProfileRoutes,
+  registerPlayerSearchRoutes,
+  registerPlayerTransactionsRoutes,
+  registerPlayerWagersRoutes,
+} from './routes/players';
+import { registerPositionRoutes, registerRiskAlertCommandRoutes } from './routes/positions';
+import {
+  registerExposureAgentsRoutes,
+  registerExposureSportsRoutes,
+  registerRiskAlertRoutes,
+} from './routes/risk';
+import { registerSandboxRoutes } from './routes/sandbox';
+import { registerStaticRoutes } from './routes/static';
+import { registerKimiStreamRoutes, registerStreamRoutes } from './routes/stream';
+import {
+  registerWagerAlertRoutes,
+  registerWagerListRoutes,
+  registerWagerLiveRoutes,
+  registerWagerStatsRoutes,
+} from './routes/wagers';
+import { registerWebhookRoutes } from './routes/webhooks';
+import type { RouteHandler } from './UrlPatternRouter';
+import { UrlPatternRouter } from './UrlPatternRouter';
 
 export interface RouterDeps {
   scraperManager: BuckeyeScraperManager;
@@ -534,7 +538,7 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
     return Response.json(await client.getExtendedProps(agentID));
   });
 
-  router.post('/api/live/propBuilderURL', async (url, request) => {
+  router.post('/api/live/propBuilderURL', async () => {
     const client = new ProxyClient(deps.scraperManager);
     return Response.json(await client.getPropBuilderURL());
   });
@@ -556,6 +560,106 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
 
   router.get('/api/logs/access', async (url, request) => {
     return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/agent/ip-suspicious', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/agent/ip-lookup', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/agent/ip-block', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/agent/ip-export', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/agent/rules', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/agent/rules', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.delete('/api/agent/rules/:id', async (url, request) => {
+    return registerAnalyticsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/sandbox/list', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/sandbox/load', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/sandbox/save', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/sandbox/delete', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/sandbox/archive', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/sandbox/restore', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/sandbox/hard-delete', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.delete('/api/sandbox/scenarios/:id', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/sandbox/generate-summaries', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/sandbox/queue-status', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/sandbox/customer-summary', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/sandbox/ab-tests', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/sandbox/ab-test', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/sandbox/ab-test/:id', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/sandbox/export/csv', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/sandbox/export/features', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/sandbox/stats', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/sandbox/health', async (url, request) => {
+    return registerSandboxRoutes(url, request, deps.scraperManager);
   });
 
   router.get('/api/master/history', async (url, request) => {
@@ -613,6 +717,129 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
 
   router.delete('/api/performance/:agentId', async (url, request, params) => {
     return registerPerformanceRoutes(url, request, deps, params);
+  });
+
+  // Risk Command Center: Position management
+  router.post('/api/positions/generate', async (url, request) => {
+    return registerPositionRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/positions/execute', async (url, request) => {
+    return registerPositionRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/positions/override', async (url, request) => {
+    return registerPositionRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/positions/latest', async (url, request) => {
+    return registerPositionRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/positions', async (url, request) => {
+    return registerPositionRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/positions/stats', async (url, request) => {
+    return registerPositionRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/positions/:id', async (url, request) => {
+    return registerPositionRoutes(url, request, deps.scraperManager);
+  });
+
+  // Risk Command Center: Alert dispatch
+  router.post('/api/risk-alerts/dispatch', async (url, request) => {
+    return registerRiskAlertCommandRoutes(url, request, deps.scraperManager);
+  });
+
+  router.post('/api/risk-alerts/test', async (url, request) => {
+    return registerRiskAlertCommandRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/risk-alerts/log', async (url, request) => {
+    return registerRiskAlertCommandRoutes(url, request, deps.scraperManager);
+  });
+
+  // ─── Risk Command Center: SSE streaming ─────────────────────────
+  router.get('/api/stream/live-wagers', async (url, request) => {
+    return registerStreamRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/stream/wagers', async (url, request) => {
+    return registerStreamRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/stream/positions', async (url, request) => {
+    return registerStreamRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/stream/all', async (url, request) => {
+    return registerStreamRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/stream/topic/:topic', async (url, request) => {
+    return registerStreamRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/stream/stats', async (url, request) => {
+    return registerStreamRoutes(url, request, deps.scraperManager);
+  });
+
+  // Streaming Kimi analysis
+  router.post('/api/analysis/stream', async (url, request) => {
+    return registerKimiStreamRoutes(url, request, deps.scraperManager);
+  });
+
+  // ─── Risk Command Center: Dashboard ─────────────────────────────
+  router.get('/api/dashboard', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/dashboard/summary', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/dashboard/exposure', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/dashboard/sharp-alerts', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/dashboard/pending', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/dashboard/positions-pending', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/dashboard/buckets', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/dashboard/pnl', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+
+  // ─── Player intelligence ────────────────────────────────────────
+  router.get('/api/players/suggest', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/players/intel-search', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+
+  // ─── Auto-enforcement ───────────────────────────────────────────
+  router.get('/api/enforcement/breaches', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.post('/api/enforcement/check', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.post('/api/enforcement/run', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+
+  // ─── AB test ────────────────────────────────────────────────────
+  router.post('/api/ab-test/run', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.post('/api/agent/analyze-live', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.post('/api/agent/shadow-ab', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
   });
 
   // Versioned API bridge. The SPA probes /api/v1 first while the existing route
@@ -673,13 +900,14 @@ export async function routeRequest(
   url: URL,
   request: Request,
   deps: RouterDeps,
-  rateLimiter?: RateLimiter
+  rateLimiter?: RateLimiter,
+  clientIp?: string
 ): Promise<Response | null> {
   const { loggedDispatch } = getCachedRouter(deps, rateLimiter);
 
-  // Rate limiting
+  // Rate limiting — use Bun's server.requestIP() when available, fall back to header parsing
   if (rateLimiter) {
-    const ip = RateLimiter.getClientIp(request);
+    const ip = clientIp || RateLimiter.getClientIp(request);
     const limitResult = rateLimiter.check(ip);
     if (!limitResult.allowed) {
       return new Response(

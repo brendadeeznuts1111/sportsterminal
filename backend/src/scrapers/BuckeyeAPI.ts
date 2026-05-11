@@ -11,6 +11,7 @@
 
 import type { EnrichedWager } from '../risk/AlertEngine';
 import { decodeEntities } from '../utils/decodeEntities';
+import { fetchWithTimeout } from '../utils/fetchWithTimeout';
 
 export interface BuckeyeCredentials {
   agentId: string;
@@ -278,7 +279,7 @@ export interface BuckeyeLogWriteResult {
   data: unknown;
 }
 
-export type BuckeyeWebLogType = 'A' | 'B' | 'C' | 'I';
+export type BuckeyeWebLogType = 'A' | 'B' | 'C' | 'I' | 'F';
 
 export interface BuckeyeWebLogOptions {
   customerID?: string | number;
@@ -504,7 +505,7 @@ export class BuckeyeAPI {
         RRO: '1',
       });
 
-      const response = await fetch(`${this.baseUrl}/cloud/api/System/authenticateCustomer`, {
+      const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/System/authenticateCustomer`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -564,7 +565,7 @@ export class BuckeyeAPI {
         agentSite: '1',
       });
 
-      const response = await fetch(`${this.baseUrl}/cloud/api/Manager/getBetTickerConfig`, {
+      const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/Manager/getBetTickerConfig`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -603,7 +604,7 @@ export class BuckeyeAPI {
       agentSite: '1',
     });
 
-    const response = await fetch(`${this.baseUrl}/cloud/api/Manager/getBetTicker`, {
+    const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/Manager/getBetTicker`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -655,7 +656,7 @@ export class BuckeyeAPI {
         RRO: '1',
       });
 
-      const response = await fetch(`${this.baseUrl}/cloud/api/System/renewToken`, {
+      const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/System/renewToken`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -702,7 +703,7 @@ export class BuckeyeAPI {
       agentSite: '1',
     });
 
-    const response = await fetch(`${this.baseUrl}/cloud/api/Manager/getListAgenstByAgent`, {
+    const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/Manager/getListAgenstByAgent`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -748,7 +749,7 @@ export class BuckeyeAPI {
       agentSite: '1',
     });
 
-    const response = await fetch(`${this.baseUrl}/cloud/api/Manager/getPlayers`, {
+    const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/Manager/getPlayers`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -792,7 +793,7 @@ export class BuckeyeAPI {
       agentSite: '1',
     });
 
-    const response = await fetch(`${this.baseUrl}/cloud/api/Manager/getAccountInfoOwner`, {
+    const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/Manager/getAccountInfoOwner`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -844,7 +845,7 @@ export class BuckeyeAPI {
       agentSite: '1',
     });
 
-    const response = await fetch(`${this.baseUrl}/cloud/api/Manager/getWeeklyFigureByAgentLite`, {
+    const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/Manager/getWeeklyFigureByAgentLite`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -1699,21 +1700,21 @@ function extractBetTypes(entries: BuckeyeUiString[]): BuckeyeBetTypeLabel[] {
     const value = entry.value.trim();
     const path = entry.path;
 
-    if (KNOWN_BET_TYPE_LABELS[key] && value.length <= 40) {
+if (KNOWN_BET_TYPE_LABELS[key] && value.length <= 40) {
       byLabel.set(`${key}:${value.toLowerCase()}`, { code: key, label: value, path });
       continue;
     }
-
-    const knownCode = Object.entries(KNOWN_BET_TYPE_LABELS).find(([, label]) => {
-      return label.toLowerCase() === value.toLowerCase();
-    })?.[0];
-    if (knownCode) {
-      byLabel.set(`${knownCode}:${value.toLowerCase()}`, { code: knownCode, label: value, path });
+    if (KNOWN_BET_TYPE_LABELS[key] && value.length > 40) {
+      const truncated = value.substring(0, 37) + '...';
+      byLabel.set(`${key}:${truncated.toLowerCase()}`, { code: key, label: truncated, path });
       continue;
     }
 
     if (BET_TYPE_KEY_PATTERN.test(`${path}.${entry.key}`) && value.length <= 40) {
       byLabel.set(`:${value.toLowerCase()}`, { label: value, path });
+    } else if (BET_TYPE_KEY_PATTERN.test(`${path}.${entry.key}`) && value.length > 40) {
+      const truncated = value.substring(0, 37) + '...';
+      byLabel.set(`:${truncated.toLowerCase()}`, { label: truncated, path });
     }
   }
 

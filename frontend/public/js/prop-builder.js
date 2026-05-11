@@ -1,5 +1,6 @@
 // frontend/public/js/prop-builder.js — Zone 3 Prop Builder Module
 // Fetches getProps + getExtendedProps via /api/live/* backend routes
+import { fetchPost } from './api.js';
 
 let propCache = [];
 let propSlipSelections = [];
@@ -17,19 +18,15 @@ export async function loadProps() {
   grid.innerHTML = '<div class="text-xs p-4 text-center" style="color:var(--text-dim);">Loading props...</div>';
 
   try {
-    const res = await fetch('/api/live/props', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agentID: agentId }),
-    });
-    const payload = await res.json().catch(() => ({ data: null }));
+    const payload = await fetchPost('/api/live/props', { agentID: agentId });
     const data = payload.data || payload;
 
     propCache = normalizeProps(data);
     renderPropsGrid(propCache);
     updatePropCount(propCache.length);
   } catch (err) {
-    grid.innerHTML = `<div class="text-xs p-4 text-center" style="color:var(--red);">Failed to load props: ${err.message}</div>`;
+    console.error('[PropBuilder] loadProps failed:', err instanceof Error ? err.message : err);
+    grid.innerHTML = `<div class="text-xs p-4 text-center" style="color:var(--red);">Failed to load props: ${err instanceof Error ? err.message : 'Unknown error'}</div>`;
   }
 }
 
@@ -41,19 +38,15 @@ export async function loadExtendedProps() {
   grid.innerHTML = '<div class="text-xs p-4 text-center" style="color:var(--text-dim);">Loading extended props...</div>';
 
   try {
-    const res = await fetch('/api/live/extendedProps', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agentID: agentId }),
-    });
-    const payload = await res.json().catch(() => ({ data: null }));
+    const payload = await fetchPost('/api/live/extendedProps', { agentID: agentId });
     const data = payload.data || payload;
 
     propCache = normalizeProps(data);
     renderPropsGrid(propCache);
     updatePropCount(propCache.length);
   } catch (err) {
-    grid.innerHTML = `<div class="text-xs p-4 text-center" style="color:var(--red);">Failed to load extended props: ${err.message}</div>`;
+    console.error('[PropBuilder] loadExtendedProps failed:', err instanceof Error ? err.message : err);
+    grid.innerHTML = `<div class="text-xs p-4 text-center" style="color:var(--red);">Failed to load extended props: ${err instanceof Error ? err.message : 'Unknown error'}</div>`;
   }
 }
 
@@ -63,12 +56,12 @@ export async function fetchPropBuilderURL() {
   el.textContent = 'Loading...';
 
   try {
-    const res = await fetch('/api/live/propBuilderURL', { method: 'POST' });
-    const payload = await res.json().catch(() => ({ data: null }));
+    const payload = await fetchPost('/api/live/propBuilderURL');
     const url = payload.data || payload;
     el.textContent = typeof url === 'string' ? url : JSON.stringify(url);
   } catch (err) {
-    el.textContent = `Error: ${err.message}`;
+    console.error('[PropBuilder] fetchPropBuilderURL failed:', err instanceof Error ? err.message : err);
+    el.textContent = `Error: ${err instanceof Error ? err.message : 'Unknown error'}`;
   }
 }
 

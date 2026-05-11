@@ -1,0 +1,137 @@
+{
+  "version": "2.0.0",
+  "presentation": {
+    "echo": true,
+    "reveal": "always",
+    "focus": false,
+    "panel": "shared",
+    "showReuseMessage": true,
+    "clear": false
+  },
+  "tasks": [
+    {
+      "label": "st: dev (backend hot reload)",
+      "type": "shell",
+      "command": "bun",
+      "args": ["run", "dev"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": { "regexp": "." },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^.*Listening on.*",
+          "endsPattern": "^.*"
+        }
+      },
+      "detail": "Start SportsTerminal backend with hot reload (port 3000)"
+    },
+    {
+      "label": "st: serve frontend",
+      "type": "shell",
+      "command": "bun",
+      "args": ["run", "serve"],
+      "group": "build",
+      "isBackground": true,
+      "problemMatcher": [],
+      "detail": "Serve the static frontend SPA (port 3001)"
+    },
+    {
+      "label": "st: test",
+      "type": "shell",
+      "command": "bun",
+      "args": ["run", "test"],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": [],
+      "detail": "Run backend test suite"
+    },
+    {
+      "label": "st: build",
+      "type": "shell",
+      "command": "bun",
+      "args": ["run", "build"],
+      "group": "build",
+      "problemMatcher": ["$tsc"],
+      "detail": "Build backend to dist/"
+    },
+    {
+      "label": "st: typecheck",
+      "type": "shell",
+      "command": "bun",
+      "args": ["run", "--cwd", "backend", "typecheck"],
+      "group": "build",
+      "problemMatcher": ["$tsc"],
+      "detail": "TypeScript check (no emit)"
+    },
+    {
+      "label": "st: lint",
+      "type": "shell",
+      "command": "bun",
+      "args": ["run", "--cwd", "backend", "lint"],
+      "group": "build",
+      "problemMatcher": ["$eslint-stylish"],
+      "detail": "ESLint backend/src (max 500 warnings)"
+    },
+    {
+      "label": "st: db migrate",
+      "type": "shell",
+      "command": "bun",
+      "args": ["run", "db:migrate"],
+      "group": "build",
+      "problemMatcher": [],
+      "detail": "Run database migrations"
+    },
+    {
+      "label": "st: db reset",
+      "type": "shell",
+      "command": "bun",
+      "args": ["run", "db:reset"],
+      "group": "build",
+      "problemMatcher": [],
+      "detail": "Reset SQLite database"
+    },
+    {
+      "label": "st: smoke backend",
+      "type": "shell",
+      "command": "bun",
+      "args": ["run", "smoke:backend"],
+      "group": "test",
+      "problemMatcher": [],
+      "detail": "Run backend smoke tests"
+    },
+    {
+      "label": "st: smoke proxy",
+      "type": "shell",
+      "command": "bun",
+      "args": ["run", "smoke:proxy"],
+      "group": "test",
+      "problemMatcher": [],
+      "detail": "Run proxy smoke tests"
+    },
+    {
+      "label": "st: status",
+      "type": "shell",
+      "command": "bun",
+      "args": ["run", "status"],
+      "group": "build",
+      "problemMatcher": [],
+      "detail": "Show ports / Bun processes"
+    },
+    {
+      "label": "st: clean-start",
+      "type": "shell",
+      "command": "bun",
+      "args": ["run", "clean-start"],
+      "group": "build",
+      "isBackground": true,
+      "problemMatcher": [],
+      "detail": "Stop then dev"
+    }
+  ]
+}

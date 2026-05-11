@@ -204,8 +204,9 @@ export class RawApiLogger {
     } catch (error) {
       try {
         await this.db.run('ROLLBACK');
-      } catch {
-        // Ignore rollback failures.
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`[RawApiLogger] Rollback failed: ${msg}`);
       }
       console.error('[RawApiLogger] Failed to flush raw API logs:', error);
       // Re-queue failed batch at front for retry

@@ -7,6 +7,7 @@ import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 import type { Database } from '../../database';
 import { getEnhancedProxyReadiness, type EnhancedProxyReadinessResult } from '../../services/EnhancedProxyHealth';
 import { getProxyInternalBase } from '../../services/ProxyClient';
+import { getWsSubscriberCounts } from '../../index';
 
 interface HealthIssue {
   severity: 'warning' | 'critical';
@@ -67,6 +68,7 @@ export function registerHealthRoutes(
         status: 'ok',
         uptime: process.uptime(),
         scrapers: scraperManager.getMetrics(),
+        websockets: getWsSubscriberCounts(),
       }),
       { headers: corsHeaders }
     );
@@ -74,8 +76,12 @@ export function registerHealthRoutes(
 
   if (url.pathname === '/metrics') {
     logRequest('GET', '/metrics');
+    const metrics = scraperManager.getMetrics();
     return new Response(
-      JSON.stringify(scraperManager.getMetrics()),
+      JSON.stringify({
+        ...metrics,
+        websockets: getWsSubscriberCounts(),
+      }),
       { headers: corsHeaders }
     );
   }

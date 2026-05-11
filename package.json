@@ -24,6 +24,7 @@
     "proxy:dev": "bun --watch proxy-enhanced.ts",
     "proxy:start": "bun proxy-enhanced.ts",
     "proxy:build": "bun build proxy-enhanced.ts --compile --outfile dist/proxy-server",
+    "agent:cli": "bun run scripts/agent-cli.ts",
     "smoke:proxy": "bun run scripts/smoke-proxy.ts",
     "smoke:backend": "bun run scripts/smoke-backend.ts",
     "generate:openapi": "bun run scripts/generate-openapi.ts",

@@ -2,6 +2,7 @@
 // Imports the Zod-parsed env from preload.ts and exports backward-compatible shapes.
 
 import { ENV as initialEnv, parseProxyEnv, type ParsedEnv } from "./scripts/preload";
+import { PROXY_SECRET_NAMES, extractCfClearanceValue, getManagedSecret } from "./utils/secrets";
 
 // ==========================================
 // TYPE DEFINITIONS (backward-compatible)
@@ -60,6 +61,13 @@ export interface ProxyConfig {
   dbPath: string;
   apiKey: string;
   adminApiKey: string;
+  buckeyeApiKey?: string;
+  customerId?: string;
+  password?: string;
+  agentId?: string;
+  agentOwner?: string;
+  kimiApiKey?: string;
+  cfClearance?: string;
   backendUrl: string;
   jwtSecret: string;
   jwtAuthEnabled: boolean;
@@ -93,6 +101,13 @@ function buildConfig(env: ParsedEnv = parseProxyEnv(Bun.env)): ProxyConfig {
     dbPath: env.DB_PATH,
     apiKey: env.PROXY_API_KEY,
     adminApiKey: env.ADMIN_API_KEY || env.PROXY_API_KEY,
+    buckeyeApiKey: Bun.env.BUCKEYE_API_KEY,
+    customerId: Bun.env.BUCKEYE_CUSTOMER_ID,
+    password: Bun.env.BUCKEYE_PASSWORD,
+    agentId: Bun.env.AGENT_ID || Bun.env.BUCKEYE_CUSTOMER_ID,
+    agentOwner: Bun.env.AGENT_OWNER || Bun.env.BUCKEYE_CUSTOMER_ID,
+    kimiApiKey: Bun.env.KIMI_API_KEY,
+    cfClearance: extractCfClearanceValue(Bun.env.CF_CLEARANCE || Bun.env.BUCKEYE_CF_CLEARANCE || Bun.env.BUCKEYE_CF_COOKIE || ""),
     backendUrl: env.PROXY_INTERNAL_URL,
     jwtSecret: env.JWT_SECRET || env.BACKEND_JWT_SECRET || "",
     jwtAuthEnabled: env.ENABLE_JWT_AUTH,
@@ -161,7 +176,57 @@ export const config: ProxyConfig = buildConfig(initialEnv);
 
 /** Legacy reload helper */
 export function reloadFromEnv(): ProxyConfig {
-  Object.assign(config, buildConfig());
+  const secretBacked = {
+    apiKey: config.apiKey,
+    adminApiKey: config.adminApiKey,
+    buckeyeApiKey: config.buckeyeApiKey,
+    customerId: config.customerId,
+    password: config.password,
+    agentId: config.agentId,
+    agentOwner: config.agentOwner,
+    kimiApiKey: config.kimiApiKey,
+    cfClearance: config.cfClearance,
+  };
+  Object.assign(config, buildConfig(), secretBacked);
+  return config;
+}
+
+async function loadSecret(name: string, envVars: string | string[] = []): Promise<string | undefined> {
+  const secret = await getManagedSecret(name);
+  if (secret) return secret;
+
+  const keys = Array.isArray(envVars) ? envVars : [envVars];
+  for (const key of keys) {
+    if (key && Bun.env[key]) return Bun.env[key];
+  }
+  return undefined;
+}
+
+/** Load dynamic proxy secrets into the live CONFIG singleton before startup. */
+export async function initConfig(): Promise<ProxyConfig> {
+  const proxyAdminKey = await loadSecret(PROXY_SECRET_NAMES.proxyAdminKey, "PROXY_API_KEY");
+  const buckeyeApiKey = await loadSecret(PROXY_SECRET_NAMES.buckeyeApiKey, "BUCKEYE_API_KEY");
+  const customerId = await loadSecret(PROXY_SECRET_NAMES.buckeyeCustomerId, "BUCKEYE_CUSTOMER_ID");
+  const password = await loadSecret(PROXY_SECRET_NAMES.password, "BUCKEYE_PASSWORD");
+  const agentId = await loadSecret(PROXY_SECRET_NAMES.agentId, "AGENT_ID");
+  const agentOwner = await loadSecret(PROXY_SECRET_NAMES.agentOwner, "AGENT_OWNER");
+  const kimiApiKey = await loadSecret(PROXY_SECRET_NAMES.kimiApiKey, "KIMI_API_KEY");
+  const cfClearance = extractCfClearanceValue(
+    await loadSecret(PROXY_SECRET_NAMES.cfClearance, ["CF_CLEARANCE", "BUCKEYE_CF_CLEARANCE", "BUCKEYE_CF_COOKIE"]) || ""
+  );
+
+  Object.assign(config, {
+    apiKey: proxyAdminKey || config.apiKey || "dev-key-123",
+    adminApiKey: proxyAdminKey || config.adminApiKey || config.apiKey,
+    buckeyeApiKey,
+    customerId,
+    password,
+    agentId: agentId || customerId,
+    agentOwner: agentOwner || customerId,
+    kimiApiKey,
+    cfClearance,
+  });
+
   return config;
 }
 

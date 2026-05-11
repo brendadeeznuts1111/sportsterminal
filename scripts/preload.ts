@@ -247,8 +247,9 @@ export class StructuredLogger {
 
     if (!parsedEnv.PROXY_PRODUCTION) {
       const color = { debug: "\x1b[36m", info: "\x1b[32m", warn: "\x1b[33m", error: "\x1b[31m" }[level] || "\x1b[0m";
-      const metaStr = meta ? ` | ${JSON.stringify(meta).slice(0, 120)}` : "";
-      console.log(`${color}[${level.toUpperCase().padStart(5)}] [${source.padStart(12)}]\x1b[0m ${message}${metaStr}`);
+      const prefix = `${color}[${level.toUpperCase().padStart(5)}] [${source.padStart(12)}]\x1b[0m ${message}`;
+      if (meta) console.log(`${prefix} | %j`, meta);
+      else console.log(prefix);
     } else {
       console.log(JSON.stringify(entry));
     }

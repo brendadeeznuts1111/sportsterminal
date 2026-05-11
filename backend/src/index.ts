@@ -1,15 +1,19 @@
 import { serve, type ServerWebSocket } from 'bun';
-import { initDatabase, type Database } from './database';
-import { BuckeyeScraperManager } from './scrapers/ScraperManager';
-import { OddsPoller } from './odds/OddsPoller';
-import { routeRequest } from './api/router';
 import { corsHeaders } from './api/helpers';
-import { createToken, verifyToken, isDevMode } from './auth/jwt';
-import { getRateLimiter } from './api/rateLimiter';
-import { BunSecretVault } from './services/BunSecretVault';
-import { restoreBuckeyeAgentsFromVault } from './services/BuckeyeVaultRestore';
-import { PerformanceCache } from './services/PerformanceCache';
+import { RateLimiter, getRateLimiter } from './api/rateLimiter';
+import { routeRequest } from './api/router';
+import { createToken, isDevMode, verifyToken } from './auth/jwt';
 import { loadEnv } from './config/env';
+import { initDatabase, type Database } from './database';
+import { OddsPoller } from './odds/OddsPoller';
+import { BuckeyeScraperManager } from './scrapers/ScraperManager';
+import { restoreBuckeyeAgentsFromVault } from './services/BuckeyeVaultRestore';
+import { BunSecretVault } from './services/BunSecretVault';
+import { CommandCenterCron } from './services/CommandCenterCron';
+import { PerformanceCache } from './services/PerformanceCache';
+import { startSandboxJanitor, startSandboxQueueProcessor } from './services/SandboxService';
+import { streamHub } from './services/StreamHub';
+import { WS_TIMEOUTS } from './utils/constants';
 
 const env = loadEnv();
 const PORT = env.PORT;
@@ -28,7 +32,6 @@ interface WebSocketData {
   isAuthenticated: boolean;
   lastPing: number;
   pingInterval?: Timer;
-  playerSubscriptions?: Set<string>;
 }
 
 interface BroadcastMessage {
@@ -51,27 +54,63 @@ type WebSocketMessage = Record<string, unknown> & {
   reason?: string;
 };
 
-// Connected WebSocket clients
-const wsClients = new Set<ServerWebSocket<WebSocketData>>();
+// Bun native pub/sub topics
+const WS_TOPIC_MESSAGES = 'messages';
+const WS_TOPIC_WAGERS_ALL = 'wagers:all';
+const WS_TOPIC_PLAYER = (playerId: string) => `player:${playerId}`;
+
+/** Server reference for native publish/subscribe broadcasting and metrics */
+let serverRef: { publish(topic: string, data: string, compress?: boolean): number; subscriberCount(topic: string): number } | undefined;
 
 function broadcast(msg: object) {
   const broadcastMsg = msg as BroadcastMessage;
   const payload = JSON.stringify(msg);
-  for (const client of wsClients) {
-    try {
-      if (client.readyState === 1) {
-        const subscribedPlayers = client.data?.playerSubscriptions;
-        if (subscribedPlayers?.size && broadcastMsg.type === 'wager.new') {
-          const wager = broadcastMsg.payload || {};
-          const playerId = String(wager.CustomerID || wager.customer_id || wager.Login || wager.login || '');
-          if (!playerId || !subscribedPlayers.has(playerId)) continue;
-        }
-        client.send(payload);
+
+  // 1. WebSocket pub/sub (existing behavior)
+  if (serverRef) {
+    if (broadcastMsg.type === 'wager.new') {
+      const wager = broadcastMsg.payload || {};
+      const playerId = String(wager.CustomerID || wager.customer_id || wager.Login || wager.login || '');
+      if (playerId) {
+        serverRef.publish(WS_TOPIC_PLAYER(playerId), payload);
       }
-    } catch (err) {
-      console.warn('[WS] Broadcast to client failed:', err instanceof Error ? err.message : err);
+      serverRef.publish(WS_TOPIC_WAGERS_ALL, payload);
+    } else {
+      serverRef.publish(WS_TOPIC_MESSAGES, payload);
     }
   }
+
+  // 2. SSE fan-out via StreamHub (new) — mirror the same events to /api/stream/*
+  if (broadcastMsg.type === 'wager.new') {
+    const wager = broadcastMsg.payload || {};
+    const playerId = String(wager.CustomerID || wager.customer_id || wager.Login || wager.login || '');
+    streamHub.publish('wagers', { event: 'wager', data: wager });
+    if (playerId) {
+      streamHub.publish(`wagers:${playerId}`, { event: 'wager', data: wager });
+    }
+  } else if (broadcastMsg.type === 'wager.alert' || broadcastMsg.type === 'agent_rule.triggered') {
+    streamHub.publish('alerts', {
+      event: 'risk_alert',
+      data: broadcastMsg.payload ?? msg,
+    });
+  } else if (broadcastMsg.type) {
+    // Generic broadcast — re-publish under the topic "ws:<type>"
+    streamHub.publish(`ws:${broadcastMsg.type}`, {
+      event: broadcastMsg.type,
+      data: broadcastMsg.payload ?? msg,
+    });
+  }
+}
+
+/**
+ * Get WebSocket topic subscriber counts for health/metrics.
+ */
+export function getWsSubscriberCounts(): Record<string, number> {
+  if (!serverRef) return {};
+  return {
+    messages: serverRef.subscriberCount(WS_TOPIC_MESSAGES),
+    wagersAll: serverRef.subscriberCount(WS_TOPIC_WAGERS_ALL),
+  };
 }
 
 async function restoreBuckeyeFromVault(): Promise<void> {
@@ -110,10 +149,26 @@ function extractWsToken(request: Request): string | null {
   return null;
 }
 
+async function isClientIpBlocked(clientIp: string): Promise<boolean> {
+  if (!clientIp || clientIp.startsWith('local:')) return false;
+  try {
+    const row = await db.get<{ ip: string }>(
+      `SELECT ip FROM ip_denylist WHERE ip = ? LIMIT 1`,
+      [clientIp]
+    );
+    return Boolean(row);
+  } catch {
+    return false;
+  }
+}
+
 async function startServer() {
   // Initialize database
   db = await initDatabase();
   console.log('✅ Database initialized');
+  startSandboxQueueProcessor(db);
+  startSandboxJanitor(db);
+  console.log('✅ Sandbox queue processor initialized');
 
   // Initialize performance cache (Redis-backed, graceful fallback)
   if (env.REDIS_URL) {
@@ -143,14 +198,14 @@ async function startServer() {
   await restoreBuckeyeFromVault();
 
   // Create HTTP server with WebSocket support
-  serve<WebSocketData>({
+  const server = serve<WebSocketData>({
     port: PORT,
     hostname: HOST,
-    idleTimeout: 30,
+    idleTimeout: WS_TIMEOUTS.IDLE_TIMEOUT_SECONDS,
     websocket: {
       sendPings: true,
       idleTimeout: 60,
-      backpressureLimit: 8 * 1024 * 1024,
+      backpressureLimit: WS_TIMEOUTS.BACKPRESSURE_LIMIT_BYTES,
       closeOnBackpressureLimit: true,
       perMessageDeflate: { compress: true, decompress: true }, // Built-in compression for WS messages
       open(ws) {
@@ -158,20 +213,24 @@ async function startServer() {
         ws.data.agentId = ws.data.agentId ?? null;
         ws.data.isAuthenticated = ws.data.isAuthenticated ?? false;
         ws.data.lastPing = Date.now();
-        wsClients.add(ws);
 
-        // Heartbeat: ping every 30s, close if no response within 45s
+        // Subscribe to general message topics
+        ws.subscribe(WS_TOPIC_MESSAGES);
+        ws.subscribe(WS_TOPIC_WAGERS_ALL);
+
+        // Heartbeat: ping every interval, close if no response within stale timeout
         ws.data.pingInterval = setInterval(() => {
-          if (Date.now() - ws.data.lastPing > 45_000) {
+          if (Date.now() - ws.data.lastPing > WS_TIMEOUTS.STALE_TIMEOUT_MS) {
             console.log('[WS] Stale connection detected, closing');
             clearInterval(ws.data.pingInterval);
             ws.close();
           } else {
-            try { ws.ping(); } catch {
-              // Ignore heartbeat ping failures; stale sockets are closed on the next tick.
+            try { ws.ping(); } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              console.warn(`[WS] Heartbeat ping failed: ${msg}`);
             }
           }
-        }, 30_000);
+        }, WS_TIMEOUTS.PING_INTERVAL_MS);
       },
       message(ws, message) {
         handleWebSocketMessage(ws, message, scraperManager);
@@ -179,11 +238,32 @@ async function startServer() {
       close(ws) {
         console.log('[WS] Client disconnected');
         if (ws.data?.pingInterval) clearInterval(ws.data.pingInterval);
-        wsClients.delete(ws);
+        ws.unsubscribe(WS_TOPIC_MESSAGES);
+        ws.unsubscribe(WS_TOPIC_WAGERS_ALL);
+      },
+      drain(ws) {
+        console.debug('[WS] Backpressure cleared for', ws.remoteAddress);
       },
     },
-    async fetch(request, server) {
+    async fetch(request, srv) {
+      // Store server reference for native pub/sub broadcasting
+      if (!serverRef) serverRef = srv;
       const url = new URL(request.url);
+
+      // Disable per-request idle timeout for SSE streams — they must stay open
+      // for the lifetime of the subscriber.
+      if (url.pathname.startsWith('/api/stream/') || url.pathname === '/api/analysis/stream') {
+        srv.timeout(request, 0);
+      }
+
+      // Accurate client IP via Bun's server.requestIP()
+      const clientIp = srv.requestIP(request)?.address || RateLimiter.getClientIp(request);
+      if (await isClientIpBlocked(clientIp)) {
+        return new Response(JSON.stringify({ error: 'Forbidden', code: 'IP_BLOCKED' }), {
+          status: 403,
+          headers: corsHeaders,
+        });
+      }
 
       // WebSocket upgrade with JWT enforcement
       const isWsUpgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket';
@@ -201,12 +281,14 @@ async function startServer() {
           try {
             const payload = await verifyToken(token, JWT_SECRET);
             // Token valid — upgrade with pre-authenticated data
-            if (server.upgrade(request, {
+            if (srv.upgrade(request, {
               data: { agentId: payload.agentId, isAuthenticated: true, lastPing: Date.now() },
             })) {
               return undefined;
             }
-          } catch {
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.warn(`[WS] Token verification failed: ${msg}`);
             return new Response(JSON.stringify({ error: 'Invalid or expired token' }), {
               status: 401,
               headers: corsHeaders,
@@ -214,7 +296,7 @@ async function startServer() {
           }
         } else {
           // Dev mode — upgrade without auth
-          if (server.upgrade(request, {
+          if (srv.upgrade(request, {
             data: { agentId: null, isAuthenticated: false, lastPing: Date.now() },
           })) {
             return undefined;
@@ -222,13 +304,13 @@ async function startServer() {
         }
       }
 
-      // Delegate to router
+      // Delegate to router with accurate client IP
       const result = await routeRequest(url, request, {
         scraperManager,
         oddsPoller,
         secretVault,
         performanceCache,
-      }, getRateLimiter());
+      }, getRateLimiter(), clientIp);
 
       if (result !== null) {
         return result;
@@ -240,9 +322,43 @@ async function startServer() {
         headers: corsHeaders,
       });
     },
+    error(error) {
+      console.error('[HTTP] Unhandled server error:', error instanceof Error ? error.message : String(error));
+      return new Response(
+        JSON.stringify({ error: 'Internal Server Error', code: 'INTERNAL_ERROR' }),
+        { status: 500, headers: corsHeaders }
+      );
+    },
   });
+  serverRef = server;
+  server.ref();
+
+  // Start Risk Command Center background jobs
+  const commandCenterCron = new CommandCenterCron(db, {
+    featureCandidateMs: 5 * 60_000,
+    featureExtractMs: 10 * 60_000,
+    portfolioRefreshMs: 15 * 60_000,
+    heartbeatMs: 5_000,
+  });
+  commandCenterCron.start();
 
   console.log(`🚀 Backend running at http://${HOST}:${PORT}`);
+
+  // Graceful shutdown
+  const shutdown = async (signal: string) => {
+    console.log(`[Server] Received ${signal}, starting graceful shutdown...`);
+    try {
+      commandCenterCron.stop();
+      streamHub.closeAll();
+      await server.stop();
+      console.log('[Server] HTTP server stopped');
+    } catch (e) {
+      console.error('[Server] Error during shutdown:', e);
+    }
+    process.exit(0);
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
 async function handleWebSocketMessage(
@@ -391,15 +507,18 @@ async function handleWebSocketMessage(
           ws.send(JSON.stringify({ type: 'error', message: 'player.subscribe requires playerId' }));
           return;
         }
-        ws.data.playerSubscriptions = ws.data.playerSubscriptions || new Set<string>();
-        ws.data.playerSubscriptions.add(playerId);
+        ws.subscribe(WS_TOPIC_PLAYER(playerId));
+        ws.unsubscribe(WS_TOPIC_WAGERS_ALL); // scoped clients don't receive general wagers
         ws.send(JSON.stringify({ type: 'player.subscribed', playerId }));
         break;
       }
 
       case 'player.unsubscribe': {
         const playerId = String(msg.playerId || msg.customerId || msg.login || '').trim();
-        if (playerId && ws.data.playerSubscriptions) ws.data.playerSubscriptions.delete(playerId);
+        if (playerId) ws.unsubscribe(WS_TOPIC_PLAYER(playerId));
+        // Re-subscribe to general wagers if no player subscriptions remain
+        const hasPlayerSubs = ws.subscriptions.some((s) => s.startsWith('player:'));
+        if (!hasPlayerSubs) ws.subscribe(WS_TOPIC_WAGERS_ALL);
         ws.send(JSON.stringify({ type: 'player.unsubscribed', playerId }));
         break;
       }

@@ -118,7 +118,7 @@ export async function initDatabase(): Promise<AppDatabase> {
 
   // Create tables (SQLite-compatible; Postgres will use its own migration path)
   if (db.getDialect() === 'sqlite') {
-  await db.exec(`
+    await db.exec(`
     CREATE TABLE IF NOT EXISTS agents (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -212,17 +212,17 @@ export async function initDatabase(): Promise<AppDatabase> {
     );
   `);
 
-  // Migration: add seq_number to players if missing (pre-2026-05-09 schema)
-  try {
-    await db.exec('ALTER TABLE players ADD COLUMN seq_number INTEGER');
-  } catch (err) {
-    // Only ignore "duplicate column" errors; rethrow everything else
-    if (!errorMessage(err).toLowerCase().includes('duplicate column name')) {
-      throw err;
+    // Migration: add seq_number to players if missing (pre-2026-05-09 schema)
+    try {
+      await db.exec('ALTER TABLE players ADD COLUMN seq_number INTEGER');
+    } catch (err) {
+      // Only ignore "duplicate column" errors; rethrow everything else
+      if (!errorMessage(err).toLowerCase().includes('duplicate column name')) {
+        throw err;
+      }
     }
-  }
 
-  await db.exec(`
+    await db.exec(`
     CREATE TABLE IF NOT EXISTS ingestion_checkpoints (
       provider TEXT NOT NULL,
       entity_type TEXT NOT NULL,
@@ -546,6 +546,138 @@ export async function initDatabase(): Promise<AppDatabase> {
       FOREIGN KEY (player_id) REFERENCES players(id)
     );
 
+    CREATE TABLE IF NOT EXISTS account_change_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT,
+      player TEXT NOT NULL,
+      ip_address TEXT,
+      change_type TEXT NOT NULL,
+      old_value TEXT,
+      new_value TEXT,
+      timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      raw_json TEXT NOT NULL DEFAULT '{}'
+    );
+
+    CREATE TABLE IF NOT EXISTS failed_logins (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT,
+      player TEXT NOT NULL,
+      ip TEXT,
+      timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      raw_json TEXT NOT NULL DEFAULT '{}'
+    );
+
+    CREATE TABLE IF NOT EXISTS closing_lines (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      game_id TEXT NOT NULL,
+      market TEXT NOT NULL,
+      side TEXT NOT NULL,
+      closing_odds REAL NOT NULL,
+      source TEXT NOT NULL DEFAULT 'odds_snapshots',
+      captured_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(game_id, market, side)
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_rules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      condition_json TEXT NOT NULL,
+      action TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      enabled INTEGER DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      rule_id INTEGER,
+      wager_number INTEGER,
+      player_id TEXT,
+      action TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      details_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (rule_id) REFERENCES agent_rules(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sandbox_scenarios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT,
+      config_json TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      is_archived INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS sandbox_customers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scenario_id INTEGER NOT NULL,
+      customer_id TEXT NOT NULL,
+      archetype TEXT NOT NULL,
+      risk_tier TEXT,
+      balance REAL,
+      clv REAL,
+      win_rate REAL,
+      lifetime_wagers INTEGER,
+      tags_json TEXT NOT NULL DEFAULT '[]',
+      profile_json TEXT NOT NULL DEFAULT '{}',
+      summary_json TEXT,
+      summary_status TEXT NOT NULL DEFAULT 'pending',
+      summary_attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (scenario_id) REFERENCES sandbox_scenarios(id) ON DELETE CASCADE,
+      UNIQUE(scenario_id, customer_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS sandbox_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scenario_id INTEGER NOT NULL,
+      customer_id TEXT NOT NULL,
+      day_index INTEGER NOT NULL,
+      balance REAL,
+      pnl REAL,
+      wager_count INTEGER,
+      clv REAL,
+      win_rate REAL,
+      FOREIGN KEY (scenario_id) REFERENCES sandbox_scenarios(id) ON DELETE CASCADE,
+      UNIQUE(scenario_id, customer_id, day_index)
+    );
+
+    CREATE TABLE IF NOT EXISTS sandbox_ab_tests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scenario_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      prompt_a TEXT NOT NULL,
+      prompt_b TEXT NOT NULL,
+      results_json TEXT,
+      agreement_score REAL,
+      avg_severity_diff REAL,
+      significant INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      completed_at TEXT,
+      FOREIGN KEY (scenario_id) REFERENCES sandbox_scenarios(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS sandbox_summary_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scenario_id INTEGER NOT NULL,
+      customer_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued',
+      summary_json TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      next_attempt_at TEXT,
+      processing_started_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      completed_at TEXT,
+      FOREIGN KEY (scenario_id) REFERENCES sandbox_scenarios(id) ON DELETE CASCADE,
+      UNIQUE(scenario_id, customer_id)
+    );
+
     CREATE TABLE IF NOT EXISTS credentials (
       id TEXT PRIMARY KEY,
       agent_id TEXT NOT NULL UNIQUE,
@@ -602,6 +734,18 @@ export async function initDatabase(): Promise<AppDatabase> {
     CREATE INDEX IF NOT EXISTS idx_wagers_datetime ON wagers(insert_datetime);
     CREATE INDEX IF NOT EXISTS idx_wagers_alert ON wagers(ticket_writer) WHERE ticket_writer = 'ALERT';
     CREATE INDEX IF NOT EXISTS idx_alerts_unresolved ON alerts(is_resolved) WHERE is_resolved = 0;
+    CREATE INDEX IF NOT EXISTS idx_failed_logins_player_time ON failed_logins(player, timestamp DESC);
+    CREATE INDEX IF NOT EXISTS idx_failed_logins_ip_time ON failed_logins(ip, timestamp DESC);
+    CREATE INDEX IF NOT EXISTS idx_account_change_player_time ON account_change_logs(player, timestamp DESC);
+    CREATE INDEX IF NOT EXISTS idx_closing_lines_game_market ON closing_lines(game_id, market, side);
+    CREATE INDEX IF NOT EXISTS idx_agent_rules_enabled ON agent_rules(enabled);
+    CREATE INDEX IF NOT EXISTS idx_agent_actions_created ON agent_actions(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_sandbox_customers_scenario ON sandbox_customers(scenario_id);
+    CREATE INDEX IF NOT EXISTS idx_sandbox_customers_status ON sandbox_customers(scenario_id, summary_status);
+    CREATE INDEX IF NOT EXISTS idx_sandbox_snapshots_lookup ON sandbox_snapshots(scenario_id, customer_id);
+    CREATE INDEX IF NOT EXISTS idx_sandbox_queue_status ON sandbox_summary_queue(status, next_attempt_at);
+    CREATE INDEX IF NOT EXISTS idx_sandbox_queue_scenario ON sandbox_summary_queue(scenario_id);
+    CREATE INDEX IF NOT EXISTS idx_sandbox_ab_tests_scenario ON sandbox_ab_tests(scenario_id, status);
     CREATE INDEX IF NOT EXISTS idx_wagers_sport ON wagers(sport);
     CREATE INDEX IF NOT EXISTS idx_wagers_login_datetime ON wagers(login, insert_datetime DESC);
     CREATE INDEX IF NOT EXISTS idx_wagers_agent_datetime ON wagers(agent_login, insert_datetime DESC);
@@ -730,12 +874,131 @@ export async function initDatabase(): Promise<AppDatabase> {
       raw_json TEXT NOT NULL DEFAULT '{}'
     );
 
+    CREATE TABLE IF NOT EXISTS ip_denylist (
+      ip TEXT PRIMARY KEY,
+      blocked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      reason TEXT,
+      created_by TEXT NOT NULL DEFAULT 'operator'
+    );
+
     CREATE INDEX IF NOT EXISTS idx_odds_snapshots_event ON odds_snapshots(event_id);
     CREATE INDEX IF NOT EXISTS idx_line_movements_event ON line_movements(event_id, book, market);
     CREATE INDEX IF NOT EXISTS idx_line_movements_time ON line_movements(recorded_at DESC);
     CREATE INDEX IF NOT EXISTS idx_detected_patterns_time ON detected_patterns(detected_at DESC);
     CREATE INDEX IF NOT EXISTS idx_detected_patterns_event ON detected_patterns(event_id, detected_at DESC);
     CREATE INDEX IF NOT EXISTS idx_detected_patterns_type ON detected_patterns(type, detected_at DESC);
+
+    -- AI Risk Flags (populated by Kimi agent / proxy-enhanced)
+    -- Mirrors the schema used by kimiremote so positions can read latest analyses.
+    CREATE TABLE IF NOT EXISTS ai_risk_flags (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      wager_number INTEGER,
+      agent_id TEXT,
+      customer_id TEXT,
+      player_id TEXT,
+      risk_level TEXT,
+      risk_score REAL,
+      confidence REAL,
+      summary TEXT,
+      reasoning TEXT,
+      factors TEXT,
+      suggested_action TEXT,
+      max_exposure REAL,
+      action TEXT,
+      raw_response TEXT,
+      reviewed INTEGER DEFAULT 0,
+      reviewer TEXT,
+      review_note TEXT,
+      flagged_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ai_risk_flags_customer ON ai_risk_flags(customer_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_ai_risk_flags_player ON ai_risk_flags(player_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_ai_risk_flags_level ON ai_risk_flags(risk_level, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_ai_risk_flags_unreviewed ON ai_risk_flags(reviewed, created_at DESC);
+
+    -- Live AI command center: latest extracted player feature vector.
+    CREATE TABLE IF NOT EXISTS customer_features (
+      customer_id TEXT PRIMARY KEY,
+      extracted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      feature_version INTEGER NOT NULL DEFAULT 1,
+      lifetime_wagers INTEGER NOT NULL DEFAULT 0,
+      avg_wager_size REAL NOT NULL DEFAULT 0,
+      max_wager_size REAL NOT NULL DEFAULT 0,
+      win_rate REAL NOT NULL DEFAULT 0,
+      days_since_last_wager REAL,
+      sport_diversity_score REAL NOT NULL DEFAULT 0,
+      deposit_velocity_30d REAL NOT NULL DEFAULT 0,
+      withdrawal_ratio REAL NOT NULL DEFAULT 0,
+      bonus_dependency REAL NOT NULL DEFAULT 0,
+      sharp_score REAL NOT NULL DEFAULT 0,
+      chase_flag INTEGER NOT NULL DEFAULT 0,
+      archetype TEXT NOT NULL DEFAULT 'unknown',
+      risk_tier TEXT NOT NULL DEFAULT 'UNKNOWN',
+      source_json TEXT NOT NULL DEFAULT '{}'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_customer_features_tier ON customer_features(risk_tier, extracted_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_customer_features_sharp ON customer_features(sharp_score DESC, extracted_at DESC);
+
+    -- Live shadow A/B runs are separate from sandbox A/B tests.
+    CREATE TABLE IF NOT EXISTS live_shadow_ab_tests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT,
+      prompt_a TEXT NOT NULL,
+      prompt_b TEXT NOT NULL,
+      customer_ids_json TEXT NOT NULL,
+      results_json TEXT,
+      agreement_score REAL,
+      avg_severity_diff REAL,
+      significant INTEGER DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'running',
+      error TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      completed_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_live_shadow_ab_status ON live_shadow_ab_tests(status, created_at DESC);
+
+    -- Risk Command Center: position management
+    CREATE TABLE IF NOT EXISTS risk_positions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id TEXT NOT NULL,
+      scenario_id INTEGER,
+      risk_level TEXT NOT NULL,
+      suggested_max_exposure REAL,
+      suggested_wager_limit REAL,
+      suggested_action TEXT CHECK(suggested_action IN ('none','reduce','review','block')),
+      ai_confidence REAL,
+      ai_summary TEXT,
+      executed_max_exposure REAL,
+      executed_wager_limit REAL,
+      executed_action TEXT,
+      executed_by TEXT,
+      executed_at TEXT,
+      execution_note TEXT,
+      status TEXT DEFAULT 'pending',
+      expires_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (scenario_id) REFERENCES sandbox_scenarios(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_positions_customer ON risk_positions(customer_id, status);
+    CREATE INDEX IF NOT EXISTS idx_positions_pending ON risk_positions(status, created_at);
+
+    -- Risk Command Center: alert dispatch log
+    CREATE TABLE IF NOT EXISTS risk_alert_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id TEXT,
+      risk_level TEXT,
+      webhook_id INTEGER,
+      platform TEXT,
+      payload TEXT,
+      response_status INTEGER,
+      sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (webhook_id) REFERENCES alert_webhooks(id) ON DELETE SET NULL
+    );
   `);
 
     console.log('📊 Database tables created');
@@ -763,6 +1026,19 @@ async function createPostMigrationIndexes(db: AppDatabase): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_pattern_agents_agent ON pattern_agents(agent_login);
     CREATE INDEX IF NOT EXISTS idx_access_logs_ip_time ON access_logs(ip_address, access_datetime DESC);
     CREATE INDEX IF NOT EXISTS idx_access_logs_login_time ON access_logs(login_id, access_datetime DESC);
+    CREATE INDEX IF NOT EXISTS idx_ip_denylist_blocked_at ON ip_denylist(blocked_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_failed_logins_player_time ON failed_logins(player, timestamp DESC);
+    CREATE INDEX IF NOT EXISTS idx_failed_logins_ip_time ON failed_logins(ip, timestamp DESC);
+    CREATE INDEX IF NOT EXISTS idx_account_change_player_time ON account_change_logs(player, timestamp DESC);
+    CREATE INDEX IF NOT EXISTS idx_closing_lines_game_market ON closing_lines(game_id, market, side);
+    CREATE INDEX IF NOT EXISTS idx_agent_rules_enabled ON agent_rules(enabled);
+    CREATE INDEX IF NOT EXISTS idx_agent_actions_created ON agent_actions(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_sandbox_customers_scenario ON sandbox_customers(scenario_id);
+    CREATE INDEX IF NOT EXISTS idx_sandbox_customers_status ON sandbox_customers(scenario_id, summary_status);
+    CREATE INDEX IF NOT EXISTS idx_sandbox_snapshots_lookup ON sandbox_snapshots(scenario_id, customer_id);
+    CREATE INDEX IF NOT EXISTS idx_sandbox_queue_status ON sandbox_summary_queue(status, next_attempt_at);
+    CREATE INDEX IF NOT EXISTS idx_sandbox_queue_scenario ON sandbox_summary_queue(scenario_id);
+    CREATE INDEX IF NOT EXISTS idx_sandbox_ab_tests_scenario ON sandbox_ab_tests(scenario_id, status);
     CREATE INDEX IF NOT EXISTS idx_wagers_event_time ON wagers(matched_event_id, insert_datetime DESC);
     CREATE INDEX IF NOT EXISTS idx_wagers_game_side_time ON wagers(parsed_game, parsed_market, parsed_side, insert_datetime DESC);
   `);
@@ -861,6 +1137,13 @@ export async function migrateDatabase(db: Database) {
     if (!rawLogColumnNames.has('status_code')) {
       await db.exec(`ALTER TABLE raw_api_logs ADD COLUMN status_code INTEGER`);
       console.log('📊 Migration: added status_code to raw_api_logs');
+    }
+
+    const sandboxQueueColumns = await db.all<PragmaColumnRow>(`PRAGMA table_info(sandbox_summary_queue)`);
+    const sandboxQueueColumnNames = new Set(sandboxQueueColumns.map((c) => c.name));
+    if (sandboxQueueColumns.length > 0 && !sandboxQueueColumnNames.has('processing_started_at')) {
+      await db.exec(`ALTER TABLE sandbox_summary_queue ADD COLUMN processing_started_at TEXT`);
+      console.log('📊 Migration: added processing_started_at to sandbox_summary_queue');
     }
 
     await db.exec(`
@@ -1276,7 +1559,7 @@ async function removeLegacyWagerTypeConstraint(db: Database): Promise<void> {
     await db.exec('COMMIT');
     console.log('📊 Migration: rebuilt wagers without legacy wager_type CHECK constraint');
   } catch (err) {
-    await db.exec('ROLLBACK').catch(() => {});
+    await db.exec('ROLLBACK').catch(() => { });
     throw err;
   }
 }

@@ -26,8 +26,10 @@ export function loadEnv(source: Record<string, string | undefined> = Bun.env): A
   if (buckeyeBaseUrl) {
     try {
       new URL(buckeyeBaseUrl);
-    } catch {
-      throw new Error('BUCKEYE_BASE_URL must be a valid URL');
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.warn(`[Env] Invalid BUCKEYE_BASE_URL: ${msg}`);
+      throw new Error('BUCKEYE_BASE_URL must be a valid URL', { cause: error });
     }
   }
 

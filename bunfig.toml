@@ -14,6 +14,10 @@ preload = ["./scripts/preload.ts"]
 # Bun.js flags
 smol = false
 
+# Keep nested Buckeye/Kimi payloads inspectable in operator logs.
+[console]
+depth = 6
+
 # ==========================================
 # ENVIRONMENT (Development defaults)
 # ==========================================
@@ -34,6 +38,7 @@ PROXY_INTERNAL_URL = "http://localhost:3001"
 BACKEND_PORT = "3000"
 VITE_BACKEND_URL = "http://localhost:3000"
 VITE_WS_URL = "ws://localhost:3000"
+BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS = "300"
 
 # ==========================================
 # PACKAGE MANAGER

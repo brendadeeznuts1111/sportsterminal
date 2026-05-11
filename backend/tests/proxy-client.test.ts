@@ -55,6 +55,47 @@ describe('ProxyClient', () => {
     expect(body.__cf_bm).toBe('bm-token');
   });
 
+  test('adds Bun proxy headers when a forward proxy is configured', async () => {
+    const previousProxyUrl = Bun.env.PROXY_FETCH_PROXY_URL;
+    const previousProxyToken = Bun.env.PROXY_FETCH_PROXY_TOKEN;
+    let capturedInit: (RequestInit & { proxy?: { url: string; headers?: Record<string, string> } }) | undefined;
+
+    try {
+      Bun.env.PROXY_FETCH_PROXY_URL = 'http://forward-proxy.test:8080';
+      Bun.env.PROXY_FETCH_PROXY_TOKEN = 'bridge-token';
+
+      await proxyCall<{ ok: boolean }>(provider, {
+        endpoint: '/api/proxy/agentDownline',
+        agentId: 'BILLY666',
+        body: { agentID: 'BILLY666' },
+        fetchImpl: async (_url, init) => {
+          capturedInit = init as typeof capturedInit;
+          return Response.json({ ok: true });
+        },
+      });
+
+      expect(capturedInit?.proxy).toEqual({
+        url: 'http://forward-proxy.test:8080',
+        headers: {
+          'X-API-Key': 'dev-key-123',
+          'Proxy-Authorization': 'Bearer bridge-token',
+        },
+      });
+    } finally {
+      if (previousProxyUrl === undefined) {
+        delete Bun.env.PROXY_FETCH_PROXY_URL;
+      } else {
+        Bun.env.PROXY_FETCH_PROXY_URL = previousProxyUrl;
+      }
+
+      if (previousProxyToken === undefined) {
+        delete Bun.env.PROXY_FETCH_PROXY_TOKEN;
+      } else {
+        Bun.env.PROXY_FETCH_PROXY_TOKEN = previousProxyToken;
+      }
+    }
+  });
+
   test('throws a typed error when the internal proxy rejects a request', async () => {
     await expect(proxyCall(provider, {
       endpoint: '/api/proxy/agentDownline',

@@ -1,5 +1,6 @@
 import type { Database } from '../database';
 import { FREEPLAY_CATEGORIES, freePlaySourceConfidence, summarizeFreePlay } from '../api/routes/freeplay';
+import { parseJsonOrNull } from '../utils/parseJson';
 
 export interface CrossReferenceFilters {
   playerId?: string;
@@ -424,7 +425,7 @@ export class CrossReferenceService {
 
 function extractGeo(row: SqlRow | undefined): string | null {
   if (!row) return null;
-  const raw = parseJson(row.rawJson) || parseJson(row.data);
+  const raw = safeParseJson(row.rawJson) || safeParseJson(row.data);
   const geo = raw?.geo || raw?.Geo || raw?.location;
   if (typeof geo === 'string') return geo;
   if (geo && typeof geo === 'object') {
@@ -440,13 +441,9 @@ function getStatus(value: unknown): string | null {
   return status ? String(status) : null;
 }
 
-function parseJson(value: unknown): Record<string, unknown> | null {
+function safeParseJson(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'string') return null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
+  return parseJsonOrNull<Record<string, unknown>>(value);
 }
 
 function daysOld(value: string): number {

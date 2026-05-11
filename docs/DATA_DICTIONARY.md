@@ -29,6 +29,8 @@ This is the single reference for Sports Terminal names: environment variables, O
 | `REDIS_URL` | unset | No | `PerformanceCache` | Optional Redis cache URL for performance cache |
 | `PROXY_INTERNAL_URL` | `http://localhost:3001` | No | `ProxyClient`, `EnhancedProxyHealth` | Main backend -> enhanced proxy base URL for internal bridge and readiness checks |
 | `PROXY_API_KEY` | `dev-key-123` | No | `ProxyClient`, `EnhancedProxyHealth`, enhanced proxy auth | Shared internal API key sent as `X-API-Key` to enhanced proxy routes |
+| `PROXY_FETCH_PROXY_URL` | unset | No | `ProxyClient` | Optional Bun forward-proxy URL. When set, backend proxy bridge calls use `fetch({ proxy: { url, headers } })` while keeping the direct `PROXY_INTERNAL_URL` target unchanged |
+| `PROXY_FETCH_PROXY_TOKEN` | `PROXY_API_KEY` | No | `ProxyClient` | Optional bearer value for the Bun proxy object's `Proxy-Authorization` header |
 | `FRONTEND_PORT` | `3001` | No | `scripts/serve-frontend.ts` | Optional static frontend-only server port |
 | `BUCKEYE_AGENT_ID` | unset | Script-only | `backend/scripts/*` probes | One-off local probe/login scripts only; do not store production credentials |
 | `BUCKEYE_PASSWORD` | unset | Script-only | `backend/scripts/*` probes | One-off local probe/login scripts only; prefer interactive/vaulted auth |
@@ -38,6 +40,7 @@ This is the single reference for Sports Terminal names: environment variables, O
 | `DEFAULT_FETCH_TIMEOUT_MS` | `30000` | No | `globalThis.sportsTerminalFetch` | Default timeout for the preload-provided fetch helper |
 | `ENABLE_GLOBAL_FETCH_TIMEOUT` | `false` | No | `scripts/preload.ts` | Opt-in only: replaces `globalThis.fetch` with the timeout helper. Leave false for Bun internals safety. |
 | `ENABLE_PRELOAD_LOG_DB` | `false` | No | `scripts/preload.ts` | Opt-in only: persists preload structured logs to `logs.sqlite`; otherwise logs stay console-only |
+| `BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS` | `300` | No | Bun runtime DNS cache | Extends Bun DNS cache TTL for stable Buckeye/Kimi/proxy targets |
 
 ### Standalone Enhanced Proxy
 
@@ -71,6 +74,8 @@ These apply to `proxy-enhanced.ts`, not the main backend server.
 | `TOKEN_CACHE_TTL_MS` | `5000` | No | token lookup helper | Caches latest stored token rows for repeated checks |
 | `ENABLE_ANALYTICS` | `true` | No | proxy analytics routes | Gates the enhanced proxy analytics surfaces |
 | `ENABLE_RISK_ENGINE` | `true` | No | risk engine | Enables periodic risk threshold evaluation and alert delivery |
+| `BUCKEYE_PASSWORD` | unset | CI/headless only | proxy credential fallback | Buckeye password fallback when OS keychain is unavailable |
+| `BUCKEYE_CF_CLEARANCE` / `BUCKEYE_CF_COOKIE` / `CF_COOKIE` | unset | CI/headless only | proxy credential fallback | Cloudflare clearance fallback when OS keychain is unavailable; cookie strings are normalized to the `cf_clearance` value |
 
 Enhanced proxy taxonomy levels:
 
@@ -158,7 +163,7 @@ Do not store Buckeye passwords, Buckeye JWTs, or Cloudflare cookies in `.env`. U
 
 ## OS Vault Keys
 
-All Buckeye secrets use the `Bun.secrets` service name:
+Backend Buckeye session restore secrets use the `Bun.secrets` service name:
 
 ```text
 sportsterminal.buckeye
@@ -172,6 +177,35 @@ sportsterminal.buckeye
 | `<AGENT>:password` | Buckeye password | Yes | Used for re-auth fallback |
 | `<AGENT>:cfCookie` | Cloudflare cookie string | Yes | Usually includes `cf_clearance`; may include `__cf_bm` |
 | `<AGENT>:token` | Buckeye JWT | Yes | Refreshed after successful `renewToken` |
+
+Standalone enhanced proxy credentials use a separate reverse-domain `Bun.secrets` service name:
+
+```text
+com.sports-terminal.buckeye-proxy
+```
+
+| Vault Name | Value | Secret | Notes |
+|------------|-------|--------|-------|
+| `_index` | JSON array of managed secret names | No | Enables `/api/secrets` listing because `Bun.secrets` has no native list operation |
+| `proxy-admin-key` | Proxy API/admin key | Yes | Used for `X-API-Key` on proxy and secret-management routes |
+| `buckeye-api-key` | Buckeye API key when available | Yes | Static proxy config only |
+| `buckeye-customer-id` | Default Buckeye customer/agent ID | Yes | Used as proxy auth fallback |
+| `buckeye-password` | Buckeye password | Yes | Used as proxy auth fallback |
+| `agent-id` | Default Buckeye agent ID | Yes | Falls back to `buckeye-customer-id` |
+| `agent-owner` | Default Buckeye agent owner | Yes | Falls back to `buckeye-customer-id` |
+| `kimi-api-key` | Kimi API key | Yes | Reserved for Kimi-backed proxy features |
+| `cf-clearance` | Cloudflare `cf_clearance` value | Yes | Static master clearance fallback; legacy reads also check `buckeye-cf-clearance` |
+| `<CUSTOMER>:buckeye-password` | Buckeye password | Yes | Preferred per-customer proxy credential |
+| `<CUSTOMER>:cf-clearance` | Cloudflare `cf_clearance` value | Yes | Preferred per-customer proxy credential |
+
+Enhanced proxy secret management routes on port `3001`:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/secrets` | Return managed proxy secrets by name; accepts `?redact=1` for presence-only UI refresh |
+| `POST` | `/api/secrets` | Set `{ "name": "...", "value": "..." }` in the OS keychain |
+| `DELETE` | `/api/secrets?name=...` | Delete one managed proxy secret |
+| `GET` | `/api/agent/network-stats` | Protected Bun network stats: DNS cache, preconnect warmups, pending requests/WebSockets, and WebSocket pressure counters |
 
 Vault status APIs only expose presence flags:
 
@@ -1079,6 +1113,11 @@ Client-to-server WebSocket message types:
 | `agent_performance` | Raw agent performance report archive | `agent_id`, `recorded_at`, `performance_json` | `(agent_id, recorded_at)` |
 | `audit_logs` | Operator/system action trail | `action`, `entity_type`, `entity_id`, `actor_id`, `actor_type`, `old_values`, `new_values`, `timestamp`, `ip_address` | `(timestamp)`, `(entity_type, entity_id)`, `(actor_id)` |
 | `watermarks` | Restart-safe poller cursors | `key` (PK), `value`, `updated_at` | `(key)` |
+| `sandbox_scenarios` | Risk Lab scenario metadata, config, version, archive state | `id`, `name`, `config_json`, `version`, `is_archived` | primary key |
+| `sandbox_customers` | One normalized synthetic customer per scenario row | `scenario_id`, `customer_id`, `archetype`, `summary_status`, `summary_json` | `(scenario_id)`, `(scenario_id, summary_status)` |
+| `sandbox_snapshots` | Optional customer time-series rows | `scenario_id`, `customer_id`, `day_index`, `balance`, `pnl` | `(scenario_id, customer_id)` |
+| `sandbox_summary_queue` | Durable summary generation queue with retries/dead-letter state | `scenario_id`, `customer_id`, `status`, `attempts`, `next_attempt_at` | `(status, next_attempt_at)`, `(scenario_id)` |
+| `sandbox_ab_tests` | Prompt AB test records and aggregate comparison metrics | `scenario_id`, `prompt_a`, `prompt_b`, `agreement_score`, `status` | `(scenario_id, status)` |
 
 ## Analytics API Endpoints
 
@@ -1092,6 +1131,30 @@ Client-to-server WebSocket message types:
 | `/api/performance/details` | GET | `agent` (required), `weeks` (default 8, max 52) | `{ agentId, weeks, weeklyTrend, sportBreakdown, latestRaw }` |
 | `/api/export/wagers` | GET | — | CSV of `wager_archive` |
 | `/api/export/access-logs` | GET | — | CSV of `access_logs` |
+| `/api/agent/ip-suspicious` | GET | `limit` | Local IP surveillance rollup: shared IP clusters and first-time IPs for known players from `access_logs`; rows include GeoIP labels and reputation where available |
+| `/api/agent/ip-lookup` | GET | `ip` or `player`, optional `agentId`, `start`, `end`, `live=0/1`, `limit` | IP intelligence lookup. `ip` runs Users by IP (`getWebLog` type `I`) when live credentials are available and returns reputation/block status; `player` runs Acct IP Match (`getWebLog` type `C`) and returns `ipHistory` for timeline charting |
+| `/api/agent/ip-export` | GET | `format=json\|csv` | Full IP intelligence export from `access_logs`, including players, first/last seen, access counts, wager volume, risk flags, GeoIP, and reputation |
+| `/api/agent/ip-block` | POST | JSON `{ ip, reason? }` | Adds/updates `ip_denylist`; matching client IPs are rejected at the backend HTTP/WebSocket boundary |
+| `/api/agent/rules` | GET | — | Lists configurable rules from `agent_rules`, with parsed `condition` objects |
+| `/api/agent/rules` | POST | JSON `{ id?, name, condition, action, severity, enabled }` | Creates or updates a rule. Conditions support `ipShared`, `clvBeater`, `failedLogin`, `velocity`, and `accountChange` |
+| `/api/agent/rules/:id` | DELETE | path `id` | Deletes an agent rule and leaves existing `agent_actions` audit rows intact |
+| `/api/sandbox/list` | GET | — | Lists non-archived normalized sandbox scenarios with customer counts |
+| `/api/sandbox/load` | GET | `id`, `page`, `limit`, `snapshots=true/false` | Loads scenario metadata and paginated customers; snapshots are included only when requested |
+| `/api/sandbox/save` | POST | JSON `{ name, description?, config, customers }`, optional query `id` | Transactional create/update of normalized scenario, customers, and snapshots; validates max 100 customers and 90 snapshots/customer |
+| `/api/sandbox/delete` | POST | JSON `{ id }` | Soft-archives a scenario without deleting history immediately |
+| `/api/sandbox/archive` | POST | JSON `{ id }` | Explicit alias for soft-archiving a scenario |
+| `/api/sandbox/restore` | POST | JSON `{ id }` | Restores an archived scenario |
+| `/api/sandbox/hard-delete` | POST | JSON `{ id }` | Permanently deletes a scenario and cascades sandbox child rows; reserved for deliberate cleanup |
+| `/api/sandbox/generate-summaries` | POST | JSON `{ scenarioId, customerIds? }` | Idempotently queues AI/heuristic summaries in `sandbox_summary_queue` |
+| `/api/sandbox/queue-status` | GET | `scenarioId` | Durable queue counts by status: queued, processing, completed, failed, dead |
+| `/api/sandbox/customer-summary` | POST | JSON `{ scenario_id, customer_id }` | Refreshes one customer's summary without re-queuing the full scenario |
+| `/api/sandbox/ab-tests` | GET | optional `scenario_id` | Lists sandbox AB tests and completion metrics |
+| `/api/sandbox/ab-test` | POST | JSON `{ scenario_id, name, prompt_a, prompt_b, customer_ids }` | Creates and runs a prompt AB test for up to 20 scenario customers |
+| `/api/sandbox/ab-test/:id` | GET | path `id` | Returns AB test status, metrics, and results when available |
+| `/api/sandbox/export/csv` | GET | `scenarioId` | Server-side CSV export of normalized customer rows and summary fields |
+| `/api/sandbox/export/features` | GET | `scenarioId` | Feature-store shaped JSON export for synthetic customer features |
+| `/api/sandbox/stats` | GET | — | Aggregate sandbox counts, average CLV, summary completion, and queue breakdown |
+| `/api/sandbox/health` | GET | — | Sandbox DB/queue health probe |
 | `/api/export/performance` | GET | — | CSV of `weekly_figures` |
 
 ## Error Handling & Recovery

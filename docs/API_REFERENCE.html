@@ -1,0 +1,1160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sports Terminal Proxy — API Reference & Data Dictionary</title>
+<style>
+  :root {
+    --bg: #0a0e14;
+    --panel: #131721;
+    --panel-hover: #1a2030;
+    --border: #2a2f3a;
+    --accent: #ff8c00;
+    --accent-dim: #c46a00;
+    --green: #7bc275;
+    --red: #ea6c6c;
+    --blue: #6c9ef0;
+    --purple: #b18ae0;
+    --cyan: #5cc4c4;
+    --yellow: #e6b450;
+    --text: #e6e1cf;
+    --text-dim: #6c7891;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    --font-sans: 'Inter', system-ui, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    font-size: 14px;
+  }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Header */
+  .header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .header-left { display: flex; align-items: center; gap: 12px; }
+  .header-logo {
+    width: 32px; height: 32px; border-radius: 6px;
+    background: var(--accent); display: flex; align-items: center; justify-content: center;
+    font-weight: 700; color: #fff; font-size: 16px;
+  }
+  .header-title { font-size: 16px; font-weight: 700; }
+  .header-subtitle { font-size: 12px; color: var(--text-dim); }
+
+  .header-right { display: flex; align-items: center; gap: 12px; }
+
+  /* Search */
+  .search-wrap { position: relative; }
+  .search-wrap input {
+    width: 280px; padding: 8px 12px 8px 32px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font-size: 13px; outline: none;
+  }
+  .search-wrap input:focus { border-color: var(--accent); }
+  .search-wrap svg {
+    position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+    width: 14px; height: 14px; color: var(--text-dim);
+  }
+
+  /* Container */
+  .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
+
+  /* Info Banner */
+  .info-banner {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px; margin-bottom: 24px;
+    display: flex; align-items: flex-start; gap: 12px;
+  }
+  .info-banner svg { width: 20px; height: 20px; color: var(--accent); flex-shrink: 0; margin-top: 2px; }
+  .info-banner code {
+    background: var(--bg); padding: 2px 6px; border-radius: 4px;
+    font-family: var(--font-mono); font-size: 12px; color: var(--cyan);
+  }
+
+  /* Section */
+  .section { margin-bottom: 32px; }
+  .section-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px 8px 0 0; cursor: pointer; user-select: none;
+  }
+  .section-header:hover { background: var(--panel-hover); }
+  .section-title { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .section-count {
+    font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 12px;
+    background: var(--accent); color: #fff;
+  }
+  .section-chevron { transition: transform 0.2s; color: var(--text-dim); }
+  .section.collapsed .section-chevron { transform: rotate(-90deg); }
+  .section-body {
+    border: 1px solid var(--border); border-top: none;
+    border-radius: 0 0 8px 8px; padding: 16px;
+    background: var(--bg);
+  }
+  .section.collapsed .section-body { display: none; }
+
+  /* Endpoint Card */
+  .endpoint-card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    margin-bottom: 12px; overflow: hidden;
+  }
+  .endpoint-header {
+    display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+    cursor: pointer; user-select: none;
+  }
+  .endpoint-header:hover { background: var(--panel-hover); }
+  .endpoint-method {
+    font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+    padding: 2px 8px; border-radius: 4px; background: var(--accent); color: #fff;
+  }
+  .endpoint-path {
+    font-family: var(--font-mono); font-size: 13px; color: var(--cyan);
+  }
+  .endpoint-key {
+    font-size: 11px; color: var(--text-dim); margin-left: auto;
+    font-family: var(--font-mono);
+  }
+  .endpoint-body { padding: 0 16px 16px; display: none; }
+  .endpoint-card.open .endpoint-body { display: block; }
+  .endpoint-card.open .endpoint-chevron { transform: rotate(180deg); }
+  .endpoint-chevron { color: var(--text-dim); transition: transform 0.2s; }
+
+  .endpoint-desc { font-size: 13px; color: var(--text-dim); margin-bottom: 12px; }
+
+  .param-group { margin-bottom: 12px; }
+  .param-label { font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-dim); margin-bottom: 4px; }
+  .param-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .param-tag {
+    font-size: 12px; padding: 3px 8px; border-radius: 4px;
+    background: var(--bg); border: 1px solid var(--border);
+    font-family: var(--font-mono);
+  }
+  .param-tag.required { border-color: var(--red); color: var(--red); }
+  .param-tag.optional { border-color: var(--text-dim); color: var(--text-dim); }
+
+  /* Code Block */
+  .code-block { position: relative; margin: 8px 0; }
+  .code-block pre {
+    background: #080a10; border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px; overflow-x: auto; font-family: var(--font-mono);
+    font-size: 12px; line-height: 1.5; color: var(--text);
+  }
+  .code-block .copy-btn {
+    position: absolute; top: 8px; right: 8px;
+    padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text-dim); font-size: 11px; cursor: pointer;
+  }
+  .code-block .copy-btn:hover { color: var(--text); border-color: var(--accent); }
+
+  /* Matrix Table */
+  .matrix-wrap { overflow-x: auto; margin-top: 16px; }
+  .matrix-table {
+    width: 100%; border-collapse: collapse; font-size: 12px; min-width: 800px;
+  }
+  .matrix-table th {
+    text-align: left; padding: 10px 12px; background: var(--panel);
+    border-bottom: 2px solid var(--border); font-weight: 600; font-size: 11px;
+    text-transform: uppercase; color: var(--text-dim); white-space: nowrap;
+    cursor: pointer; user-select: none;
+  }
+  .matrix-table th:hover { color: var(--text); }
+  .matrix-table th .sort-indicator { color: var(--accent); margin-left: 4px; }
+  .matrix-table td {
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .matrix-table tr:hover td { background: var(--panel-hover); }
+  .matrix-table td:first-child { font-family: var(--font-mono); font-weight: 500; }
+  .matrix-table .category-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px;
+    font-weight: 500; white-space: nowrap;
+  }
+  .cat-auth { background: rgba(255,140,0,0.15); color: var(--accent); }
+  .cat-account { background: rgba(108,158,240,0.15); color: var(--blue); }
+  .cat-player { background: rgba(177,138,224,0.15); color: var(--purple); }
+  .cat-taxonomy { background: rgba(92,196,196,0.15); color: var(--cyan); }
+  .cat-lines { background: rgba(123,194,117,0.15); color: var(--green); }
+  .cat-live { background: rgba(230,180,80,0.15); color: var(--yellow); }
+  .cat-props { background: rgba(255,140,0,0.15); color: var(--accent); }
+  .cat-config { background: rgba(108,158,240,0.15); color: var(--blue); }
+  .cat-agent { background: rgba(177,138,224,0.15); color: var(--purple); }
+  .cat-admin { background: rgba(230,180,80,0.15); color: var(--yellow); }
+  .cat-analytics { background: rgba(123,194,117,0.15); color: var(--green); }
+  .cat-reports { background: rgba(108,158,240,0.15); color: var(--blue); }
+  .cat-banking { background: rgba(92,196,196,0.15); color: var(--cyan); }
+  .cat-telemetry { background: rgba(108,116,130,0.15); color: var(--text-dim); }
+
+  .ttl-badge {
+    font-family: var(--font-mono); font-size: 11px; padding: 2px 6px;
+    border-radius: 4px; background: var(--bg); white-space: nowrap;
+  }
+  .demo-badge {
+    font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: 600;
+  }
+  .demo-yes { background: rgba(123,194,117,0.15); color: var(--green); }
+  .demo-no { background: rgba(108,116,130,0.15); color: var(--text-dim); }
+
+  /* Data Flow Diagram */
+  .mermaid {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px; text-align: center; overflow-x: auto;
+  }
+
+  /* Entity Table */
+  .entity-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px;
+  }
+  .entity-card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px;
+  }
+  .entity-card h4 {
+    font-size: 14px; font-weight: 600; margin-bottom: 8px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .entity-card ul { list-style: none; }
+  .entity-card li {
+    font-size: 12px; padding: 4px 0; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between;
+  }
+  .entity-card li:last-child { border-bottom: none; }
+  .entity-card .field-type { color: var(--text-dim); font-family: var(--font-mono); font-size: 11px; }
+
+  /* Legend */
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  .legend-box { width: 14px; height: 14px; border-radius: 3px; }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+  .tab {
+    padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+    color: var(--text-dim);
+  }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab:hover { color: var(--text); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .header { flex-direction: column; align-items: stretch; }
+    .search-wrap input { width: 100%; }
+    .container { padding: 12px; }
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+  /* Hidden by filter */
+  .hidden-filter { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="header-left">
+    <div class="header-logo">S</div>
+    <div>
+      <div class="header-title">Sports Terminal Proxy</div>
+      <div class="header-subtitle">API Reference & Data Dictionary — v3.0</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="search-wrap">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+      <input type="text" id="globalSearch" placeholder="Search endpoints, categories, params..." oninput="filterEndpoints(this.value)">
+    </div>
+  </div>
+</div>
+
+<div class="container">
+
+<!-- INFO BANNER -->
+<div class="info-banner">
+  <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+  <div>
+    <div style="font-weight:600;margin-bottom:4px;">Base URL & Authentication</div>
+    <div style="font-size:12px;color:var(--text-dim);">
+      Proxy runs on <code>http://localhost:3001</code> in development.
+      All requests require header <code>X-API-Key: dev-key-123</code>.
+      Backend bridge available at <code>http://localhost:3000/api/live/*</code> for fresh proxy data.
+      Demo mode returns synthetic data for select endpoints.
+    </div>
+  </div>
+</div>
+
+<!-- TABS -->
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('endpoints', this)">Endpoints (68)</div>
+  <div class="tab" onclick="switchTab('matrix', this)">Endpoint Matrix</div>
+  <div class="tab" onclick="switchTab('uimatrix', this)">UI Matrix</div>
+  <div class="tab" onclick="switchTab('dataflow', this)">Data Flow & Schema</div>
+  <div class="tab" onclick="switchTab('curl', this)">Sample cURL</div>
+</div>
+
+<!-- PANEL: ENDPOINTS -->
+<div class="tab-panel active" id="panel-endpoints">
+  <div id="endpointGroups"></div>
+</div>
+
+<!-- PANEL: MATRIX -->
+<div class="tab-panel" id="panel-matrix">
+  <div class="section" style="margin-bottom:16px;">
+    <div class="search-wrap" style="max-width:400px;">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+      <input type="text" id="matrixSearch" placeholder="Filter by key, category, or path..." oninput="filterMatrix(this.value)">
+    </div>
+  </div>
+  <div class="matrix-wrap">
+    <table class="matrix-table" id="matrixTable">
+      <thead>
+        <tr>
+          <th onclick="sortMatrix('key')">Endpoint <span class="sort-indicator" id="sort-key"></span></th>
+          <th onclick="sortMatrix('category')">Category <span class="sort-indicator" id="sort-category"></span></th>
+          <th onclick="sortMatrix('path')">Upstream Path <span class="sort-indicator" id="sort-path"></span></th>
+          <th onclick="sortMatrix('ttl')">Cache TTL <span class="sort-indicator" id="sort-ttl"></span></th>
+          <th onclick="sortMatrix('demo')">Demo Mock <span class="sort-indicator" id="sort-demo"></span></th>
+          <th>Required Params</th>
+          <th>Optional Params</th>
+        </tr>
+      </thead>
+      <tbody id="matrixBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- PANEL: UI MATRIX -->
+<div class="tab-panel" id="panel-uimatrix">
+  <div class="section" style="margin-bottom:16px;">
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">
+      Maps frontend components to the endpoints they consume, plus the CSS classes, theme variables, and hex colors that style them.
+    </div>
+  </div>
+  <div class="matrix-wrap">
+    <table class="matrix-table" id="uiMatrixTable">
+      <thead>
+        <tr>
+          <th>Component</th>
+          <th>Endpoints</th>
+          <th>CSS Classes</th>
+          <th>Style</th>
+          <th>Theme</th>
+          <th>Hex Colors</th>
+        </tr>
+      </thead>
+      <tbody id="uiMatrixBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- PANEL: DATA FLOW -->
+<div class="tab-panel" id="panel-dataflow">
+  <div class="section">
+    <div class="section-header" onclick="toggleSection(this)">
+      <div class="section-title">
+        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2a2 2 0 012-2h2a2 2 0 012 2v2m-6 0h6m-6 0a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2h2a2 2 0 012 2v2m10 0V7a2 2 0 012-2h2a2 2 0 012 2v10a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+        Data Flow Architecture
+      </div>
+      <svg class="section-chevron" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+    </div>
+    <div class="section-body">
+      <div class="mermaid" id="dataFlowDiagram">
+        <!-- Mermaid diagram will be rendered here -->
+      </div>
+      <div class="legend">
+        <div class="legend-item"><div class="legend-box" style="background:var(--accent);"></div> Proxy Layer</div>
+        <div class="legend-item"><div class="legend-box" style="background:var(--blue);"></div> Backend Layer</div>
+        <div class="legend-item"><div class="legend-box" style="background:var(--green);"></div> Frontend Layer</div>
+        <div class="legend-item"><div class="legend-box" style="background:var(--red);"></div> External API</div>
+        <div class="legend-item"><div class="legend-box" style="background:var(--cyan);"></div> Cache/DB</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header" onclick="toggleSection(this)">
+      <div class="section-title">
+        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
+        Entity Relationships
+      </div>
+      <svg class="section-chevron" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+    </div>
+    <div class="section-body">
+      <div class="entity-grid" id="entityGrid"></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header" onclick="toggleSection(this)">
+      <div class="section-title">
+        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/></svg>
+        Schema Flow Diagram
+      </div>
+      <svg class="section-chevron" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+    </div>
+    <div class="section-body">
+      <div class="mermaid">
+<pre style="background:transparent;border:none;font-family:var(--font-mono);font-size:12px;text-align:left;overflow-x:auto;">
+Buckeye API (fantasy402.com)
+    |
+    | HTTPS /cloud/api/{category}/{operation}
+    v
++-----------------------------+
+|   Sports Terminal Proxy     |
+|   localhost:3001            |
+|                             |
+|  ┌---------------------┐   |
+|  | Zod Env Validation  |   |
+|  | SQLite WAL Cache    |   |
+|  | Circuit Breaker     |   |
+|  | Rate Limiter        |   |
+|  | SWR Stale-While-    |   |
+|  |   Revalidate        |   |
+|  └---------------------┘   |
+|         |                   |
+|  +------+------+            |
+|  |             |            |
+|  v             v            |
+| /api/proxy/*  /ws           |
+|  (REST)       (WebSocket)   |
++-------------+---------------+
+              |
+              | HTTP + WS
+              v
++-----------------------------+
+|   Backend Server            |
+|   localhost:3000            |
+|                             |
+|  ┌---------------------┐   |
+|  | ProxyClient         |   |
+|  | 68 endpoint wrappers|   |
+|  | /api/live/* routes  |   |
+|  └---------------------┘   |
+|         |                   |
+|  +------+------+            |
+|  |             |            |
+|  v             v            |
+| SQLite      BuckeyeAPI      |
+| Cache       (direct)        |
+| (local)                     |
++-------------+---------------+
+              |
+              | HTTP / SSE / WS
+              v
++-----------------------------+
+|   Frontend SPA              |
+|   localhost:3000            |
+|                             |
+|  Trading Floor  |  Live     |
+|  Odds Matrix    |  Props    |
+|  Bet Ticker     |  Builder  |
+|  Agent Tree     |  Alerts   |
++-----------------------------+
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PANEL: CURL -->
+<div class="tab-panel" id="panel-curl">
+  <div class="section">
+    <div class="section-header" onclick="toggleSection(this)">
+      <div class="section-title">Common Operations (10 samples)</div>
+      <svg class="section-chevron" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+    </div>
+    <div class="section-body" id="curlSamples"></div>
+  </div>
+</div>
+
+</div>
+
+<script>
+// ==========================================
+// DATA — All 68 endpoints
+// ==========================================
+const ENDPOINTS = [
+  { key: "auth", path: "System/authenticateCustomer", ttl: 0, category: "auth", demo: false, required: ["customerID","password","cf_clearance"], optional: ["agentID","agentOwner"], desc: "Authenticate with customerID/password" },
+  { key: "renewToken", path: "System/renewToken", ttl: 0, category: "auth", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Refresh bearer token" },
+  { key: "logWrite", path: "Log/write", ttl: 0, category: "telemetry", demo: false, required: [], optional: ["msg","agentID"], desc: "Frontend telemetry passthrough" },
+  { key: "accountInfo", path: "Manager/getAccountInfoOwner", ttl: 60, category: "account", demo: true, required: ["agentID"], optional: ["agentOwner","agentSite","RRO"], desc: "Agent account snapshot and balance" },
+  { key: "playerInfo", path: "Manager/getInfoPlayer", ttl: 120, category: "player", demo: true, required: [["playerID","playerLogin","bettorID"]], optional: ["agentID","agentOwner","agentSite"], desc: "Player profile, limits, and status" },
+  { key: "newEmails", path: "Manager/getNewEmailsCount", ttl: 30, category: "account", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Unread notification count" },
+  { key: "mail", path: "Manager/getMail", ttl: 60, category: "account", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Inbox messages" },
+  { key: "cryptoInfo", path: "Manager/getCryptoInfo", ttl: 300, category: "banking", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Crypto deposit addresses and history" },
+  { key: "authorizations", path: "Manager/getAuthorizations", ttl: 300, category: "admin", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Agent permissions and feature flags" },
+  { key: "sportsLeagues", path: "League/Get_SportsLeagues", ttl: 3600, category: "taxonomy", demo: true, required: [], optional: ["RRO","agentID"], desc: "Sports and leagues tree (all sports)" },
+  { key: "leagueLines", path: "Lines/Get_LeagueLines2", ttl: 60, category: "lines", demo: true, required: ["league","sport"], optional: ["RRO","agentID","live"], desc: "Betting lines for a specific league" },
+  { key: "games", path: "Manager/getGames", ttl: 300, category: "taxonomy", demo: false, required: [], optional: ["sport","RRO","agentID"], desc: "Scheduled games list" },
+  { key: "gameVolume", path: "Manager/getGameVolume", ttl: 30, category: "lines", demo: true, required: [["gameId","GameID"]], optional: ["RRO","agentID"], desc: "Game exposure and wager volume" },
+  { key: "periodsBySport", path: "Manager/getPeriodsBySport", ttl: 3600, category: "config", demo: false, required: ["sport"], optional: ["RRO","agentID"], desc: "Available periods (FG, 1H, 2H, etc)" },
+  { key: "buyPoints", path: "Lines/getBuyPointsGroup", ttl: 3600, category: "config", demo: false, required: [], optional: ["RRO","agentID"], desc: "Buy points configuration" },
+  { key: "amountLimits", path: "Limit/getAmountLimitGroup", ttl: 3600, category: "config", demo: false, required: [], optional: ["RRO","agentID"], desc: "Wager amount limits by type" },
+  { key: "linesPlus", path: "Provider/getLinesPlusData", ttl: 60, category: "lines", demo: false, required: [], optional: ["RRO","agentID"], desc: "Enhanced lines data" },
+  { key: "propBuilderURL", path: "Provider/getPropBuilderGameScheduleURL", ttl: 300, category: "props", demo: false, required: [], optional: ["RRO","agentID"], desc: "Prop builder schedule URL" },
+  { key: "dynamicLive", path: "Manager/getDynamicLive", ttl: 10, category: "live", demo: true, required: ["agentID"], optional: ["agentOwner","agentSite","sport","league"], desc: "Live in-game betting events" },
+  { key: "sportsTypesLive", path: "Manager/getSportsTypesLive", ttl: 60, category: "live", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Live sports categories" },
+  { key: "scoresLive", path: "Report/getScoresLiveDynamic", ttl: 15, category: "live", demo: false, required: [], optional: ["RRO","agentID"], desc: "Real-time scores" },
+  { key: "props", path: "Manager/getProps", ttl: 300, category: "props", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite","sport"], desc: "Available prop bets" },
+  { key: "extendedProps", path: "Manager/getExtendedProps", ttl: 300, category: "props", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite","sport"], desc: "Extended prop offerings" },
+  { key: "teaserProfile", path: "Manager/getTeaserProfile", ttl: 300, category: "config", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Teaser odds and rules" },
+  { key: "agentDownline", path: "Manager/getListAgenstByAgent", ttl: 300, category: "agent", demo: true, required: ["agentID"], optional: ["agentOwner","agentSite","agentType"], desc: "Agent sub-agent and player list" },
+  { key: "agentBilling", path: "Manager/getAgentBilling", ttl: 300, category: "agent", demo: true, required: ["agentID"], optional: ["agentOwner","agentSite","week"], desc: "Weekly/daily billing figures" },
+  { key: "sportsAdmin", path: "Manager/getSportsCustomerAdmin", ttl: 300, category: "admin", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Sports admin configuration" },
+  { key: "sportsType", path: "Manager/getSportsType", ttl: 3600, category: "taxonomy", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Available sport type codes and names" },
+  { key: "vigSetup", path: "Manager/getSportsVigSetup", ttl: 300, category: "admin", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Vig/juice settings by sport" },
+  { key: "maxWager", path: "Manager/getSportsMaxWager", ttl: 300, category: "admin", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Maximum wager amounts" },
+  { key: "colors", path: "Manager/getColorsSelections", ttl: 3600, category: "admin", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "UI color scheme" },
+  { key: "stores", path: "Manager/getStores", ttl: 3600, category: "admin", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Retail store locations" },
+  { key: "circleLimits", path: "Manager/getCircleLimits", ttl: 300, category: "admin", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Circle game limits" },
+  { key: "betTicker", path: "Manager/getBetTicker", ttl: 5, category: "analytics", demo: true, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Real-time bet ticker (live wagers)" },
+  { key: "betTickerConfig", path: "Manager/getBetTickerConfig", ttl: 300, category: "analytics", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Ticker display configuration" },
+  { key: "pending", path: "Manager/getPending", ttl: 15, category: "analytics", demo: true, required: ["date"], optional: ["agentID","agentOwner","agentSite","wagerType","amount"], desc: "Raw pending wagers grouped by ticket/wager" },
+  { key: "pendingReportConfig", path: "Manager/getConfigWebReportsPending", ttl: 300, category: "reports", demo: false, required: [["agentID","customerID"]], optional: ["agentOwner","agentSite"], desc: "Pending report column visibility config" },
+  { key: "updatePendingReportConfig", path: "Manager/updateReportConfigPending", ttl: 0, category: "reports", demo: false, required: [["agentID","customerID"]], optional: ["agent","customerID","password","name","timeAccepted","timeScheduled","type","print","delete","custTotal"], desc: "Update pending report column toggles" },
+  { key: "openBets", path: "Manager/getOpenBets", ttl: 30, category: "analytics", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Current open wagers" },
+  { key: "agentPerformance", path: "Manager/getAgentPerformance", ttl: 300, category: "analytics", demo: false, required: [["agentID","customerID"]], optional: ["agentOwner","agentSite","startDate","endDate","type","RRO"], desc: "Agent performance report" },
+  { key: "wagerByPlayer", path: "Manager/getWagerByPlayer", ttl: 60, category: "analytics", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite","playerLogin"], desc: "Player wager history" },
+  { key: "playerWeek", path: "Manager/getPlayerWeek", ttl: 300, category: "analytics", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite","playerLogin"], desc: "Player weekly figures" },
+  { key: "transactionPlayer", path: "Manager/getEnterTransactions", ttl: 300, category: "analytics", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite","playerLogin"], desc: "Player transaction log" },
+  { key: "historyPlayer", path: "Manager/getReportPlayerAnalysis", ttl: 300, category: "analytics", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite","playerLogin"], desc: "Player account analysis" },
+  { key: "webLog", path: "Manager/getWebLog", ttl: 60, category: "analytics", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite","start","end","type"], desc: "Web/IP access log" },
+  { key: "getConfigWebReports", path: "Manager/getConfigWebReports", ttl: 300, category: "reports", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Web reports column configuration" },
+  { key: "agentManagement", path: "Manager/getAgentManagement", ttl: 300, category: "agent", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Agent downline management tree" },
+  { key: "listVip", path: "Manager/getListVip", ttl: 300, category: "agent", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "VIP player list" },
+  { key: "cryptoAvailable", path: "Manager/getCryptoAvailable", ttl: 300, category: "banking", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Available cryptocurrency options" },
+  { key: "getMessage", path: "Manager/getMessage", ttl: 30, category: "account", demo: false, required: ["agentID"], optional: ["agentOwner","agentSite"], desc: "Agent messages" },
+  { key: "playerActivity", path: "System/getPlayerActivity", ttl: 120, category: "player", demo: false, required: ["playerID"], optional: ["agentID","startDate","endDate"], desc: "Player activity events" },
+  { key: "bettorDetails", path: "Manager/getBettorDetails", ttl: 120, category: "player", demo: false, required: ["playerID"], optional: ["agentID","agentOwner","agentSite"], desc: "Detailed bettor information" },
+  { key: "liveGame", path: "Manager/getGames", ttl: 15, category: "live", demo: false, required: [], optional: ["sport","RRO","agentID"], desc: "Scheduled games list (live variant)" },
+];
+
+const CATEGORIES = [...new Set(ENDPOINTS.map(e => e.category))].sort();
+
+const CATEGORY_CLASS = {
+  auth: 'cat-auth', account: 'cat-account', player: 'cat-player',
+  taxonomy: 'cat-taxonomy', lines: 'cat-lines', live: 'cat-live',
+  props: 'cat-props', config: 'cat-config', agent: 'cat-agent',
+  admin: 'cat-admin', analytics: 'cat-analytics', reports: 'cat-reports',
+  banking: 'cat-banking', telemetry: 'cat-telemetry'
+};
+
+// ==========================================
+// RENDER — Endpoint Groups
+// ==========================================
+function renderEndpointGroups() {
+  const container = document.getElementById('endpointGroups');
+  container.innerHTML = '';
+
+  CATEGORIES.forEach(cat => {
+    const eps = ENDPOINTS.filter(e => e.category === cat);
+    const section = document.createElement('div');
+    section.className = 'section';
+    section.dataset.category = cat;
+    section.innerHTML = `
+      <div class="section-header" onclick="toggleSection(this)">
+        <div class="section-title">
+          <span class="category-badge ${CATEGORY_CLASS[cat]}">${cat}</span>
+          <span style="margin-left:8px;">${cat.charAt(0).toUpperCase() + cat.slice(1)} Endpoints</span>
+          <span class="section-count">${eps.length}</span>
+        </div>
+        <svg class="section-chevron" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+      </div>
+      <div class="section-body">
+        ${eps.map(ep => renderEndpointCard(ep)).join('')}
+      </div>
+    `;
+    container.appendChild(section);
+  });
+}
+
+function renderEndpointCard(ep) {
+  const required = formatParams(ep.required);
+  const optional = formatParams(ep.optional);
+  const demoReq = ep.demo ? generateDemoRequest(ep) : { body: `{ "operation": "${ep.path.split('/').pop()}", "agentID": "BILLY666", "agentOwner": "BILLY666", "agentSite": "1" }` };
+  const demoRes = ep.demo ? generateDemoResponse(ep) : `{ "source": "live", "data": { /* see normalizeResponse output */ } }`;
+
+  return `
+    <div class="endpoint-card" data-key="${ep.key}" data-category="${ep.category}" data-path="${ep.path}">
+      <div class="endpoint-header" onclick="toggleEndpoint(this)">
+        <span class="endpoint-method">POST</span>
+        <span class="endpoint-path">/api/proxy/${ep.key}</span>
+        <span class="endpoint-key">${ep.path}</span>
+        <svg class="endpoint-chevron" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+      </div>
+      <div class="endpoint-body">
+        <div class="endpoint-desc">${ep.desc}</div>
+        <div class="param-group">
+          <div class="param-label">Required Parameters</div>
+          <div class="param-tags">${required.map(r => `<span class="param-tag required">${r}</span>`).join('') || '<span class="param-tag optional">none</span>'}</div>
+        </div>
+        <div class="param-group">
+          <div class="param-label">Optional Parameters</div>
+          <div class="param-tags">${optional.map(o => `<span class="param-tag optional">${o}</span>`).join('') || '<span class="param-tag optional">none</span>'}</div>
+        </div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:12px;">
+          <div style="flex:1;min-width:300px;">
+            <div class="param-label">Request Body</div>
+            <div class="code-block">
+              <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              <pre>${escapeHtml(demoReq.body)}</pre>
+            </div>
+          </div>
+          <div style="flex:1;min-width:300px;">
+            <div class="param-label">Response</div>
+            <div class="code-block">
+              <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+              <pre>${escapeHtml(demoRes)}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function formatParams(params) {
+  if (!params || params.length === 0) return [];
+  return params.flatMap(p => Array.isArray(p) ? p : [p]);
+}
+
+function generateDemoRequest(ep) {
+  const body = { operation: ep.path.split('/').pop() };
+  if (ep.required.length > 0) {
+    const first = ep.required[0];
+    if (Array.isArray(first)) body[first[0]] = 'BILLY666';
+    else if (first === 'date') body[first] = '2024-01-15';
+    else if (first === 'league') { body[first] = 'NFL'; body.sport = 'NFL'; }
+    else if (first === 'gameId' || first === 'GameID') body[first] = '12345';
+    else if (first === 'playerID') body[first] = 'PLAYER1';
+    else body[first] = 'BILLY666';
+  }
+  body.agentID = body.agentID || 'BILLY666';
+  body.agentOwner = body.agentOwner || 'BILLY666';
+  body.agentSite = '1';
+  if (ep.key === 'leagueLines') { body.league = 'NFL'; body.sport = 'NFL'; }
+  if (ep.key === 'gameVolume') body.gameId = '12345';
+  if (ep.key === 'pending') body.date = '2024-01-15';
+  return { body: JSON.stringify(body, null, 2) };
+}
+
+function generateDemoResponse(ep) {
+  // Real captured data from api_output/ (successful responses only)
+  const REAL_ACCOUNT_INFO = JSON.parse(`{
+    "accountInfo": {
+      "customerID": "BILLY666",
+      "Active": "Y",
+      "CasinoActive": "Y",
+      "AllowPoker": "N",
+      "SuspendSportsbook": "N",
+      "LiveCasinoActive": "N",
+      "CreditLimit": 0,
+      "Office": "NOLAROSE",
+      "CurrentBalance": -163545500,
+      "AvailableBalance": -1635455,
+      "PendingWagerBalance": 0,
+      "CurrencyCode": "USD",
+      "Currency": "USD United States Dollars",
+      "Store": "PPHINSIDER",
+      "CustProfile": ".",
+      "AgentID": null,
+      "WagerLimit": 0,
+      "DonotApplyCirleLimits": "Y",
+      "ParlayName": "8 Team Max",
+      "CreditAcctFlag": "Y",
+      "PercentBook": 100,
+      "ContestMaxBet": 0,
+      "FreePlayBalance": 0,
+      "EasternLineFlag": "N",
+      "NotrueOdds": "N",
+      "MaxContestPrice": 10000,
+      "NotrueOddsDiscount": 0,
+      "ParlayMaxPayout": 1000000,
+      "ParlayMaxBet": 0,
+      "AgentType": "M",
+      "MaxIfBetReverse": null,
+      "EnforceAccumWagerLimitsFlag": "Y",
+      "EnforceAccumWagerLimitsByLineFlag": null,
+      "TeamLimit": 0,
+      "maxRoundRobin": 0,
+      "Language": "English",
+      "WSBettingType": 1,
+      "horseActive": "N",
+      "DefaultSiteSkin": "RiseOfSnake",
+      "OTPEnabled": 0,
+      "OTP": "",
+      "UseCaptcha": "N",
+      "SuspectedBot": null,
+      "DomainRedirect": "N",
+      "SkinOverride": "",
+      "AgentSkinOverride": ""
+    },
+    "code": "eyJhbGciOiJIUzI1NiIs..."
+  }`);
+
+  // Synthetic demo payloads for endpoints where api_output/ only contains 401 errors
+  const shapes = {
+    auth: `{
+  "source": "live",
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIs...",
+    "code": "abc123",
+    "message": "Authentication successful",
+    "expires_at": 1705312800
+  }
+}`,
+    accountInfo: `{
+  "source": "live",
+  "data": ${JSON.stringify(REAL_ACCOUNT_INFO, null, 2)}
+}`,
+    sportsLeagues: `{
+  "source": "live",
+  "data": {
+    "sports": [
+      { "id": "1", "code": "NFL", "name": "NFL Football", "leagues": [{"id":"1","code":"NFL","name":"National Football League"}] },
+      { "id": "2", "code": "NBA", "name": "NBA Basketball", "leagues": [{"id":"2","code":"NBA","name":"National Basketball Association"}] }
+    ],
+    "count": 2
+  }
+}`,
+    leagueLines: `{
+  "source": "live",
+  "data": {
+    "games": [
+      {
+        "id": "1001", "rot": "451", "datetime": "2024-01-15T20:15:00Z",
+        "status": "OPEN", "away": "Kansas City Chiefs", "home": "Buffalo Bills",
+        "lines": { "spread": { "away": "+3.5 -110", "home": "-3.5 -110" } }
+      }
+    ],
+    "count": 1
+  }
+}`,
+    dynamicLive: `{
+  "source": "live",
+  "data": {
+    "events": [
+      {
+        "id": "5001", "sport": "NFL", "league": "NFL", "away": "Chiefs", "home": "Bills",
+        "awayScore": 21, "homeScore": 17, "period": "Q3", "timeRemaining": "8:42",
+        "status": "LIVE", "lines": { "spread": { "away": "+2.5 -115", "home": "-2.5 -105" } }
+      }
+    ]
+  }
+}`,
+    agentDownline: `{
+  "source": "live",
+  "data": {
+    "agents": [
+      { "id": "A1", "name": "Sub Agent 1", "players": 45, "balance": 12500.00, "weekGross": 3200.00, "status": "A", "type": "M" },
+      { "id": "A2", "name": "Sub Agent 2", "players": 12, "balance": 3400.00, "weekGross": 800.00, "status": "A", "type": "M" }
+    ],
+    "count": 2
+  }
+}`,
+    agentBilling: `{
+  "source": "live",
+  "data": {
+    "period": "2024-W02",
+    "figures": [
+      { "agent": "BILLY666", "name": "Billy", "gross": 15000.00, "net": 12000.00, "hold": 0.08, "wagers": 450, "wins": 210, "losses": 240 }
+    ],
+    "count": 1
+  }
+}`,
+    betTicker: `{
+  "source": "live",
+  "data": {
+    "wagers": [
+      {
+        "WagerNumber": "W123456", "AgentID": "BILLY666", "CustomerID": "PLAYER1", "Login": "player1",
+        "WagerType": "S", "AmountWagered": 50000, "GameID": "1001", "Line": "-3.5", "Odds": -110
+      }
+    ],
+    "count": 1
+  }
+}`,
+    pending: `{
+  "source": "live",
+  "data": {
+    "wagers": [
+      {
+        "ticketNumber": "T789012", "wagerNumber": "W789012", "player": "PLAYER1", "wager": "Chiefs -3.5",
+        "legs": [{ "gameId": "1001", "line": "-3.5", "odds": -110, "side": "away" }],
+        "totalRisk": 100.00, "totalToWin": 90.91
+      }
+    ],
+    "totalRisk": 100.00, "totalToWin": 90.91, "rawRowCount": 1
+  }
+}`,
+    gameVolume: `{
+  "source": "live",
+  "data": {
+    "gameId": "1001",
+    "awayVolume": 75000, "homeVolume": 45000, "totalRisk": 120000
+  }
+}`,
+    playerInfo: `{
+  "source": "live",
+  "data": {
+    "INFO": {
+      "CustomerID": "PLAYER1", "Login": "player1", "NameFirst": "John", "NameLast": "Doe",
+      "CreditLimit": 10000, "CurrentBalance": 2500.00, "OpenBets": 3
+    }
+  }
+}`
+  };
+  return shapes[ep.key] || `{\n  "source": "live",\n  "data": {\n    /* normalized response from ${ep.path} */\n  }\n}`;
+}
+
+// ==========================================
+// RENDER — Matrix
+// ==========================================
+function renderMatrix() {
+  const tbody = document.getElementById('matrixBody');
+  tbody.innerHTML = ENDPOINTS.map(ep => `
+    <tr data-key="${ep.key}" data-category="${ep.category}" data-path="${ep.path}">
+      <td>${ep.key}</td>
+      <td><span class="category-badge ${CATEGORY_CLASS[ep.category]}">${ep.category}</span></td>
+      <td>${ep.path}</td>
+      <td><span class="ttl-badge">${ep.ttl}s</span></td>
+      <td><span class="demo-badge ${ep.demo ? 'demo-yes' : 'demo-no'}">${ep.demo ? 'Yes' : 'No'}</span></td>
+      <td>${formatParams(ep.required).join(', ') || '—'}</td>
+      <td>${formatParams(ep.optional).join(', ') || '—'}</td>
+    </tr>
+  `).join('');
+}
+
+let matrixSort = { col: null, dir: 1 };
+function sortMatrix(col) {
+  if (matrixSort.col === col) matrixSort.dir *= -1;
+  else { matrixSort.col = col; matrixSort.dir = 1; }
+
+  document.querySelectorAll('.sort-indicator').forEach(el => el.textContent = '');
+  document.getElementById('sort-' + col).textContent = matrixSort.dir === 1 ? '▲' : '▼';
+
+  const tbody = document.getElementById('matrixBody');
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  rows.sort((a, b) => {
+    let av, bv;
+    switch(col) {
+      case 'key': av = a.dataset.key; bv = b.dataset.key; break;
+      case 'category': av = a.dataset.category; bv = b.dataset.category; break;
+      case 'path': av = a.cells[2].textContent; bv = b.cells[2].textContent; break;
+      case 'ttl': av = parseInt(a.cells[3].textContent); bv = parseInt(b.cells[3].textContent); break;
+      case 'demo': av = a.cells[4].textContent; bv = b.cells[4].textContent; break;
+      default: return 0;
+    }
+    if (av < bv) return -1 * matrixSort.dir;
+    if (av > bv) return 1 * matrixSort.dir;
+    return 0;
+  });
+  rows.forEach(r => tbody.appendChild(r));
+}
+
+function filterMatrix(query) {
+  const q = query.toLowerCase();
+  document.querySelectorAll('#matrixBody tr').forEach(row => {
+    const text = (row.dataset.key + ' ' + row.dataset.category + ' ' + row.dataset.path).toLowerCase();
+    row.classList.toggle('hidden-filter', !text.includes(q));
+  });
+}
+
+// ==========================================
+// RENDER — UI Matrix (Component / Endpoint / CSS / Theme)
+// ==========================================
+const UI_MATRIX = [
+  { component: "Odds Matrix", endpoints: "GET /api/odds/live", css: ".matrix-container, .matrix-table, .sticky-col, .odds-price, .detail-drawer", style: "Sortable grid with sticky columns, consensus highlighting, and expandable detail drawers", theme: "Sports Terminal Dark", hex: "#0a0e17, #111827, #1f2937, #ff6600, #10b981, #ef4444" },
+  { component: "Player Profile Modal", endpoints: "GET /api/players/{id}/details, GET /api/players/{id}/wagers, GET /api/players/{id}/pnl, GET /api/players/{id}/agent-context, GET /api/v1/players/{id}/intelligence-map", css: ".player-profile-overlay, .player-profile-shell, .profile-stat-grid, .profile-stat-card, .profile-chart-card", style: "Glass-panel overlay with tabbed stat cards and chart boxes", theme: "Sports Terminal Dark", hex: "#0a0e17, #111827, #1a2332, #e5e7eb, #6b7280, #ff6600" },
+  { component: "Live Betting Center", endpoints: "POST /api/proxy/Report/getScoresLiveDynamic, POST /api/proxy/Manager/getDynamicLive, POST /api/proxy/Manager/getSportsTypesLive", css: ".live-badge, .game-card, .game-card-header, .book-pill", style: "Live score flash cards with book pills and real-time badges", theme: "Sports Terminal Dark", hex: "#0a0e17, #10b981, #ef4444, #f59e0b, #3b82f6" },
+  { component: "Agent Network / Downline", endpoints: "GET /api/v1/agents/hierarchy, GET /api/agents/downline", css: ".agent-lineage-row, .agent-node-row, .agent-rate-grid, .agent-level-bars", style: "Hierarchical tree with level bars and rate grids", theme: "Sports Terminal Dark", hex: "#0a0e17, #111827, #8b5cf6, #06b6d4, #e5e7eb" },
+  { component: "Exposure Panels", endpoints: "GET /api/exposure/sports, GET /api/exposure/agents", css: ".exposure-bar, .exposure-bar-fill, .exposure-bar-label, .exposure-table", style: "Horizontal risk bars with fill gradients and labeled metrics", theme: "Sports Terminal Dark", hex: "#0a0e17, #ef4444, #f59e0b, #10b981, #3b82f6" },
+  { component: "Pattern Detection", endpoints: "GET /api/patterns/history, GET /api/patterns/summary, GET /api/patterns/catalog", css: ".pattern-row-critical, .pattern-row-warning, .pattern-row-watch, .pattern-badge-pulse", style: "Severity-coded rows with pulsing badges and icon indicators", theme: "Sports Terminal Dark", hex: "#ef4444, #f59e0b, #3b82f6, #8b5cf6, #10b981" },
+  { component: "Syndicate Intel", endpoints: "POST /api/proxy/analytics/syndicates", css: ".intel-identity-card, .intel-avatar, .intel-risk-meter, .intel-stat-card, .intel-wager-card", style: "Risk-meter cards with identity avatars and linked stat grids", theme: "Sports Terminal Dark", hex: "#0a0e17, #111827, #f43f5e, #8b5cf6, #84cc16" },
+  { component: "Integrity Cases", endpoints: "GET /api/proxy/integrity/cases, PATCH /api/proxy/integrity/cases/{id}", css: "Inline styles (rounded, border, p-2 case cards)", style: "Case review cards with priority/status badges and action buttons", theme: "Sports Terminal Dark", hex: "#0a0e17, #1a2332, #e5e7eb, #6b7280" },
+  { component: "Performance Dashboard", endpoints: "GET /api/betting/velocity, GET /api/betting/live-vs-pre, GET /api/master/history, GET /api/performance/summary", css: ".analytics-chart", style: "Chart.js canvases with historical line graphs and summary tables", theme: "Sports Terminal Dark", hex: "#0a0e17, #111827, #3b82f6, #10b981, #f59e0b" },
+  { component: "Webhooks Manager", endpoints: "GET /api/webhooks, POST /api/webhooks, PUT /api/webhooks/{id}, DELETE /api/webhooks/{id}", css: "Inline styles (rounded-lg, border, p-3 panels)", style: "Webhook cards with platform badges, trigger chips, and action buttons", theme: "Sports Terminal Dark", hex: "#0a0e17, #111827, #ff6600, #e5e7eb" },
+  { component: "Alerts & Notifications", endpoints: "WebSocket /ws", css: ".alert-critical, .alert-warning, .alert-info, .alert-row, .gslive-row", style: "Banner alerts with severity colors and live ticker rows", theme: "Sports Terminal Dark", hex: "#ef4444, #f59e0b, #3b82f6, #10b981, #8b5cf6" },
+  { component: "Settings / Vault", endpoints: "GET /api/buckeye/vault-status", css: "Inline styles (flex, rounded, px-2, py-1 agent rows)", style: "Form inputs with vault status indicators and agent credential rows", theme: "Sports Terminal Dark", hex: "#0a0e17, #111827, #06b6d4, #e5e7eb" },
+];
+
+function renderUiMatrix() {
+  const tbody = document.getElementById('uiMatrixBody');
+  tbody.innerHTML = UI_MATRIX.map(row => `
+    <tr>
+      <td><strong>${row.component}</strong></td>
+      <td>${row.endpoints.split(', ').map(e => `<code style="background:var(--bg);padding:2px 6px;border-radius:4px;font-size:11px;display:inline-block;margin:2px 0;">${e}</code>`).join('<br>')}</td>
+      <td><code style="font-size:11px;">${row.css}</code></td>
+      <td>${row.style}</td>
+      <td><span class="category-badge cat-account">${row.theme}</span></td>
+      <td>${row.hex.split(', ').map(h => `<span style="display:inline-block;width:14px;height:14px;border-radius:3px;background:${h};border:1px solid var(--border);vertical-align:middle;margin-right:4px;" title="${h}"></span><code style="font-size:11px;">${h}</code>`).join('<br>')}</td>
+    </tr>
+  `).join('');
+}
+
+// ==========================================
+// RENDER — Entity Grid
+// ==========================================
+const ENTITIES = {
+  Agent: {
+    fields: [
+      { name: 'id', type: 'string' }, { name: 'name', type: 'string' },
+      { name: 'customerID', type: 'string' }, { name: 'balance', type: 'number' },
+      { name: 'weekGross', type: 'number' }, { name: 'status', type: 'string' },
+      { name: 'type', type: 'string' }, { name: 'creditLimit', type: 'number' }
+    ],
+    endpoints: ['agentDownline', 'agentBilling', 'agentManagement', 'agentPerformance', 'accountInfo', 'authorizations']
+  },
+  Player: {
+    fields: [
+      { name: 'CustomerID', type: 'string' }, { name: 'Login', type: 'string' },
+      { name: 'NameFirst', type: 'string' }, { name: 'NameLast', type: 'string' },
+      { name: 'CreditLimit', type: 'number' }, { name: 'CurrentBalance', type: 'number' },
+      { name: 'OpenBets', type: 'number' }
+    ],
+    endpoints: ['playerInfo', 'playerActivity', 'bettorDetails', 'wagerByPlayer', 'playerWeek', 'transactionPlayer', 'historyPlayer', 'listVip']
+  },
+  Wager: {
+    fields: [
+      { name: 'WagerNumber', type: 'string' }, { name: 'AgentID', type: 'string' },
+      { name: 'CustomerID', type: 'string' }, { name: 'WagerType', type: 'string' },
+      { name: 'AmountWagered', type: 'number' }, { name: 'GameID', type: 'string' },
+      { name: 'Line', type: 'number' }, { name: 'Odds', type: 'number' },
+      { name: 'Side', type: 'string' }, { name: 'Status', type: 'string' }
+    ],
+    endpoints: ['betTicker', 'pending', 'openBets', 'wagerByPlayer', 'transactionPlayer', 'gameVolume']
+  },
+  Line: {
+    fields: [
+      { name: 'spread', type: 'object' }, { name: 'moneyline', type: 'object' },
+      { name: 'total', type: 'object' }, { name: 'away', type: 'string' },
+      { name: 'home', type: 'string' }, { name: 'line', type: 'number' },
+      { name: 'odds', type: 'number' }
+    ],
+    endpoints: ['leagueLines', 'linesPlus', 'dynamicLive', 'scoresLive', 'props', 'extendedProps', 'gameVolume']
+  },
+  Game: {
+    fields: [
+      { name: 'id', type: 'string' }, { name: 'rot', type: 'string' },
+      { name: 'datetime', type: 'string' }, { name: 'status', type: 'string' },
+      { name: 'away', type: 'string' }, { name: 'home', type: 'string' },
+      { name: 'sport', type: 'string' }, { name: 'league', type: 'string' }
+    ],
+    endpoints: ['games', 'leagueLines', 'dynamicLive', 'scoresLive', 'gameVolume', 'liveGame']
+  },
+  League: {
+    fields: [
+      { name: 'id', type: 'string' }, { name: 'code', type: 'string' },
+      { name: 'name', type: 'string' }, { name: 'season', type: 'string' },
+      { name: 'hasLines', type: 'boolean' }
+    ],
+    endpoints: ['sportsLeagues', 'leagueLines', 'dynamicLive', 'scoresLive']
+  },
+  Sport: {
+    fields: [
+      { name: 'id', type: 'string' }, { name: 'code', type: 'string' },
+      { name: 'name', type: 'string' }, { name: 'icon', type: 'string' }
+    ],
+    endpoints: ['sportsLeagues', 'sportsType', 'periodsBySport', 'games', 'dynamicLive']
+  }
+};
+
+function renderEntityGrid() {
+  const grid = document.getElementById('entityGrid');
+  grid.innerHTML = Object.entries(ENTITIES).map(([name, entity]) => `
+    <div class="entity-card">
+      <h4><span style="color:var(--accent);">◆</span> ${name}</h4>
+      <ul>
+        ${entity.fields.map(f => `<li><span>${f.name}</span><span class="field-type">${f.type}</span></li>`).join('')}
+      </ul>
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+        <div class="param-label" style="margin-bottom:6px;">Endpoints</div>
+        <div class="param-tags">
+          ${entity.endpoints.map(e => `<span class="param-tag">${e}</span>`).join('')}
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ==========================================
+// RENDER — cURL Samples
+// ==========================================
+const CURL_SAMPLES = [
+  { name: "Authenticate", cmd: `curl -X POST http://localhost:3001/api/proxy/auth \\\n  -H "Content-Type: application/json" \\\n  -H "X-API-Key: dev-key-123" \\\n  -d '{"customerID":"BILLY666","password":"secret123","cf_clearance":"cf-token"}'` },
+  { name: "Agent Downline", cmd: `curl -X POST http://localhost:3001/api/proxy/agentDownline \\\n  -H "Content-Type: application/json" \\\n  -H "X-API-Key: dev-key-123" \\\n  -d '{"agentID":"BILLY666","agentOwner":"BILLY666","agentSite":"1"}'` },
+  { name: "League Lines", cmd: `curl -X POST http://localhost:3001/api/proxy/leagueLines \\\n  -H "Content-Type: application/json" \\\n  -H "X-API-Key: dev-key-123" \\\n  -d '{"league":"NFL","sport":"NFL","agentID":"BILLY666","RRO":"1"}'` },
+  { name: "Bet Ticker", cmd: `curl -X POST http://localhost:3001/api/proxy/betTicker \\\n  -H "Content-Type: application/json" \\\n  -H "X-API-Key: dev-key-123" \\\n  -d '{"agentID":"BILLY666","agentOwner":"BILLY666","agentSite":"1"}'` },
+  { name: "Pending Wagers", cmd: `curl -X POST http://localhost:3001/api/proxy/pending \\\n  -H "Content-Type: application/json" \\\n  -H "X-API-Key: dev-key-123" \\\n  -d '{"date":"2024-01-15","agentID":"BILLY666","agentOwner":"BILLY666","agentSite":"1"}'` },
+  { name: "Dynamic Live", cmd: `curl -X POST http://localhost:3001/api/proxy/dynamicLive \\\n  -H "Content-Type: application/json" \\\n  -H "X-API-Key: dev-key-123" \\\n  -d '{"agentID":"BILLY666","agentOwner":"BILLY666","agentSite":"1"}'` },
+  { name: "Player Info", cmd: `curl -X POST http://localhost:3001/api/proxy/playerInfo \\\n  -H "Content-Type: application/json" \\\n  -H "X-API-Key: dev-key-123" \\\n  -d '{"playerID":"PLAYER1","agentID":"BILLY666","agentOwner":"BILLY666","agentSite":"1"}'` },
+  { name: "Props", cmd: `curl -X POST http://localhost:3001/api/proxy/props \\\n  -H "Content-Type: application/json" \\\n  -H "X-API-Key: dev-key-123" \\\n  -d '{"agentID":"BILLY666","agentOwner":"BILLY666","agentSite":"1"}'` },
+  { name: "Extended Props", cmd: `curl -X POST http://localhost:3001/api/proxy/extendedProps \\\n  -H "Content-Type: application/json" \\\n  -H "X-API-Key: dev-key-123" \\\n  -d '{"agentID":"BILLY666","agentOwner":"BILLY666","agentSite":"1"}'` },
+  { name: "Renew Token", cmd: `curl -X POST http://localhost:3001/api/proxy/renewToken \\\n  -H "Content-Type: application/json" \\\n  -H "X-API-Key: dev-key-123" \\\n  -d '{"agentID":"BILLY666","agentOwner":"BILLY666","agentSite":"1"}'` },
+];
+
+function renderCurlSamples() {
+  const container = document.getElementById('curlSamples');
+  container.innerHTML = CURL_SAMPLES.map(s => `
+    <div style="margin-bottom:20px;">
+      <div class="param-label" style="margin-bottom:6px;">${s.name}</div>
+      <div class="code-block">
+        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+        <pre>${escapeHtml(s.cmd)}</pre>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ==========================================
+// UTILS
+// ==========================================
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function toggleSection(header) {
+  const section = header.closest('.section');
+  section.classList.toggle('collapsed');
+}
+
+function toggleEndpoint(header) {
+  const card = header.closest('.endpoint-card');
+  card.classList.toggle('open');
+}
+
+function switchTab(id, tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  tab.classList.add('active');
+  document.getElementById('panel-' + id).classList.add('active');
+}
+
+function filterEndpoints(query) {
+  const q = query.toLowerCase();
+  document.querySelectorAll('.endpoint-card').forEach(card => {
+    const text = (card.dataset.key + ' ' + card.dataset.category + ' ' + card.dataset.path).toLowerCase();
+    card.classList.toggle('hidden-filter', !text.includes(q));
+  });
+  document.querySelectorAll('.section').forEach(section => {
+    const visible = section.querySelectorAll('.endpoint-card:not(.hidden-filter)').length;
+    section.style.display = visible > 0 || q === '' ? '' : 'none';
+  });
+}
+
+function copyCode(btn) {
+  const pre = btn.nextElementSibling;
+  navigator.clipboard.writeText(pre.textContent).then(() => {
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy', 1500);
+  });
+}
+
+// ==========================================
+// DATA FLOW DIAGRAM (ASCII)
+// ==========================================
+const DATA_FLOW_DIAGRAM = `
++-----------------------------------+
+|         fantasy402.com            |
+|    Buckeye PPH API (cloud)        |
++-----------------------------------+
+              |
+              | HTTPS POST /cloud/api/...
+              v
++-----------------------------------+
+|      Sports Terminal Proxy        |
+|         localhost:3001            |
+|                                   |
+|  ┌-----------------------------┐ |
+|  | Zod Env Validation          | |
+|  | SQLite WAL + SWR Cache      | |
+|  | Circuit Breaker             | |
+|  | Rate Limiting               | |
+|  | Token Pre-renewal           | |
+|  └-----------------------------┘ |
+|              |                    |
+|     +--------+--------+           |
+|     |                 |           |
+|     v                 v           |
+|  /api/proxy/*      /ws            |
+|  REST endpoints    WebSocket      |
++-----------------------------------+
+              |
+              | HTTP / WS
+              v
++-----------------------------------+
+|        Backend Server             |
+|        localhost:3000             |
+|                                   |
+|  ┌-----------------------------┐ |
+|  | ProxyClient (68 wrappers)   | |
+|  | /api/live/* routes          | |
+|  | SQLite Cache (local)        | |
+|  | BuckeyeAPI (direct)         | |
+|  └-----------------------------┘ |
+|              |                    |
+|     +--------+--------+           |
+|     |                 |           |
+|     v                 v           |
+|  SQLite           BuckeyeAPI      |
+|  (cached)         (fresh)         |
++-----------------------------------+
+              |
+              | HTTP / SSE / WS
+              v
++-----------------------------------+
+|        Frontend SPA               |
+|        localhost:3000             |
+|                                   |
+|  Trading Floor   |  Live Center   |
+|  Odds Matrix     |  Prop Builder  |
+|  Bet Ticker      |  Alerts        |
+|  Agent Tree      |  IP Tracker    |
++-----------------------------------+
+`;
+
+function renderDataFlowDiagram() {
+  document.getElementById('dataFlowDiagram').innerHTML = `<pre style="background:transparent;border:none;font-family:var(--font-mono);font-size:12px;text-align:left;color:var(--text);overflow-x:auto;">${DATA_FLOW_DIAGRAM}</pre>`;
+}
+
+// ==========================================
+// INIT
+// ==========================================
+document.addEventListener('DOMContentLoaded', () => {
+  renderEndpointGroups();
+  renderMatrix();
+  renderUiMatrix();
+  renderEntityGrid();
+  renderCurlSamples();
+  renderDataFlowDiagram();
+});
+</script>
+</body>
+</html>

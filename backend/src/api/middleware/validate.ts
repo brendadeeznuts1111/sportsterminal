@@ -32,8 +32,8 @@ export const webLogQuerySchema = z.object({
   customerId: z.string().optional(),
   start: z.string().regex(/^\d{2}\/\d{2}\/\d{4}$/, 'start must be MM/DD/YYYY'),
   end: z.string().regex(/^\d{2}\/\d{2}\/\d{4}$/, 'end must be MM/DD/YYYY'),
-  type: z.enum(['A', 'B', 'C', 'I']).default('A'),
-  actions: z.enum(['A', 'B', 'C', 'I', 'ALL']).default('A'),
+  type: z.enum(['A', 'B', 'C', 'I', 'F']).default('A'),
+  actions: z.enum(['A', 'B', 'C', 'I', 'F', 'ALL']).default('A'),
   ip: z.string().optional(),
 });
 

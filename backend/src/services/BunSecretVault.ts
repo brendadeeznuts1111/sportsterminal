@@ -197,7 +197,9 @@ function parseAgentIndex(value: string | null): string[] {
     const parsed = JSON.parse(value);
     if (!Array.isArray(parsed)) return [];
     return Array.from(new Set(parsed.map((entry) => normalizeAgentId(String(entry))).filter(Boolean))).sort();
-  } catch {
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[SecretVault] Failed to parse agent index: ${msg}`);
     return [];
   }
 }

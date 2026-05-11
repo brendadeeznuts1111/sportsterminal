@@ -1,4 +1,5 @@
 import { CONFIG } from '../../../config';
+import { parseJsonOrText } from '../utils/parseJson';
 
 export interface EnhancedProxyCredentials {
   agentID?: string;
@@ -22,7 +23,16 @@ export interface ProxyCallOptions {
   retryBackoffMs?: number;
 }
 
-export type FetchLike = (input: RequestInfo | URL, init?: RequestInit | BunFetchRequestInit) => Promise<Response>;
+export type BunProxyOption = string | {
+  url: string;
+  headers?: Record<string, string>;
+};
+
+export type ProxyFetchInit = RequestInit & {
+  proxy?: BunProxyOption;
+};
+
+export type FetchLike = (input: RequestInfo | URL, init?: ProxyFetchInit) => Promise<Response>;
 
 export class ProxyClientError extends Error {
   constructor(
@@ -61,10 +71,29 @@ export function getProxyInternalApiKey(): string {
   return Bun.env.PROXY_API_KEY || CONFIG.apiKey || '';
 }
 
+function getProxyFetchProxy(apiKey: string): BunProxyOption | undefined {
+  const proxyUrl = Bun.env.PROXY_FETCH_PROXY_URL?.trim();
+  if (!proxyUrl) return undefined;
+
+  const proxyToken = Bun.env.PROXY_FETCH_PROXY_TOKEN?.trim() || apiKey;
+  return {
+    url: proxyUrl,
+    headers: {
+      'X-API-Key': apiKey,
+      ...(proxyToken ? { 'Proxy-Authorization': `Bearer ${proxyToken}` } : {}),
+    },
+  };
+}
+
+function withProxyFetchHeaders(options: RequestInit, apiKey: string): ProxyFetchInit {
+  const proxy = getProxyFetchProxy(apiKey);
+  return proxy ? { ...options, proxy } : options;
+}
+
 async function fetchWithRetry(
   fetchImpl: FetchLike,
   url: string,
-  options: RequestInit,
+  options: ProxyFetchInit,
   retries: number,
   backoffMs: number
 ): Promise<Response> {
@@ -114,19 +143,20 @@ export async function proxyCall<T>(
     if (cfBm) body.__cf_bm = cfBm;
   }
 
+  const apiKey = getProxyInternalApiKey();
   const response = await fetchWithRetry(
     fetchImpl,
     `${getProxyInternalBase()}${opts.endpoint}`,
-    {
+    withProxyFetchHeaders({
       method,
       headers: {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
-        'X-API-Key': getProxyInternalApiKey(),
+        'X-API-Key': apiKey,
         'X-Admin-Key': CONFIG.adminApiKey,
       },
       body: method === 'GET' ? undefined : JSON.stringify(body),
-    },
+    }, apiKey),
     retries,
     retryBackoffMs
   );
@@ -216,11 +246,7 @@ export function proxyManagerCall<T = unknown>(
 
 function parseProxyPayload(text: string): unknown {
   if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
+  return parseJsonOrText(text);
 }
 
 function stringBodyValue(value: unknown): string {

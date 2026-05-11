@@ -138,8 +138,9 @@ export class PerformanceCache {
     if (this.redis) {
       try {
         this.redis.close();
-      } catch {
-        // Ignore
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`[PerformanceCache] Redis close error: ${msg}`);
       }
     }
     this.redis = null;

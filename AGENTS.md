@@ -255,6 +255,116 @@ console.log(tracer.prettyPrint(10));     // Last 10 trace spans
 console.log(requestListener.prettyPrint(10)); // Last 10 request events
 ```
 
+## Patterns & Conventions
+
+### Backend Utilities
+
+**Constants** — `backend/src/utils/constants.ts`
+- Import and use named constants instead of magic numbers.
+- Covers: `POLL_INTERVALS`, `HTTP_TIMEOUTS`, `CACHE_TTL`, `WS_TIMEOUTS`, `RISK_AGENT`, `AUTH_TIMEOUTS`, `RATE_LIMIT`, etc.
+
+**Null-Safety** — `backend/src/utils/null-safety.ts`
+- `firstOf(a, b, c)` — returns first non-null value
+- `centsTodollars(cents)` — converts Buckeye cents to dollars
+- `safeString(value)` — trim with fallback
+- `isFlagSet(flag)` — treats `'Y'`, `true`, `1` as set
+- `hasChanged(prev, curr)` — safe change detection
+
+**Safe JSON Parsing** — `backend/src/utils/parseJson.ts`
+- `parseJson<T>(text, fallback)` — parse with fallback
+- `parseJsonOrNull<T>(text)` — parse or return null
+- `parseJsonOrText(text)` — parse or return original string
+
+### WebSocket Pub/Sub (Bun Native)
+
+The backend uses Bun's native topic-based publish/subscribe API instead of manual `Set<ServerWebSocket>` iteration.
+
+**Topics:**
+- `messages` — general broadcasts (alerts, data responses, etc.)
+- `wagers:all` — all wager.new messages for unscoped clients
+- `player:{playerId}` — player-scoped wager.new messages
+
+**Subscription flow:**
+- On connect: client auto-subscribes to `messages` + `wagers:all`
+- On `player.subscribe`: subscribes to `player:{id}`, unsubscribes from `wagers:all`
+- On `player.unsubscribe`: unsubscribes from `player:{id}`; if no player subs remain, re-subscribes to `wagers:all`
+
+**Broadcasting:**
+```ts
+server.publish('messages', payload);        // general messages
+server.publish('wagers:all', payload);      // all wagers (unscoped clients)
+server.publish('player:ABC', payload);      // player-scoped wagers
+```
+
+This is faster than manual iteration because Bun's `uWebSockets` handles topic routing in C++.
+
+### Bun.serve Patterns
+
+**Error handler** — catches unhandled exceptions in `fetch()`:
+```ts
+Bun.serve({
+  fetch(req, server) { /* ... */ },
+  error(error) {
+    console.error('[HTTP] Unhandled error:', error);
+    return new Response(JSON.stringify({ error: 'Internal Server Error' }), { status: 500 });
+  },
+});
+```
+
+**Graceful shutdown** — `server.stop()` waits for in-flight requests:
+```ts
+process.on('SIGINT', async () => {
+  await server.stop();
+  process.exit(0);
+});
+```
+
+**Accurate client IP** — `server.requestIP(req)` returns `{ address, port }`:
+```ts
+const clientIp = server.requestIP(request)?.address;
+```
+- Used for rate limiting instead of fragile `x-forwarded-for` header parsing
+- Falls back to header parsing when `requestIP()` returns null (proxied requests)
+
+**WebSocket subscriber counts** — `server.subscriberCount(topic)`:
+```ts
+server.subscriberCount('messages');     // general subscribers
+server.subscriberCount('wagers:all');   // wager feed subscribers
+```
+- Exposed in `/health` and `/metrics` endpoints
+
+**Process keep-alive** — `server.ref()` / `server.unref()`:
+```ts
+const server = Bun.serve({ /* ... */ });
+server.ref();   // explicit: keep process alive (default)
+// server.unref(); // allow exit if nothing else is running
+```
+
+**Per-request idle timeout** — `server.timeout(req, seconds)`:
+```ts
+Bun.serve({
+  fetch(req, server) {
+    // Extend idle timeout for long-running proxy requests
+    server.timeout(req, 60);
+    return handleSlowRequest(req);
+  },
+});
+```
+- Use `server.timeout(req, 0)` to disable idle timeout for SSE streams
+- Default global idle timeout is 10s; raise it via `idleTimeout` in `Bun.serve` options
+
+### Frontend Logger
+
+**`frontend/public/js/logger.js`** — centralized console wrapper:
+```js
+import { logger } from './logger.js';
+logger.info('WS', 'Connected', url);
+logger.warn('API', 'Fetch failed', err);
+logger.error('Auth', 'Login failed', err);
+```
+- `logger.debug` is gated by `DEBUG` flag (localhost or `localStorage.debug=true`)
+- All other levels always log with consistent `[TAG] message` formatting
+
 ## Testing
 
 Tests in `backend/tests/*.test.ts`. Run from repo root with `bun test`.

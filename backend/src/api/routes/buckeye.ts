@@ -7,8 +7,7 @@ import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 import type { BuckeyeSecretStatus, BunSecretVault } from '../../services/BunSecretVault';
 import { createToken } from '../../auth/jwt';
 import { getEnv } from '../../config/env';
-import { proxyCall } from '../../services/ProxyClient';
-import { ProxyClient, type ProxyCredentialProvider } from '../../lib/proxyClient';
+import { ProxyClient } from '../../lib/proxyClient';
 import { z } from 'zod';
 import { validateQuery, formatZodError, webLogQuerySchema, connectBodySchema } from '../middleware/validate';
 
@@ -814,7 +813,7 @@ function stringParam(params: ProxyOperationParams, key: string, fallbackKey?: st
 }
 
 function webLogTypeParam(value: ProxyOperationParams[string]): BuckeyeWebLogType {
-  return value === 'B' || value === 'C' || value === 'I' ? value : 'A';
+  return value === 'B' || value === 'C' || value === 'I' || value === 'F' ? value : 'A';
 }
 
 const BUCKEYE_AGENT_PERFORMANCE_OPTIONS = {

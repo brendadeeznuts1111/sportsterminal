@@ -1,9 +1,18 @@
-import { TerminalWebSocketClient } from './ws-client.js';
-import { BUCKEYE_ARCHIVE_LIMIT, DATA_SOURCES, SIDEBAR_GROUP_STORAGE_KEY } from './state.js';
+import { fetchBlob, fetchDelete, fetchJson, fetchPost, getApiBaseUrl } from './api.js';
 import { createPlayerDocsRenderer } from './player-docs.js';
 import { createPlayerTransactionRenderer } from './player-transactions.js';
+import { initPropBuilder } from './prop-builder.js';
+import { closeSandboxCreateModal, getSandboxState, initSandboxSection, loadSandboxScenario, loadSandboxScenarioList, submitCreateScenario } from './sandbox.js';
+import { BUCKEYE_ARCHIVE_LIMIT, DATA_SOURCES, SIDEBAR_GROUP_STORAGE_KEY } from './state.js';
 import { cssEscape, escapeHtml, escapeJs, formatCompactDollars, formatShortDateTime, money, setText, timeAgo } from './utils.js';
-import { initPropBuilder, loadProps, loadExtendedProps, fetchPropBuilderURL } from './prop-builder.js';
+import { TerminalWebSocketClient } from './ws-client.js';
+
+window.initSandboxSection = initSandboxSection;
+window.loadSandboxScenarioList = loadSandboxScenarioList;
+window.loadSandboxScenario = loadSandboxScenario;
+window.closeSandboxCreateModal = closeSandboxCreateModal;
+window.submitCreateScenario = submitCreateScenario;
+window.getSandboxState = getSandboxState;
 
 // ==================== STATE ====================
 let currentSection = 'floor';
@@ -152,6 +161,10 @@ let integrityCaseState = {
   status: 'open',
   lastLoadedAt: null,
 };
+let agentRulesState = {
+  loading: false,
+  rules: [],
+};
 let performanceState = {
   velocity: [],
   liveVsPre: null,
@@ -167,6 +180,7 @@ let performanceState = {
 };
 let velocityChart = null;
 let liveVsPreChart = null;
+let ipHistoryChart = null;
 let wsClient = new TerminalWebSocketClient({
   getDefaultWsUrl,
   updateWSStatus,
@@ -441,11 +455,15 @@ document.addEventListener('DOMContentLoaded', () => {
   const passInput = document.getElementById('settingsPassword');
   const baseInput = document.getElementById('settingsBaseUrl');
   const cfInput = document.getElementById('settingsCfCookie');
+  const proxySecretsBaseInput = document.getElementById('proxySecretsBaseUrl');
+  const proxySecretsKeyInput = document.getElementById('proxySecretsApiKey');
   const retainedRiskInput = document.getElementById('retainedRiskPercent');
   if (agentInput) agentInput.value = savedAgent;
   if (passInput) passInput.value = '';
   if (baseInput) baseInput.value = savedBase;
   if (cfInput) cfInput.value = '';
+  if (proxySecretsBaseInput) proxySecretsBaseInput.value = localStorage.getItem('proxyBaseUrl') || 'http://localhost:3001';
+  if (proxySecretsKeyInput) proxySecretsKeyInput.value = localStorage.getItem('proxyApiKey') || 'dev-key-123';
   if (retainedRiskInput) retainedRiskInput.value = savedRetainedRisk;
 
   const playerSearchTable = document.getElementById('playerSearchTable');
@@ -587,6 +605,22 @@ document.addEventListener('DOMContentLoaded', () => {
         loadAccessLogsForPerformance(false);
       }
     }
+  });
+
+  wsClient.on('ip_alert', (msg) => {
+    showToast(msg.message || 'Suspicious IP activity detected', msg.severity === 'high' ? 'error' : 'warning');
+    if (currentSection === 'ipTracker') loadIpSuspicious(true);
+  });
+
+  wsClient.on('risk_alert', (msg) => {
+    showToast(msg.message || 'Risk alert triggered', msg.severity === 'high' ? 'error' : 'warning');
+    if (currentSection === 'ipTracker') loadIpSuspicious(true);
+  });
+
+  wsClient.on('agent_rule.triggered', (msg) => {
+    const payload = msg.payload || {};
+    showToast(`Rule triggered: ${payload.rule?.name || payload.action || 'agent rule'}`, payload.severity === 'critical' ? 'error' : 'warning');
+    if (currentSection === 'rulesEngine') loadAgentRules(true);
   });
 
   wsClient.on('weeklyFigure.new', (msg) => {
@@ -852,9 +886,7 @@ function mergeWagers(rows) {
 async function loadPersistedWagers(force = false) {
   if (!force && window.backendWagersLoaded) return buckeyeWagers.length > 0;
   try {
-    const res = await fetch(`${getApiBaseUrl()}/api/wagers?limit=${BUCKEYE_ARCHIVE_LIMIT}`);
-    if (!res.ok) throw new Error(`Wager archive unavailable: ${res.status}`);
-    const payload = await res.json();
+    const payload = await fetchJson(`/api/wagers?limit=${BUCKEYE_ARCHIVE_LIMIT}`);
     const rows = Array.isArray(payload) ? payload : (payload.wagers || payload.data || []);
     if (!rows.length) return false;
     window.backendWagersLoaded = true;
@@ -897,9 +929,7 @@ async function refreshLiveStats() {
 // ==================== EXPOSURE FETCH ====================
 async function fetchSportExposure() {
   try {
-    const res = await fetch(`${getApiBaseUrl()}/api/exposure/sports`);
-    if (!res.ok) throw new Error('Failed to fetch sport exposure');
-    sportExposureData = await res.json();
+    sportExposureData = await fetchJson('/api/exposure/sports');
     const totalVolume = sportExposureData.reduce((sum, row) => sum + (row.total || 0), 0);
     sportExposureData = sportExposureData.map(row => ({
       ...row,
@@ -915,9 +945,7 @@ async function fetchSportExposure() {
 
 async function fetchAgentExposure() {
   try {
-    const res = await fetch(`${getApiBaseUrl()}/api/exposure/agents`);
-    if (!res.ok) throw new Error('Failed to fetch agent exposure');
-    agentExposureData = await res.json();
+    agentExposureData = await fetchJson('/api/exposure/agents');
     const totalVolume = agentExposureData.reduce((sum, row) => sum + (row.total || 0), 0);
     agentExposureData = agentExposureData.map(row => ({
       ...row,
@@ -1101,7 +1129,11 @@ function switchSection(section, btn) {
         const endEl = document.getElementById('globalIpEnd');
         if (startEl && !startEl.value) startEl.value = today;
         if (endEl && !endEl.value) endEl.value = today;
+        loadIpSuspicious();
       }
+      break;
+    case 'rulesEngine':
+      loadAgentRules();
       break;
     case 'webhooks':
       loadWebhooks();
@@ -1115,6 +1147,12 @@ function switchSection(section, btn) {
       break;
     case 'uptime':
       loadUptimePage();
+      break;
+    case 'sandbox':
+      initSandboxSection();
+      break;
+    case 'command-center':
+      loadCommandCenter();
       break;
   }
 }
@@ -1627,7 +1665,7 @@ function renderBuckeyeAgentExposure() {
       <span class="text-xs w-20 truncate">${agent}</span>
       <div class="flex-1 exposure-bar">
         <div class="exposure-bar-fill" style="width:${pct}%;background:${color};"></div>
-        <div class="exposure-bar-label">$${(vol/1000).toFixed(1)}K</div>
+        <div class="exposure-bar-label">$${(vol / 1000).toFixed(1)}K</div>
       </div>
       <span class="text-xs font-mono w-16 text-right">$${vol.toLocaleString()}</span>
     </div>`;
@@ -1656,10 +1694,10 @@ function renderSportBreakdown() {
       <span class="text-xs w-20 truncate">${sport}</span>
       <div class="flex-1 exposure-bar">
         <div class="exposure-bar-fill" style="width:${pct}%;background:var(--accent);"></div>
-        <div class="exposure-bar-label">$${(data.volume/1000).toFixed(1)}K</div>
+        <div class="exposure-bar-label">$${(data.volume / 1000).toFixed(1)}K</div>
       </div>
       <span class="text-xs font-mono w-12 text-right">${data.count}</span>
-      <span class="text-xs font-mono w-14 text-right">$${(data.volume/1000).toFixed(0)}K</span>
+      <span class="text-xs font-mono w-14 text-right">$${(data.volume / 1000).toFixed(0)}K</span>
     </div>`;
   }).join('');
 }
@@ -1683,14 +1721,14 @@ function renderGameBreakdown() {
   container.innerHTML = sorted.map(([game, data]) => {
     const pct = (data.volume / maxVol * 100).toFixed(0);
     return `<div class="flex items-center gap-3">
-      <span class="text-xs w-3 truncate" style="color:var(--text-dim);">${data.sport.substring(0,1)}</span>
+      <span class="text-xs w-3 truncate" style="color:var(--text-dim);">${data.sport.substring(0, 1)}</span>
       <span class="text-xs w-24 truncate" title="${game}">${game}</span>
       <div class="flex-1 exposure-bar">
         <div class="exposure-bar-fill" style="width:${pct}%;background:var(--green);"></div>
-        <div class="exposure-bar-label">$${(data.volume/1000).toFixed(1)}K</div>
+        <div class="exposure-bar-label">$${(data.volume / 1000).toFixed(1)}K</div>
       </div>
       <span class="text-xs font-mono w-10 text-right">${data.count}</span>
-      <span class="text-xs font-mono w-12 text-right">$${(data.volume/1000).toFixed(0)}K</span>
+      <span class="text-xs font-mono w-12 text-right">$${(data.volume / 1000).toFixed(0)}K</span>
     </div>`;
   }).join('');
 }
@@ -2927,8 +2965,8 @@ let zone1TaxonomyState = {
   lastLoadedAt: 0,
 };
 
-const DEFAULT_BOOK_ORDER = ['PIN','BOL','BOV','BUC','ACE','MET','DK','FD','MGM','CZR','PB','BR','BS','SBO','STK','NIT'];
-const ALL_SPORTS = ['all','NBA','NCAAB','MLB','NHL','NFL','Soccer'];
+const DEFAULT_BOOK_ORDER = ['PIN', 'BOL', 'BOV', 'BUC', 'ACE', 'MET', 'DK', 'FD', 'MGM', 'CZR', 'PB', 'BR', 'BS', 'SBO', 'STK', 'NIT'];
+const ALL_SPORTS = ['all', 'NBA', 'NCAAB', 'MLB', 'NHL', 'NFL', 'Soccer'];
 
 let bookPreferences = loadBookPreferences();
 
@@ -2936,10 +2974,10 @@ function loadBookPreferences() {
   try {
     const raw = localStorage.getItem('bookPreferences');
     if (raw) return JSON.parse(raw);
-  } catch {}
+  } catch { }
   return {
     order: [...DEFAULT_BOOK_ORDER],
-    visible: ['PIN','BOL','BOV','BUC','ACE','MET'],
+    visible: ['PIN', 'BOL', 'BOV', 'BUC', 'ACE', 'MET'],
   };
 }
 
@@ -3783,7 +3821,7 @@ function saveBookSettings() {
 }
 
 function resetBookSettings() {
-  bookPreferences = { order: [...DEFAULT_BOOK_ORDER], visible: ['PIN','BOL','BOV','BUC','ACE','MET'] };
+  bookPreferences = { order: [...DEFAULT_BOOK_ORDER], visible: ['PIN', 'BOL', 'BOV', 'BUC', 'ACE', 'MET'] };
   renderBookSettingsList();
 }
 
@@ -3793,7 +3831,7 @@ function openConsensusModal(gameId) {
   if (!g) return;
   document.getElementById('consensusModalTitle').textContent = `${g.away} @ ${g.home} — Consensus`;
   const cons = g.consensus;
-  const markets = ['spread','moneyline','total'];
+  const markets = ['spread', 'moneyline', 'total'];
   let html = '<table class="w-full text-xs"><thead><tr style="background:var(--bg);"><th class="text-left px-2 py-1">Book</th><th class="text-center px-2 py-1">Spread</th><th class="text-center px-2 py-1">ML</th><th class="text-center px-2 py-1">Total</th><th class="text-center px-2 py-1">Last Move</th></tr></thead><tbody>';
 
   // Consensus row
@@ -3981,14 +4019,14 @@ function renderSportExposure() {
       </thead>
       <tbody>
         ${sorted.map(row => {
-          const barPct = Math.min(100, (row.total / maxTotal * 100)).toFixed(0);
-          const color = row.pct > 30 ? 'var(--red)' : row.pct > 15 ? 'var(--yellow)' : 'var(--green)';
-          return `<tr>
+    const barPct = Math.min(100, (row.total / maxTotal * 100)).toFixed(0);
+    const color = row.pct > 30 ? 'var(--red)' : row.pct > 15 ? 'var(--yellow)' : 'var(--green)';
+    return `<tr>
             <td class="font-medium">${row.sport}</td>
             <td class="text-right">
               <div class="exposure-bar" style="width:120px;display:inline-block;vertical-align:middle;margin-right:6px;">
                 <div class="exposure-bar-fill" style="width:${barPct}%;background:${color};"></div>
-                <div class="exposure-bar-label">$${(row.total/1000).toFixed(1)}K</div>
+                <div class="exposure-bar-label">$${(row.total / 1000).toFixed(1)}K</div>
               </div>
             </td>
             <td class="text-right font-mono" style="color:var(--text-dim);">${row.pct}%</td>
@@ -3998,7 +4036,7 @@ function renderSportExposure() {
             <td class="text-center font-mono" style="color:var(--accent);">${row.price || '—'}</td>
             <td class="text-right font-mono">$${(row.gameTotal || 0).toLocaleString()}</td>
           </tr>`;
-        }).join('')}
+  }).join('')}
       </tbody>
     </table>`;
 }
@@ -4054,14 +4092,14 @@ function renderAgentExposure() {
       </thead>
       <tbody>
         ${sorted.map(row => {
-          const barPct = Math.min(100, (row.total / maxTotal * 100)).toFixed(0);
-          const color = parseFloat(row.pct) > 30 ? 'var(--red)' : parseFloat(row.pct) > 15 ? 'var(--yellow)' : 'var(--green)';
-          return `<tr>
+    const barPct = Math.min(100, (row.total / maxTotal * 100)).toFixed(0);
+    const color = parseFloat(row.pct) > 30 ? 'var(--red)' : parseFloat(row.pct) > 15 ? 'var(--yellow)' : 'var(--green)';
+    return `<tr>
             <td class="font-medium">${row.agent}</td>
             <td class="text-right">
               <div class="exposure-bar" style="width:100px;display:inline-block;vertical-align:middle;margin-right:6px;">
                 <div class="exposure-bar-fill" style="width:${barPct}%;background:${color};"></div>
-                <div class="exposure-bar-label">$${(row.total/1000).toFixed(1)}K</div>
+                <div class="exposure-bar-label">$${(row.total / 1000).toFixed(1)}K</div>
               </div>
             </td>
             <td class="text-right font-mono" style="color:var(--text-dim);">${row.pct}%</td>
@@ -4071,7 +4109,7 @@ function renderAgentExposure() {
             <td class="truncate" style="max-width:120px;" title="${row.topGame}">${row.topGame || '—'}</td>
             <td class="text-right font-mono">$${(row.topGameVol || 0).toLocaleString()}</td>
           </tr>`;
-        }).join('')}
+  }).join('')}
       </tbody>
     </table>`;
 }
@@ -4250,11 +4288,160 @@ function getDefaultWsUrl() {
   return `${protocol}//${host}/ws`;
 }
 
-function getApiBaseUrl() {
-  if (window.location.protocol === 'file:') {
-    return 'http://localhost:3000';
+const PROXY_SECRET_NAMES = [
+  'proxy-admin-key',
+  'buckeye-api-key',
+  'buckeye-customer-id',
+  'buckeye-password',
+  'agent-id',
+  'agent-owner',
+  'kimi-api-key',
+  'cf-clearance',
+];
+
+function getProxySecretsBaseUrl() {
+  const input = document.getElementById('proxySecretsBaseUrl');
+  const value = input?.value?.trim() || localStorage.getItem('proxyBaseUrl') || 'http://localhost:3001';
+  localStorage.setItem('proxyBaseUrl', value);
+  return value.replace(/\/+$/, '');
+}
+
+function getProxySecretsApiKey() {
+  const input = document.getElementById('proxySecretsApiKey');
+  const value = input?.value || localStorage.getItem('proxyApiKey') || 'dev-key-123';
+  if (value) localStorage.setItem('proxyApiKey', value);
+  return value;
+}
+
+function proxySecretHeaders() {
+  return {
+    'Content-Type': 'application/json',
+    'X-API-Key': getProxySecretsApiKey(),
+  };
+}
+
+function getProxySecretInput(name) {
+  return document.getElementById(`secret_${name}`);
+}
+
+function syncBuckeyeSettingsFromProxySecrets(secrets) {
+  const agent = secrets['agent-id'] || secrets['buckeye-customer-id'] || '';
+  const password = secrets['buckeye-password'] || '';
+  const cf = secrets['cf-clearance'] || '';
+  const agentInput = document.getElementById('settingsAgentId');
+  const passwordInput = document.getElementById('settingsPassword');
+  const cfInput = document.getElementById('settingsCfCookie');
+  if (agent && agentInput) agentInput.value = agent;
+  if (password && passwordInput) passwordInput.value = password;
+  if (cf && cfInput) cfInput.value = cf;
+}
+
+async function fetchProxySecrets(redact = false) {
+  const url = `${getProxySecretsBaseUrl()}/api/secrets${redact ? '?redact=1' : ''}`;
+  const res = await fetch(url, { headers: proxySecretHeaders() });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || 'Proxy secrets unavailable');
+  return body;
+}
+
+async function refreshProxySecretStatus() {
+  const statusEl = document.getElementById('proxySecretsStatus');
+  try {
+    const secrets = await fetchProxySecrets(true);
+    const setCount = PROXY_SECRET_NAMES.filter(name => secrets[name]).length;
+    for (const name of PROXY_SECRET_NAMES) {
+      const input = getProxySecretInput(name);
+      if (input) input.placeholder = secrets[name] ? 'Stored in vault' : '';
+    }
+    if (statusEl) {
+      statusEl.textContent = `${setCount}/${PROXY_SECRET_NAMES.length} set`;
+      statusEl.style.color = setCount ? 'var(--green)' : 'var(--text-dim)';
+    }
+  } catch (err) {
+    if (statusEl) {
+      statusEl.textContent = err instanceof Error ? err.message : 'Proxy secrets unavailable';
+      statusEl.style.color = 'var(--yellow)';
+    }
   }
-  return `${window.location.protocol}//${window.location.host}`;
+}
+
+async function importProxySecrets() {
+  const statusEl = document.getElementById('proxySecretsStatus');
+  try {
+    const secrets = await fetchProxySecrets(false);
+    for (const name of PROXY_SECRET_NAMES) {
+      const input = getProxySecretInput(name);
+      if (input && typeof secrets[name] === 'string') input.value = secrets[name] || '';
+    }
+    syncBuckeyeSettingsFromProxySecrets(secrets);
+    if (secrets['proxy-admin-key']) {
+      localStorage.setItem('proxyApiKey', secrets['proxy-admin-key']);
+      const keyInput = document.getElementById('proxySecretsApiKey');
+      if (keyInput) keyInput.value = secrets['proxy-admin-key'];
+    }
+    if (statusEl) {
+      statusEl.textContent = 'Imported';
+      statusEl.style.color = 'var(--green)';
+    }
+    showToast('Proxy secrets imported', 'success');
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : 'Could not import proxy secrets', 'error');
+  }
+}
+
+async function saveProxySecrets() {
+  const names = PROXY_SECRET_NAMES
+    .filter(name => name !== 'proxy-admin-key')
+    .concat('proxy-admin-key');
+  let saved = 0;
+  try {
+    for (const name of names) {
+      const input = getProxySecretInput(name);
+      const value = input?.value || '';
+      if (!value) continue;
+      const res = await fetch(`${getProxySecretsBaseUrl()}/api/secrets`, {
+        method: 'POST',
+        headers: proxySecretHeaders(),
+        body: JSON.stringify({ name, value }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `Could not save ${name}`);
+      saved++;
+      if (name === 'proxy-admin-key') {
+        localStorage.setItem('proxyApiKey', value);
+        const keyInput = document.getElementById('proxySecretsApiKey');
+        if (keyInput) keyInput.value = value;
+      }
+    }
+    await refreshProxySecretStatus();
+    showToast(saved ? `${saved} proxy secret${saved === 1 ? '' : 's'} saved` : 'No filled secrets to save', saved ? 'success' : 'info');
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : 'Could not save proxy secrets', 'error');
+  }
+}
+
+async function deleteProxySecrets() {
+  const names = PROXY_SECRET_NAMES
+    .filter(name => name !== 'proxy-admin-key')
+    .concat('proxy-admin-key');
+  let deleted = 0;
+  try {
+    for (const name of names) {
+      const input = getProxySecretInput(name);
+      if (!input?.value) continue;
+      const url = new URL(`${getProxySecretsBaseUrl()}/api/secrets`);
+      url.searchParams.set('name', name);
+      const res = await fetch(url, { method: 'DELETE', headers: { 'X-API-Key': getProxySecretsApiKey() } });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `Could not delete ${name}`);
+      input.value = '';
+      deleted++;
+    }
+    await refreshProxySecretStatus();
+    showToast(deleted ? `${deleted} proxy secret${deleted === 1 ? '' : 's'} deleted` : 'Fill secret fields to delete them', deleted ? 'success' : 'info');
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : 'Could not delete proxy secrets', 'error');
+  }
 }
 
 async function refreshVaultStatus() {
@@ -4424,10 +4611,10 @@ function updateConnectionStatus(state) {
   const token = localStorage.getItem('apiToken');
   const authIndicator = token ? '🔒 ' : '🔓 ';
   const styles = {
-    connected:    { text: authIndicator + '● Live Polling', color: 'var(--green)' },
-    connecting:   { text: authIndicator + '● Connecting...', color: 'var(--yellow)' },
-    testing:      { text: authIndicator + '● Testing...', color: 'var(--yellow)' },
-    ready:        { text: authIndicator + '● Login OK', color: 'var(--blue)' },
+    connected: { text: authIndicator + '● Live Polling', color: 'var(--green)' },
+    connecting: { text: authIndicator + '● Connecting...', color: 'var(--yellow)' },
+    testing: { text: authIndicator + '● Testing...', color: 'var(--yellow)' },
+    ready: { text: authIndicator + '● Login OK', color: 'var(--blue)' },
     disconnected: { text: authIndicator + '● Disconnected', color: 'var(--text-dim)' },
   };
   const s = styles[state] || styles.disconnected;
@@ -4511,8 +4698,7 @@ async function loadWebhooks(force = false) {
   if (!force && isCacheFresh('webhooks')) return;
 
   try {
-    const res = await fetch(`${getApiBaseUrl()}/api/webhooks`);
-    const webhooks = await res.json();
+    const webhooks = await fetchJson('/api/webhooks');
     markCacheFresh('webhooks');
 
     if (webhooks.length === 0) {
@@ -4565,6 +4751,7 @@ async function loadStatusPage(force = false) {
   booksEl.innerHTML = statusLoadingRow('Loading books...');
   countersEl.innerHTML = statusLoadingRow('Loading counters...');
   queueEl.innerHTML = statusLoadingRow('Loading queue...');
+  void loadProxyNetworkStats(force);
 
   try {
     const player360Id = getStatusPlayerId();
@@ -4702,6 +4889,96 @@ async function loadStatusPage(force = false) {
     queueEl.innerHTML = '';
     updateStatusBadge(false, 0, 0);
   }
+}
+
+async function loadProxyNetworkStats(force = false) {
+  const grid = document.getElementById('networkStatsGrid');
+  const warmupsEl = document.getElementById('networkWarmupList');
+  const summary = document.getElementById('networkStatsSummary');
+  if (!grid || !warmupsEl) return;
+
+  if (summary) {
+    summary.textContent = force ? 'Refreshing...' : 'Checking...';
+    summary.style.color = 'var(--text-dim)';
+  }
+  grid.innerHTML = statusLoadingRow('Loading network stats...');
+  warmupsEl.innerHTML = '';
+
+  try {
+    const res = await fetch(`${getProxySecretsBaseUrl()}/api/agent/network-stats`, {
+      headers: { 'X-API-Key': getProxySecretsApiKey() },
+    });
+    const stats = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(stats.error || `Proxy network stats failed: ${res.status}`);
+    renderProxyNetworkStats(stats);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Proxy network stats unavailable';
+    grid.innerHTML = `<div class="rounded p-3" style="background:var(--bg);border:1px solid var(--border);color:var(--yellow);">${escapeHtml(message)}</div>`;
+    if (summary) {
+      summary.textContent = 'Unavailable';
+      summary.style.color = 'var(--yellow)';
+    }
+  }
+}
+
+function renderProxyNetworkStats(stats) {
+  const grid = document.getElementById('networkStatsGrid');
+  const warmupsEl = document.getElementById('networkWarmupList');
+  const summary = document.getElementById('networkStatsSummary');
+  if (!grid || !warmupsEl) return;
+
+  const dns = stats.dns || stats.dnsStats || {};
+  const hits = Number(dns.cacheHitsCompleted || 0);
+  const inflightHits = Number(dns.cacheHitsInflight || 0);
+  const misses = Number(dns.cacheMisses || 0);
+  const total = Number(dns.totalCount || 0);
+  const hitRate = typeof dns.hitRate === 'string'
+    ? dns.hitRate
+    : total > 0 ? `${((hits / total) * 100).toFixed(1)}%` : 'N/A';
+  const pendingRequests = Number(stats.http?.pendingRequests ?? stats.pendingRequests ?? 0);
+  const pendingWebSockets = Number(stats.ws?.pendingWebSockets ?? stats.pendingWebSockets ?? 0);
+  const ws = stats.websocket || {};
+
+  grid.innerHTML = [
+    networkMetricTile('DNS Hit Rate', hitRate, `${hits.toLocaleString()} hits / ${misses.toLocaleString()} misses`, hitRate === 'N/A' ? 'var(--text-dim)' : 'var(--green)'),
+    networkMetricTile('DNS Entries', Number(dns.size || 0).toLocaleString(), `${inflightHits.toLocaleString()} inflight hits`, 'var(--cyan)'),
+    networkMetricTile('DNS Errors', Number(dns.errors || 0).toLocaleString(), `${total.toLocaleString()} total requests`, Number(dns.errors || 0) > 0 ? 'var(--yellow)' : 'var(--green)'),
+    networkMetricTile('HTTP Pending', pendingRequests.toLocaleString(), `${Number(stats.activeRequests || 0).toLocaleString()} active proxy calls`, pendingRequests > 10 ? 'var(--yellow)' : 'var(--green)'),
+    networkMetricTile('WS Clients', pendingWebSockets.toLocaleString(), `${Number(ws.subscribers || 0).toLocaleString()} ticker subscribers`, pendingWebSockets > 0 ? 'var(--green)' : 'var(--text-dim)'),
+    networkMetricTile('Backpressure', Number(ws.backpressureEvents || 0).toLocaleString(), `${Number(ws.droppedMessages || 0).toLocaleString()} dropped`, Number(ws.droppedMessages || 0) > 0 ? 'var(--red)' : 'var(--green)'),
+  ].join('');
+
+  const warmups = Array.isArray(stats.warmups) ? stats.warmups : [];
+  warmupsEl.innerHTML = warmups.length
+    ? warmups.map(renderNetworkWarmup).join('')
+    : '<div style="color:var(--text-dim);">No startup warmup targets reported.</div>';
+
+  if (summary) {
+    summary.textContent = `DNS ${hitRate} · WS ${pendingWebSockets.toLocaleString()} · HTTP ${pendingRequests.toLocaleString()}`;
+    summary.style.color = Number(dns.errors || 0) || Number(ws.droppedMessages || 0) ? 'var(--yellow)' : 'var(--green)';
+  }
+}
+
+function networkMetricTile(label, value, subtext, color) {
+  return `<div class="rounded border p-3" style="background:var(--bg);border-color:var(--border);">
+    <div class="text-[10px] uppercase tracking-wider" style="color:var(--text-dim);">${escapeHtml(label)}</div>
+    <div class="text-lg font-bold mt-1" style="color:${color};">${escapeHtml(String(value))}</div>
+    <div class="text-[11px] mt-1" style="color:var(--text-dim);">${escapeHtml(subtext || '')}</div>
+  </div>`;
+}
+
+function renderNetworkWarmup(warmup) {
+  const ok = Boolean(warmup.dnsPrefetched && warmup.preconnected && !warmup.error);
+  const color = ok ? 'var(--green)' : warmup.dnsPrefetched ? 'var(--yellow)' : 'var(--red)';
+  const status = ok ? 'ready' : warmup.error ? 'partial' : 'warming';
+  return `<div class="rounded border p-3" style="background:var(--bg);border-color:var(--border);">
+    <div class="flex items-center justify-between gap-2">
+      <span class="font-mono truncate" title="${escapeHtml(warmup.target || '')}">${escapeHtml(warmup.host || warmup.target || 'unknown')}</span>
+      <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold" style="background:${color}22;color:${color};">${escapeHtml(status)}</span>
+    </div>
+    <div class="mt-1" style="color:var(--text-dim);">:${escapeHtml(String(warmup.port || ''))} · DNS ${warmup.dnsPrefetched ? 'yes' : 'no'} · TCP ${warmup.preconnected ? 'yes' : 'no'}</div>
+    ${warmup.error ? `<div class="mt-1 truncate" style="color:var(--yellow);" title="${escapeHtml(warmup.error)}">${escapeHtml(warmup.error)}</div>` : ''}
+  </div>`;
 }
 
 function statusLoadingCards() {
@@ -5035,14 +5312,14 @@ async function checkApiEndpoints() {
       <div class="text-[10px] uppercase tracking-wider font-semibold mb-1 mt-1" style="color:var(--text-dim);">${groupName}</div>
       <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5">
         ${eps.map((ep) => {
-          const isOk = ep.status >= 200 && ep.status < 400;
-          const color = isOk ? 'var(--green)' : ep.status === 0 ? 'var(--red)' : 'var(--yellow)';
-          return `<div class="flex items-center gap-1.5 px-2 py-1.5 rounded" style="background:var(--bg);border:1px solid var(--border);" title="${ep.path} — ${ep.status} in ${ep.ms}ms">
+    const isOk = ep.status >= 200 && ep.status < 400;
+    const color = isOk ? 'var(--green)' : ep.status === 0 ? 'var(--red)' : 'var(--yellow)';
+    return `<div class="flex items-center gap-1.5 px-2 py-1.5 rounded" style="background:var(--bg);border:1px solid var(--border);" title="${ep.path} — ${ep.status} in ${ep.ms}ms">
             <div class="w-1.5 h-1.5 rounded-full shrink-0" style="background:${color};"></div>
             <span class="truncate">${ep.label}</span>
             <span class="ml-auto text-[10px] shrink-0" style="color:var(--text-dim);">${ep.status}</span>
           </div>`;
-        }).join('')}
+  }).join('')}
       </div>
     </div>
   `).join('');
@@ -5667,8 +5944,7 @@ async function loadAgentPerformanceDetail(agentId) {
     detail.innerHTML = '<span style="color:var(--text-dim);">Loading detail...</span>';
   }
   try {
-    const res = await fetch(`${getApiBaseUrl()}/api/performance/details?agent=${encodeURIComponent(agentId)}&weeks=8`);
-    const payload = res.ok ? await res.json() : { weeklyTrend: [], sportBreakdown: [] };
+    const payload = await fetchJson(`/api/performance/details?agent=${encodeURIComponent(agentId)}&weeks=8`);
     renderAgentPerformanceDetail(payload);
   } catch {
     if (detail) detail.innerHTML = '<span style="color:var(--red);">Unable to load agent detail.</span>';
@@ -5721,9 +5997,7 @@ async function exportAnalytics(kind) {
   const labels = { wagers: 'wagers', 'access-logs': 'access logs', performance: 'performance' };
   try {
     showToast(`Preparing ${labels[kind] || kind} export...`, 'info');
-    const res = await fetch(`${getApiBaseUrl()}/api/export/${kind}`);
-    if (!res.ok) throw new Error(`Export failed: ${res.status}`);
-    const blob = await res.blob();
+    const blob = await fetchBlob(`/api/export/${kind}`);
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -5738,8 +6012,7 @@ async function exportAnalytics(kind) {
 
 async function editWebhook(id) {
   try {
-    const res = await fetch(`${getApiBaseUrl()}/api/webhooks/${id}`);
-    const wh = await res.json();
+    const wh = await fetchJson(`/api/webhooks/${id}`);
     if (!wh) return;
 
     editingWebhookId = id;
@@ -5763,15 +6036,11 @@ async function editWebhook(id) {
 async function deleteWebhook(id) {
   if (!confirm('Delete this webhook?')) return;
   try {
-    const res = await fetch(`${getApiBaseUrl()}/api/webhooks/${id}`, { method: 'DELETE' });
-    if (res.ok) {
-      showToast('Webhook deleted', 'success');
-      loadWebhooks(true);
-    } else {
-      showToast('Failed to delete webhook', 'error');
-    }
+    await fetchDelete(`/api/webhooks/${id}`);
+    showToast('Webhook deleted', 'success');
+    loadWebhooks(true);
   } catch (err) {
-    showToast('Backend unreachable', 'error');
+    showToast(err instanceof Error ? err.message : 'Failed to delete webhook', 'error');
   }
 }
 
@@ -5930,16 +6199,12 @@ async function refreshAgentDownline(force = false) {
   try {
     // Fetch the cached real hierarchy projection. The v1 shape is shared with
     // Player Intelligence, then adapted into this view's legacy node shape.
-    const hierarchyRes = await fetch(`${getApiBaseUrl()}/api/v1/agents/hierarchy`);
-    if (!hierarchyRes.ok) throw new Error(`Hierarchy request failed: ${hierarchyRes.status}`);
-    const hierarchyData = await hierarchyRes.json();
+    const hierarchyData = await fetchJson('/api/v1/agents/hierarchy');
     const cachedTree = Array.isArray(hierarchyData?.tree) ? normalizeCachedAgentTree(hierarchyData.tree) : [];
     const general = Array.isArray(hierarchyData) ? hierarchyData : (hierarchyData.GENERAL || []);
 
     // Fetch wager-derived stats
-    const statsRes = await fetch(`${getApiBaseUrl()}/api/agents/downline`);
-    if (!statsRes.ok) throw new Error(`Downline stats request failed: ${statsRes.status}`);
-    const statsData = await statsRes.json();
+    const statsData = await fetchJson('/api/agents/downline');
     await loadAgentPatternCounts();
     if (requestId !== agentDownlineRequestId) return;
     agentStatsMap = {};
@@ -6002,9 +6267,7 @@ function normalizeCachedAgentTree(nodes) {
 
 async function loadAgentPatternCounts() {
   try {
-    const res = await fetch(`${getApiBaseUrl()}/api/patterns/agents?sinceHours=24`);
-    if (!res.ok) throw new Error(`Pattern counts failed: ${res.status}`);
-    const rows = await res.json();
+    const rows = await fetchJson('/api/patterns/agents?sinceHours=24');
     agentPatternCounts = {};
     (Array.isArray(rows) ? rows : []).forEach(row => {
       if (row.agent) agentPatternCounts[row.agent] = row;
@@ -6986,16 +7249,16 @@ function computeTreeLayout(treeRoots) {
   const layoutRoot = roots.length === 1
     ? roots[0]
     : {
-        agent: localStorage.getItem('agentId') || 'DOWNLINE',
-        type: 'M',
-        level: 0,
-        total_volume: roots.reduce((s, n) => s + (n.total_volume || 0), 0),
-        total_risk: roots.reduce((s, n) => s + (n.total_risk || 0), 0),
-        player_count: roots.reduce((s, n) => s + (n.player_count || 0), 0),
-        wager_count: roots.reduce((s, n) => s + (n.wager_count || 0), 0),
-        children: roots,
-        virtualRoot: true,
-      };
+      agent: localStorage.getItem('agentId') || 'DOWNLINE',
+      type: 'M',
+      level: 0,
+      total_volume: roots.reduce((s, n) => s + (n.total_volume || 0), 0),
+      total_risk: roots.reduce((s, n) => s + (n.total_risk || 0), 0),
+      player_count: roots.reduce((s, n) => s + (n.player_count || 0), 0),
+      wager_count: roots.reduce((s, n) => s + (n.wager_count || 0), 0),
+      children: roots,
+      virtualRoot: true,
+    };
 
   const getVisibleChildren = node => (node.children || []).filter(Boolean);
   const childNodes = getVisibleChildren(layoutRoot);
@@ -8541,7 +8804,7 @@ function openAgentTreeFromProfile(agentId) {
         renderAgentTree(agentTreeData);
         if (currentSection === 'agentTree') initAgentCanvas();
       }
-    }).catch(() => {});
+    }).catch(() => { });
   }, 0);
 }
 
@@ -8834,8 +9097,8 @@ function renderPlayerProfileAccess(profile) {
       <table class="profile-table">
         <thead><tr><th>Time</th><th>Login</th><th>IP</th><th>Flag</th><th>Geo</th><th>Operation</th><th>Data</th></tr></thead>
         <tbody>${logs.map(log => {
-          const geoLabel = log.geo ? [log.geo.city, log.geo.region, log.geo.country].filter(Boolean).join(', ') : '';
-          return `<tr class="${log.isNewIp ? 'new-ip-row' : ''}">
+    const geoLabel = log.geo ? [log.geo.city, log.geo.region, log.geo.country].filter(Boolean).join(', ') : '';
+    return `<tr class="${log.isNewIp ? 'new-ip-row' : ''}">
           <td style="color:var(--text-dim);">${formatShortDateTime(log.access_datetime || log.AccessDateTime)}</td>
           <td class="font-mono">${escapeHtml(log.login_id || log.LoginID || log.customer_id || '')}</td>
           <td class="font-mono">${escapeHtml(log.ip_address || log.IPAddress || '')}</td>
@@ -8942,14 +9205,105 @@ function exportGlobalIpTrackerCsv() {
   showToast('IP Tracker results exported to CSV', 'success');
 }
 
+function exportIpIntelligence(format = 'json') {
+  const safeFormat = format === 'csv' ? 'csv' : 'json';
+  const a = document.createElement('a');
+  a.href = `${getApiBaseUrl()}/api/agent/ip-export?format=${safeFormat}`;
+  a.download = `ip-intelligence-${new Date().toISOString().split('T')[0]}.${safeFormat}`;
+  a.click();
+  showToast(`IP intelligence ${safeFormat.toUpperCase()} export started`, 'info');
+}
+
+async function loadIpSuspicious(force = false) {
+  const sharedEl = document.getElementById('ipSharedAlerts');
+  const newEl = document.getElementById('ipNewAlerts');
+  const summaryEl = document.getElementById('ipTrackerSummary');
+  if (!sharedEl || !newEl) return;
+
+  sharedEl.innerHTML = '<div style="color:var(--text-dim);">Loading shared IP alerts...</div>';
+  newEl.innerHTML = '<div style="color:var(--text-dim);">Loading new IP alerts...</div>';
+  if (summaryEl) summaryEl.textContent = force ? 'Refreshing...' : 'Checking...';
+
+  try {
+    const payload = await fetchJson('/api/agent/ip-suspicious?limit=20');
+    renderIpSuspicious(payload);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'IP alerts unavailable';
+    sharedEl.innerHTML = `<div style="color:var(--yellow);">${escapeHtml(message)}</div>`;
+    newEl.innerHTML = '<div style="color:var(--text-dim);">No local access-log evidence loaded.</div>';
+    if (summaryEl) {
+      summaryEl.textContent = 'Unavailable';
+      summaryEl.style.color = 'var(--yellow)';
+    }
+  }
+}
+
+function renderIpSuspicious(payload) {
+  const sharedEl = document.getElementById('ipSharedAlerts');
+  const newEl = document.getElementById('ipNewAlerts');
+  const summaryEl = document.getElementById('ipTrackerSummary');
+  if (!sharedEl || !newEl) return;
+  const shared = Array.isArray(payload.shared) ? payload.shared : [];
+  const newIPs = Array.isArray(payload.newIPs) ? payload.newIPs : [];
+
+  sharedEl.innerHTML = shared.length
+    ? shared.slice(0, 8).map(row => {
+      const accounts = String(row.accounts || '').split(',').filter(Boolean);
+      const category = row.reputation?.category || '';
+      const score = row.reputation?.score ?? '';
+      return `<button type="button" class="w-full text-left rounded p-2" style="background:var(--bg);border:1px solid var(--border);" onclick="setIpTrackerLookup('${escapeJs(row.ip_address || '')}', '')">
+        <div class="flex items-center justify-between gap-2">
+          <span class="font-mono" style="color:var(--red);">${escapeHtml(row.ip_address || '-')}</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded" style="background:rgba(239,68,68,.12);color:var(--red);">${Number(row.acct_count || 0)} accounts</span>
+        </div>
+        <div class="mt-1 truncate" style="color:var(--text-dim);" title="${escapeHtml(accounts.join(', '))}">${escapeHtml(accounts.slice(0, 6).join(', ') || '-')}</div>
+        <div class="mt-1 text-[10px]" style="color:var(--text-dim);">${Number(row.access_count || 0)} hits · ${escapeHtml(row.country || row.geoLabel || 'unknown')} · ${escapeHtml(category)} ${score !== '' ? score : ''} · last ${formatShortDateTime(row.last_seen)}</div>
+      </button>`;
+    }).join('')
+    : '<div style="color:var(--text-dim);">No shared IP clusters in the last 24h.</div>';
+
+  newEl.innerHTML = newIPs.length
+    ? newIPs.slice(0, 8).map(row => `<button type="button" class="w-full text-left rounded p-2" style="background:var(--bg);border:1px solid var(--border);" onclick="setIpTrackerLookup('${escapeJs(row.ip_address || '')}', '${escapeJs(row.login_id || '')}')">
+        <div class="flex items-center justify-between gap-2">
+          <span class="font-mono">${escapeHtml(row.login_id || '-')}</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded" style="background:rgba(245,158,11,.12);color:var(--yellow);">NEW IP</span>
+        </div>
+        <div class="mt-1 font-mono" style="color:var(--yellow);">${escapeHtml(row.ip_address || '-')}</div>
+        <div class="mt-1 text-[10px]" style="color:var(--text-dim);">${escapeHtml(row.country || row.geoLabel || 'unknown')}</div>
+        <div class="mt-1 text-[10px]" style="color:var(--text-dim);">${formatShortDateTime(row.access_datetime)} · ${escapeHtml(row.operation || '-')}</div>
+      </button>`).join('')
+    : '<div style="color:var(--text-dim);">No new-IP alerts for known players in the last 24h.</div>';
+
+  if (summaryEl) {
+    summaryEl.textContent = `${shared.length} shared clusters · ${newIPs.length} new IPs`;
+    summaryEl.style.color = shared.length || newIPs.length ? 'var(--yellow)' : 'var(--green)';
+  }
+}
+
+function setIpTrackerLookup(ip, player) {
+  const ipEl = document.getElementById('globalIpFilter');
+  const playerEl = document.getElementById('globalIpPlayerFilter');
+  const actionEl = document.getElementById('globalIpActionsFilter');
+  if (ipEl) ipEl.value = ip || '';
+  if (playerEl) playerEl.value = player || '';
+  if (actionEl) actionEl.value = player ? 'C' : 'I';
+  loadGlobalIpTracker();
+}
+
 async function loadGlobalIpTracker() {
   const actions = document.getElementById('globalIpActionsFilter')?.value || 'B';
   const ip = document.getElementById('globalIpFilter')?.value?.trim() || '';
+  const player = document.getElementById('globalIpPlayerFilter')?.value?.trim() || '';
   const startInput = document.getElementById('globalIpStart')?.value || '';
   const endInput = document.getElementById('globalIpEnd')?.value || '';
 
-  if (!ip) {
-    alert('IP address is required');
+  if (actions === 'C' && !player) {
+    alert('Player login is required for Acct IP Match');
+    return;
+  }
+
+  if (actions !== 'C' && !ip) {
+    alert('IP address is required for IP matching');
     return;
   }
 
@@ -8961,45 +9315,54 @@ async function loadGlobalIpTracker() {
   const start = fmtDate(startInput);
   const end = fmtDate(endInput);
   const today = new Date().toISOString().split('T')[0];
-  const effectiveStart = start || today;
-  const effectiveEnd = end || today;
+  const effectiveStart = start || fmtDate(today);
+  const effectiveEnd = end || fmtDate(today);
 
   const btn = document.getElementById('globalIpFetchBtn');
   if (btn) { btn.textContent = 'Searching...'; btn.disabled = true; }
 
   try {
-    const url = new URL(`${getApiBaseUrl()}/api/buckeye/web-log`);
+    const url = new URL(`${getApiBaseUrl()}/api/agent/ip-lookup`);
     url.searchParams.set('start', effectiveStart);
     url.searchParams.set('end', effectiveEnd);
-    url.searchParams.set('type', 'B');
-    url.searchParams.set('actions', actions);
-    url.searchParams.set('ip', ip);
+    url.searchParams.set('limit', '200');
+    if (actions === 'C') url.searchParams.set('player', player);
+    else url.searchParams.set('ip', ip);
 
     const res = await fetch(url.toString());
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
-    const rows = (json.data || []).map(row => ({
-      login_id: row.LoginID,
-      ip_address: row.IPAddress,
-      access_datetime: row.AccessDateTime,
-      operation: row.Operation,
-      data: row.Data,
+    const rows = ((json.accounts || json.ips || [])).map(row => ({
+      login_id: row.login_id || row.LoginID,
+      agent_id: row.agent_id,
+      ip_address: row.ip_address || row.IPAddress,
+      access_datetime: row.access_datetime || row.last_seen || row.AccessDateTime,
+      first_seen: row.first_seen,
+      access_count: row.access_count,
+      operation: row.operation || row.Operation,
+      data: row.data || row.Data,
       geo: row.geo,
+      country: row.country,
+      geoLabel: row.geoLabel,
+      source: row.source || 'local',
     }));
 
     const tbody = document.getElementById('globalIpTrackerRows');
     if (tbody) {
       tbody.innerHTML = rows.map(log => {
-        const geoLabel = log.geo ? [log.geo.city, log.geo.region, log.geo.country].filter(Boolean).join(', ') : '';
+        const geoLabel = log.geoLabel || (log.geo ? [log.geo.city, log.geo.region, log.geo.country].filter(Boolean).join(', ') : '') || log.country || '';
+        const rep = json.reputation ? `${json.reputation.category} ${json.reputation.score}` : '';
         return `<tr>
         <td class="px-3 py-2" style="color:var(--text-dim);">${formatShortDateTime(log.access_datetime)}</td>
         <td class="px-3 py-2 font-mono">${escapeHtml(log.login_id)}</td>
         <td class="px-3 py-2 font-mono">${escapeHtml(log.ip_address)}</td>
         <td class="px-3 py-2" style="color:var(--text-dim);">${escapeHtml(geoLabel) || '-'}</td>
         <td class="px-3 py-2">${escapeHtml(log.operation || '-')}</td>
-        <td class="px-3 py-2">${escapeHtml(log.data || '-')}</td>
+        <td class="px-3 py-2">${escapeHtml([log.data || log.source || '-', rep].filter(Boolean).join(' · '))}</td>
       </tr>`}).join('') || '<tr><td colspan="6" class="px-3 py-6 text-center" style="color:var(--text-dim);">No accounts found for this IP.</td></tr>';
     }
+    renderIpHistoryChart(actions === 'C' ? json.ipHistory || [] : [], player);
+    if (json.liveError) showToast(`Live Buckeye IP lookup fell back to local logs: ${json.liveError}`, 'warning');
     const exportBtn = document.getElementById('globalIpExportBtn');
     if (exportBtn) exportBtn.classList.toggle('hidden', rows.length === 0);
     window._globalIpTrackerRows = rows;
@@ -9009,6 +9372,186 @@ async function loadGlobalIpTracker() {
   } finally {
     if (btn) { btn.textContent = 'Investigate'; btn.disabled = false; }
   }
+}
+
+function renderIpHistoryChart(history, player) {
+  const panel = document.getElementById('ipHistoryPanel');
+  const summary = document.getElementById('ipHistorySummary');
+  const canvas = document.getElementById('ipHistoryChart');
+  if (!panel || !canvas || !window.Chart) return;
+  const rows = Array.isArray(history) ? history : [];
+  panel.classList.toggle('hidden', rows.length === 0);
+  if (!rows.length) {
+    if (ipHistoryChart) {
+      ipHistoryChart.destroy();
+      ipHistoryChart = null;
+    }
+    return;
+  }
+  if (summary) {
+    const totalLogins = rows.reduce((sum, row) => sum + Number(row.loginCount || 0), 0);
+    summary.textContent = `${escapeHtml(player || 'player')} · ${totalLogins} logins`;
+  }
+  if (ipHistoryChart) ipHistoryChart.destroy();
+  ipHistoryChart = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels: rows.map(row => row.day || row.first_seen || ''),
+      datasets: [
+        {
+          label: 'Logins',
+          data: rows.map(row => Number(row.loginCount || 0)),
+          borderColor: '#06b6d4',
+          backgroundColor: 'rgba(6,182,212,.15)',
+          tension: 0.25,
+          yAxisID: 'y',
+        },
+        {
+          label: 'Wager Volume',
+          data: rows.map(row => Number(row.wagerVolume || 0)),
+          borderColor: '#f59e0b',
+          backgroundColor: 'rgba(245,158,11,.12)',
+          tension: 0.25,
+          yAxisID: 'y1',
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#e5e7eb' } },
+        tooltip: {
+          callbacks: {
+            afterBody(items) {
+              const row = rows[items[0]?.dataIndex || 0] || {};
+              return row.ips ? `IPs: ${row.ips}` : '';
+            },
+          },
+        },
+      },
+      scales: {
+        x: { ticks: { color: '#9ca3af' }, grid: { color: 'rgba(31,41,55,.55)' } },
+        y: { beginAtZero: true, ticks: { color: '#9ca3af' }, grid: { color: 'rgba(31,41,55,.55)' } },
+        y1: { beginAtZero: true, position: 'right', ticks: { color: '#9ca3af' }, grid: { drawOnChartArea: false } },
+      },
+    },
+  });
+}
+
+async function loadAgentRules(force = false) {
+  const tbody = document.getElementById('agentRulesRows');
+  if (!tbody) return;
+  if (agentRulesState.loading && !force) return;
+  agentRulesState.loading = true;
+  tbody.innerHTML = '<tr><td colspan="5" class="px-3 py-6 text-center" style="color:var(--text-dim);">Loading rules...</td></tr>';
+  try {
+    const payload = await fetchJson('/api/agent/rules');
+    agentRulesState.rules = Array.isArray(payload.rules) ? payload.rules : [];
+    renderAgentRules();
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="5" class="px-3 py-6 text-center" style="color:var(--red);">${escapeHtml(err instanceof Error ? err.message : 'Rules unavailable')}</td></tr>`;
+  } finally {
+    agentRulesState.loading = false;
+  }
+}
+
+function renderAgentRules() {
+  const tbody = document.getElementById('agentRulesRows');
+  if (!tbody) return;
+  const rules = agentRulesState.rules || [];
+  tbody.innerHTML = rules.length ? rules.map(rule => {
+    const condition = rule.condition || {};
+    const enabled = rule.enabled !== false;
+    return `<tr>
+      <td class="px-3 py-2">
+        <div class="font-semibold">${escapeHtml(rule.name || 'Untitled Rule')}</div>
+        <div class="text-[10px]" style="color:var(--text-dim);">#${escapeHtml(String(rule.id || '-'))} · ${enabled ? 'enabled' : 'disabled'}</div>
+      </td>
+      <td class="px-3 py-2 font-mono">${escapeHtml(condition.type || '-')} ≥ ${escapeHtml(String(condition.threshold ?? '-'))}${condition.windowMins ? ` / ${escapeHtml(String(condition.windowMins))}m` : ''}</td>
+      <td class="px-3 py-2">${escapeHtml(rule.action || '-')}</td>
+      <td class="px-3 py-2">${ruleSeverityChip(rule.severity)}</td>
+      <td class="px-3 py-2 text-right">
+        <button class="px-2 py-1 rounded text-[11px]" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onclick="editAgentRule(${Number(rule.id || 0)})">Edit</button>
+        <button class="px-2 py-1 rounded text-[11px]" style="background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);color:var(--red);" onclick="deleteAgentRule(${Number(rule.id || 0)})">Delete</button>
+      </td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="5" class="px-3 py-6 text-center" style="color:var(--text-dim);">No rules yet. Create one from the form.</td></tr>';
+}
+
+function ruleSeverityChip(severity) {
+  const color = severity === 'critical' ? 'var(--red)' : severity === 'high' ? 'var(--yellow)' : severity === 'medium' ? 'var(--blue)' : 'var(--text-dim)';
+  return `<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold" style="background:${color}22;color:${color};">${escapeHtml(severity || 'medium')}</span>`;
+}
+
+async function saveAgentRule(event) {
+  event?.preventDefault?.();
+  const id = Number(document.getElementById('ruleId')?.value || 0);
+  const type = document.getElementById('ruleConditionType')?.value || 'ipShared';
+  const windowMins = Number(document.getElementById('ruleWindowMins')?.value || 0);
+  const body = {
+    ...(id ? { id } : {}),
+    name: document.getElementById('ruleName')?.value?.trim() || 'Untitled Rule',
+    condition: {
+      type,
+      threshold: Number(document.getElementById('ruleThreshold')?.value || 0),
+      ...(windowMins ? { windowMins } : {}),
+    },
+    action: document.getElementById('ruleAction')?.value || 'flag',
+    severity: document.getElementById('ruleSeverity')?.value || 'medium',
+    enabled: document.getElementById('ruleEnabled')?.checked !== false,
+  };
+  try {
+    await fetchPost('/api/agent/rules', body);
+    showToast('Rule saved', 'success');
+    resetRuleForm();
+    loadAgentRules(true);
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : 'Could not save rule', 'error');
+  }
+}
+
+function editAgentRule(id) {
+  const rule = (agentRulesState.rules || []).find(row => Number(row.id) === Number(id));
+  if (!rule) return;
+  const condition = rule.condition || {};
+  setInputValue('ruleId', rule.id || '');
+  setInputValue('ruleName', rule.name || '');
+  setInputValue('ruleConditionType', condition.type || 'ipShared');
+  setInputValue('ruleThreshold', condition.threshold ?? 3);
+  setInputValue('ruleWindowMins', condition.windowMins ?? 15);
+  setInputValue('ruleAction', rule.action || 'flag');
+  setInputValue('ruleSeverity', rule.severity || 'medium');
+  const enabled = document.getElementById('ruleEnabled');
+  if (enabled) enabled.checked = rule.enabled !== false;
+}
+
+async function deleteAgentRule(id) {
+  if (!id || !confirm('Delete this rule?')) return;
+  try {
+    await fetchDelete(`/api/agent/rules/${encodeURIComponent(String(id))}`);
+    showToast('Rule deleted', 'success');
+    loadAgentRules(true);
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : 'Could not delete rule', 'error');
+  }
+}
+
+function resetRuleForm() {
+  setInputValue('ruleId', '');
+  setInputValue('ruleName', '');
+  setInputValue('ruleConditionType', 'ipShared');
+  setInputValue('ruleThreshold', 3);
+  setInputValue('ruleWindowMins', 15);
+  setInputValue('ruleAction', 'flag');
+  setInputValue('ruleSeverity', 'medium');
+  const enabled = document.getElementById('ruleEnabled');
+  if (enabled) enabled.checked = true;
+}
+
+function setInputValue(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.value = value;
 }
 
 function renderPlayerProfilePerformance(profile) {
@@ -9160,15 +9703,15 @@ function renderPlayerProfileLinks(profile) {
     <table class="profile-table">
       <thead><tr><th>Detected</th><th>Other Player</th><th>Reason</th><th>Confidence</th><th>Status</th></tr></thead>
       <tbody>${links.map(row => {
-        const other = row.player_a === profile.playerId ? row.player_b : row.player_a;
-        return `<tr>
+    const other = row.player_a === profile.playerId ? row.player_b : row.player_a;
+    return `<tr>
           <td style="color:var(--text-dim);">${formatShortDateTime(row.detected_at)}</td>
           <td class="font-mono">${escapeHtml(other || '-')}</td>
           <td>${escapeHtml(row.reason || '-')}</td>
           <td class="font-mono">${Math.round(Number(row.confidence || 0) * 100)}%</td>
           <td>${escapeHtml(row.status || '-')}</td>
         </tr>`;
-      }).join('') || profileEmptyRow('No linked accounts detected yet.', 5)}</tbody>
+  }).join('') || profileEmptyRow('No linked accounts detected yet.', 5)}</tbody>
     </table>
   </div>`;
 }
@@ -9313,8 +9856,8 @@ function renderPlayerProfileStatus(profile) {
         <table class="profile-table">
           <thead><tr><th>Source</th><th>Buckeye Endpoint</th><th>Status</th><th>Refresh Policy</th><th>Rows</th><th>Last Seen</th><th>Last Attempt</th><th>Next Refresh</th><th>Gap / Action</th></tr></thead>
           <tbody>${(map.sources || []).map(source => {
-            const health = sourceHealth(source);
-            return `<tr>
+    const health = sourceHealth(source);
+    return `<tr>
               <td class="font-mono">${escapeHtml(source.key || source.label)}</td>
               <td>${escapeHtml(source.buckeyeEndpoint || '-')}</td>
               <td>${profileStatusChip(health.state)}</td>
@@ -9325,7 +9868,7 @@ function renderPlayerProfileStatus(profile) {
               <td>${source.nextRefreshAt ? formatShortDateTime(source.nextRefreshAt) : '-'}</td>
               <td>${escapeHtml(source.gap || sourceStatusAction(source.key))}</td>
             </tr>`;
-          }).join('')}</tbody>
+  }).join('')}</tbody>
         </table>
       </div>
 
@@ -9646,26 +10189,26 @@ function renderPlayerPerformanceCharts(profile) {
   const lineCanvas = document.getElementById('playerPerformanceLineChart');
   const donutCanvas = document.getElementById('playerSportDonutChart');
   requestAnimationFrame(() => {
-  if (lineCanvas) {
-    playerProfileState.charts.line = new Chart(lineCanvas, {
-      type: 'line',
-      data: {
-        labels: weeklyPnl.map(row => row.weekStart || row.week),
-        datasets: [{ label: 'P&L', data: weeklyPnl.map(row => Number(row.pnl || 0)), borderColor: '#06b6d4', backgroundColor: 'rgba(6,182,212,.12)', fill: true, tension: .3 }],
-      },
-      options: chartBaseOptions(true),
-    });
-  }
-  if (donutCanvas) {
-    playerProfileState.charts.donut = new Chart(donutCanvas, {
-      type: 'doughnut',
-      data: {
-        labels: sports.map(row => row.sport || 'Unknown'),
-        datasets: [{ data: sports.map(row => Number(row.volume || 0)), backgroundColor: ['#ff6600', '#06b6d4', '#10b981', '#f59e0b', '#8b5cf6', '#3b82f6', '#ef4444'] }],
-      },
-      options: chartBaseOptions(true),
-    });
-  }
+    if (lineCanvas) {
+      playerProfileState.charts.line = new Chart(lineCanvas, {
+        type: 'line',
+        data: {
+          labels: weeklyPnl.map(row => row.weekStart || row.week),
+          datasets: [{ label: 'P&L', data: weeklyPnl.map(row => Number(row.pnl || 0)), borderColor: '#06b6d4', backgroundColor: 'rgba(6,182,212,.12)', fill: true, tension: .3 }],
+        },
+        options: chartBaseOptions(true),
+      });
+    }
+    if (donutCanvas) {
+      playerProfileState.charts.donut = new Chart(donutCanvas, {
+        type: 'doughnut',
+        data: {
+          labels: sports.map(row => row.sport || 'Unknown'),
+          datasets: [{ data: sports.map(row => Number(row.volume || 0)), backgroundColor: ['#ff6600', '#06b6d4', '#10b981', '#f59e0b', '#8b5cf6', '#3b82f6', '#ef4444'] }],
+        },
+        options: chartBaseOptions(true),
+      });
+    }
   });
 }
 
@@ -9833,6 +10376,9 @@ async function renderPlayerDetail(playerLogin) {
       tbody.innerHTML = '<tr><td colspan="8" class="px-3 py-8 text-center text-sm" style="color:var(--text-dim);">No wagers found for this player.</td></tr>';
     }
   }
+
+  // Load risk position card for this player
+  loadRiskPositionCard(playerLogin);
 }
 
 function renderPlayerPnlChart(pnlData) {
@@ -9909,6 +10455,814 @@ function renderPlayerWagerBreakdown(wagers) {
 
 
 
+// ─── Risk Command Center ─────────────────────────────────────────────
+
+const TIER_COLORS = { BLACK: '#000', RED: '#ef4444', YELLOW: '#f59e0b', GREEN: '#10b981' };
+const TIER_BG = { BLACK: '#1a1a2e', RED: '#ef444422', YELLOW: '#f59e0b22', GREEN: '#10b98122' };
+const STATUS_COLORS = { pending: 'var(--yellow)', applied: 'var(--green)', overridden: 'var(--purple)', expired: 'var(--text-dim)' };
+
+// SSE state — singleton EventSource for the Command Center
+let ccSseSource = null;
+let ccSseReconnectTimer = null;
+const ccSseBuffer = []; // last 8 ticker events
+
+function ccSetSseStatus(state) {
+  const dot = document.getElementById('ccSseDot');
+  const label = document.getElementById('ccSseLabel');
+  if (!dot || !label) return;
+  const map = {
+    connected: { color: 'var(--green)', text: 'SSE: live' },
+    connecting: { color: 'var(--yellow)', text: 'SSE: connecting' },
+    error: { color: 'var(--red)', text: 'SSE: error' },
+    idle: { color: 'var(--text-dim)', text: 'SSE: idle' },
+  };
+  const cfg = map[state] || map.idle;
+  dot.style.background = cfg.color;
+  label.textContent = cfg.text;
+}
+
+function ccConnectSse() {
+  if (ccSseSource) {
+    try { ccSseSource.close(); } catch { /* ignore */ }
+    ccSseSource = null;
+  }
+  const base = getApiBaseUrl();
+  ccSetSseStatus('connecting');
+
+  try {
+    const url = `${base}/api/stream/all`;
+    ccSseSource = new EventSource(url);
+
+    ccSseSource.addEventListener('open', () => ccSetSseStatus('connected'));
+
+    ccSseSource.addEventListener('wager', (e) => {
+      const data = safeJsonParse(e.data);
+      ccPushTicker({ icon: '🎟️', text: `Wager: ${data?.Login || data?.login || data?.customer_id || '?'} • $${(data?.AmountWagered || data?.amount_wagered || 0).toLocaleString()}` });
+    });
+
+    ccSseSource.addEventListener('risk_alert', (e) => {
+      const d = safeJsonParse(e.data);
+      ccPushTicker({ icon: '🚨', text: `${d?.risk_level} • ${d?.customer_id} • ${(d?.confidence * 100).toFixed(0)}%` });
+      // Also refresh dashboard counters since alerts shift state
+      ccRefreshDashboard();
+    });
+
+    ccSseSource.addEventListener('position_generated', (e) => {
+      const d = safeJsonParse(e.data);
+      ccPushTicker({ icon: '🛡️', text: `Position created: ${d?.customer_id} ${d?.risk_level}` });
+      loadCommandCenter();
+    });
+
+    ccSseSource.addEventListener('position_auto_blocked', (e) => {
+      const d = safeJsonParse(e.data);
+      ccPushTicker({ icon: '⛔', text: `Auto-blocked: ${d?.customer_id}` });
+      loadCommandCenter();
+    });
+
+    ccSseSource.addEventListener('position_applied', (e) => {
+      const d = safeJsonParse(e.data);
+      ccPushTicker({ icon: '✅', text: `Applied: ${d?.customer_id} by ${d?.trader || 'trader'}` });
+    });
+
+    ccSseSource.addEventListener('position_overridden', (e) => {
+      const d = safeJsonParse(e.data);
+      ccPushTicker({ icon: '↩️', text: `Override: ${d?.customer_id}` });
+    });
+
+    ccSseSource.addEventListener('position_breach', (e) => {
+      const d = safeJsonParse(e.data);
+      ccPushTicker({ icon: '🚫', text: `Breach: ${d?.customer_id} $${Math.round(d?.exposure)} > $${Math.round(d?.limit)}` });
+      ccRefreshDashboard();
+    });
+
+    ccSseSource.addEventListener('tick', (e) => {
+      const d = safeJsonParse(e.data);
+      ccUpdateHeartbeatStat(d);
+    });
+
+    ccSseSource.addEventListener('expired_batch', (e) => {
+      const d = safeJsonParse(e.data);
+      ccPushTicker({ icon: '⏱️', text: `Expired ${d?.count || 0} positions` });
+    });
+
+    ccSseSource.onerror = () => {
+      ccSetSseStatus('error');
+      // Auto-reconnect after 5s
+      if (ccSseReconnectTimer) return;
+      ccSseReconnectTimer = setTimeout(() => {
+        ccSseReconnectTimer = null;
+        ccConnectSse();
+      }, 5000);
+    };
+  } catch (err) {
+    console.error('[CC] SSE connect failed:', err);
+    ccSetSseStatus('error');
+  }
+}
+
+function ccDisconnectSse() {
+  if (ccSseSource) {
+    try { ccSseSource.close(); } catch { /* ignore */ }
+    ccSseSource = null;
+  }
+  if (ccSseReconnectTimer) {
+    clearTimeout(ccSseReconnectTimer);
+    ccSseReconnectTimer = null;
+  }
+  ccSetSseStatus('idle');
+}
+
+function ccPushTicker(item) {
+  ccSseBuffer.unshift({ ...item, ts: Date.now() });
+  if (ccSseBuffer.length > 8) ccSseBuffer.length = 8;
+  ccRenderTicker();
+}
+
+function ccRenderTicker() {
+  const el = document.getElementById('ccTicker');
+  if (!el) return;
+  if (ccSseBuffer.length === 0) {
+    el.innerHTML = '<span>Waiting for live events…</span>';
+    return;
+  }
+  el.innerHTML = ccSseBuffer.map((item) => {
+    const ago = ccTimeAgo(item.ts);
+    return `<span class="flex items-center gap-1">
+      <span>${item.icon}</span>
+      <span style="color:var(--text);">${escapeHtml(item.text || '')}</span>
+      <span style="color:var(--text-dim);">${ago}</span>
+    </span>`;
+  }).join('<span style="color:var(--border);">·</span>');
+}
+
+function ccTimeAgo(ts) {
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h`;
+}
+
+function ccUpdateHeartbeatStat(_d) {
+  // Re-render ticker to refresh the relative timestamps; also a safe place
+  // to do a periodic refresh of pending counters.
+  ccRenderTicker();
+}
+
+function safeJsonParse(s) {
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+// ─── Dashboard rendering ─────────────────────────────────────────────
+
+async function ccRefreshDashboard() {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/dashboard?hours=24`);
+    if (!res.ok) return;
+    const data = await res.json();
+
+    const setText = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
+
+    setText('ccDashOpen', data.summary?.open_positions ?? 0);
+    setText('ccDashPending', data.summary?.pending_review ?? 0);
+    setText('ccDashAutoBlocks', data.summary?.auto_blocks_24h ?? 0);
+    setText('ccDashBreaches', data.summary?.breaches_24h ?? 0);
+
+    ccRenderBookExposure(data.book_exposure || []);
+    ccRenderSharpAlerts(data.sharp_alerts || []);
+    ccRenderExposureBuckets(data.exposure_buckets || []);
+    ccRefreshPnlChart();
+  } catch (e) {
+    console.error('[CC] Dashboard refresh failed:', e);
+  }
+}
+
+function ccRenderBookExposure(rows) {
+  const el = document.getElementById('ccBookExposure');
+  if (!el) return;
+  if (rows.length === 0) {
+    el.innerHTML = '<div style="color:var(--text-dim);">No book activity in the last 24h.</div>';
+    return;
+  }
+  const max = Math.max(...rows.map((r) => Number(r.total_risk) || 0), 1);
+  el.innerHTML = rows.slice(0, 10).map((r) => {
+    const pct = ((Number(r.total_risk) || 0) / max * 100).toFixed(0);
+    return `<div class="flex items-center gap-2">
+      <span class="font-mono w-24 truncate" title="${escapeHtml(r.agent_login || '')}">${escapeHtml(r.agent_login || '?')}</span>
+      <div class="flex-1 h-2 rounded-full overflow-hidden" style="background:var(--bg);">
+        <div class="h-full" style="width:${pct}%;background:var(--accent);"></div>
+      </div>
+      <span class="font-mono w-20 text-right">$${Math.round(Number(r.total_risk) || 0).toLocaleString()}</span>
+      <span class="font-mono w-12 text-right" style="color:var(--text-dim);">${r.wager_count}</span>
+      <span class="font-mono w-12 text-right" style="color:var(--text-dim);">${r.unique_players}p</span>
+    </div>`;
+  }).join('');
+}
+
+function ccRenderSharpAlerts(rows) {
+  const el = document.getElementById('ccSharpAlerts');
+  if (!el) return;
+  if (rows.length === 0) {
+    el.innerHTML = '<div style="color:var(--text-dim);">No sharp alerts in the last 24h.</div>';
+    return;
+  }
+  el.innerHTML = rows.slice(0, 10).map((r) => {
+    const tierColor = TIER_COLORS[r.risk_level] || 'var(--text-dim)';
+    const tierBg = TIER_BG[r.risk_level] || 'transparent';
+    return `<div class="flex items-center gap-2 p-1 rounded" style="background:var(--bg);">
+      <span class="px-1.5 py-0.5 rounded text-xs font-bold" style="background:${tierBg};color:${tierColor};">${escapeHtml(r.risk_level || '?')}</span>
+      <span class="font-mono">${escapeHtml(r.customer_id || '?')}</span>
+      <span class="font-mono" style="color:var(--text-dim);">${escapeHtml(r.agent_login || '')}</span>
+      <span class="ml-auto font-mono">$${Math.round(Number(r.total_volume) || 0).toLocaleString()}</span>
+      <span class="font-mono" style="color:var(--text-dim);">flags ${r.flag_count || 0}</span>
+      <button onclick="viewPlayer('${escapeHtml(r.customer_id)}')" class="px-1.5 py-0.5 rounded text-xs" style="background:var(--panel);border:1px solid var(--border);color:var(--text);">View</button>
+    </div>`;
+  }).join('');
+}
+
+function ccRenderExposureBuckets(rows) {
+  const el = document.getElementById('ccExposureBuckets');
+  if (!el) return;
+  const max = Math.max(...rows.map((r) => Number(r.exposure) || 0), 1);
+  el.innerHTML = rows.map((r) => {
+    const pct = ((Number(r.exposure) || 0) / max * 100).toFixed(0);
+    return `<div>
+      <div class="flex items-center justify-between mb-0.5">
+        <span class="font-mono">${escapeHtml(r.bucket)}</span>
+        <span class="font-mono" style="color:var(--text-dim);">${r.wager_count} bets · $${Math.round(Number(r.exposure) || 0).toLocaleString()}</span>
+      </div>
+      <div class="h-1.5 rounded-full overflow-hidden" style="background:var(--bg);">
+        <div class="h-full" style="width:${pct}%;background:var(--blue);"></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ─── P&L Chart ───────────────────────────────────────────────────────
+
+async function ccRefreshPnlChart() {
+  const base = getApiBaseUrl();
+  const daysEl = document.getElementById('ccPnlDays');
+  const days = daysEl ? Number(daysEl.value) || 30 : 30;
+  const container = document.getElementById('ccPnlChart');
+  if (!container) return;
+
+  try {
+    const res = await fetch(`${base}/api/dashboard/pnl?days=${days}`);
+    if (!res.ok) { container.innerHTML = '<span style="color:var(--text-dim);">Failed to load P&L.</span>'; return; }
+    const data = await res.json();
+    if (!Array.isArray(data) || data.length === 0) {
+      container.innerHTML = '<span style="color:var(--text-dim);">No P&L data for selected period.</span>';
+      return;
+    }
+    ccRenderPnlChart(data);
+  } catch (e) {
+    container.innerHTML = '<span style="color:var(--red);">P&L load failed.</span>';
+  }
+}
+
+function ccRenderPnlChart(data) {
+  const container = document.getElementById('ccPnlChart');
+  if (!container) return;
+
+  const maxVol = Math.max(...data.map((d) => Number(d.volume) || 0), 1);
+  const maxRisk = Math.max(...data.map((d) => Number(d.risk) || 0), 1);
+  const maxNet = Math.max(...data.map((d) => Math.abs(Number(d.net) || 0)), 1);
+
+  container.innerHTML = data.map((d) => {
+    const volPct = ((Number(d.volume) || 0) / maxVol * 100).toFixed(0);
+    const riskPct = ((Number(d.risk) || 0) / maxRisk * 100).toFixed(0);
+    const netVal = Number(d.net) || 0;
+    const netColor = netVal < 0 ? 'var(--red)' : netVal > 0 ? 'var(--green)' : 'var(--text-dim)';
+    const netPct = (Math.abs(netVal) / maxNet * 100).toFixed(0);
+    const dayLabel = d.day ? new Date(d.day).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+
+    return `<div class="flex items-center gap-2">
+      <span class="text-xs w-14" style="color:var(--text-dim);">${dayLabel}</span>
+      <div class="flex-1 flex items-center gap-1">
+        <div class="h-1.5 rounded-full" style="width:${volPct}%;background:var(--green);"></div>
+        <span class="font-mono" style="color:var(--text-dim);">$${Math.round(Number(d.volume) || 0).toLocaleString()}</span>
+      </div>
+      <div class="flex items-center gap-1 w-24">
+        <div class="h-1.5 rounded-full" style="width:${riskPct}%;background:var(--red);"></div>
+        <span class="font-mono" style="color:var(--text-dim);">$${Math.round(Number(d.risk) || 0).toLocaleString()}</span>
+      </div>
+      <div class="flex items-center gap-1 w-20">
+        <div class="h-1.5 rounded-full" style="width:${netPct}%;background:${netColor};"></div>
+        <span class="font-mono" style="color:${netColor};">${netVal < 0 ? '-' : ''}$${Math.abs(Math.round(netVal)).toLocaleString()}</span>
+      </div>
+      <span class="text-xs w-6 text-right" style="color:var(--text-dim);">${d.wager_count || 0}</span>
+    </div>`;
+  }).join('');
+}
+
+// ─── Player Intel Search ─────────────────────────────────────────────
+
+let ccSuggestTimer = null;
+async function ccPlayerSuggest(query) {
+  if (ccSuggestTimer) clearTimeout(ccSuggestTimer);
+  ccSuggestTimer = setTimeout(async () => {
+    const base = getApiBaseUrl();
+    const list = document.getElementById('ccPlayerSuggestList');
+    if (!list) return;
+    if (!query || query.trim().length < 2) {
+      list.innerHTML = '<span style="color:var(--text-dim);">Type at least 2 characters…</span>';
+      return;
+    }
+    try {
+      const res = await fetch(`${base}/api/players/intel-search?q=${encodeURIComponent(query)}&limit=10`);
+      if (!res.ok) return;
+      const hits = await res.json();
+      if (!Array.isArray(hits) || hits.length === 0) {
+        list.innerHTML = '<span style="color:var(--text-dim);">No matches.</span>';
+        return;
+      }
+      list.innerHTML = hits.map((h) => {
+        const tierColor = TIER_COLORS[h.risk_level] || 'var(--text-dim)';
+        const tierBg = TIER_BG[h.risk_level] || 'transparent';
+        const tierBadge = h.risk_level
+          ? `<span class="px-1 py-0.5 rounded text-xs font-bold" style="background:${tierBg};color:${tierColor};">${h.risk_level}</span>`
+          : '';
+        const matchTypeColor = h.match_type === 'exact' ? 'var(--green)' : h.match_type === 'prefix' ? 'var(--accent)' : 'var(--text-dim)';
+        return `<div class="flex items-center gap-2 p-1 rounded cursor-pointer" style="background:var(--bg);" onclick="viewPlayer('${escapeHtml(h.customer_id)}')">
+          <span style="color:${matchTypeColor};">●</span>
+          <span class="font-mono">${escapeHtml(h.login || h.customer_id)}</span>
+          ${tierBadge}
+          <span class="ml-auto font-mono" style="color:var(--text-dim);">$${Math.round(Number(h.exposure) || 0).toLocaleString()}</span>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      console.error('[CC] Player intel search failed:', e);
+      list.innerHTML = '<span style="color:var(--red);">Search failed.</span>';
+    }
+  }, 200);
+}
+
+async function loadCommandCenter() {
+  const base = getApiBaseUrl();
+  const statusFilter = document.getElementById('ccStatusFilter')?.value || '';
+  const levelFilter = document.getElementById('ccLevelFilter')?.value || '';
+
+  // Open SSE connection on first load (idempotent)
+  if (!ccSseSource) ccConnectSse();
+
+  // Load dashboard cards
+  ccRefreshDashboard();
+
+  // Load stats
+  try {
+    const statsRes = await fetch(`${base}/api/positions/stats`);
+    if (statsRes.ok) {
+      const stats = await statsRes.json();
+      document.getElementById('ccTotal').textContent = stats.total || 0;
+      document.getElementById('ccPending').textContent = stats.pending || 0;
+      document.getElementById('ccApplied').textContent = stats.applied || 0;
+      document.getElementById('ccOverridden').textContent = stats.overridden || 0;
+      document.getElementById('ccExpired').textContent = stats.expired || 0;
+      document.getElementById('ccAutoBlocked').textContent = stats.auto_blocked || 0;
+    }
+  } catch (e) { console.error('Failed to load position stats:', e); }
+
+  // Load positions
+  try {
+    const params = new URLSearchParams();
+    if (statusFilter) params.set('status', statusFilter);
+    if (levelFilter) params.set('risk_level', levelFilter);
+    params.set('limit', '50');
+    const posRes = await fetch(`${base}/api/positions?${params}`);
+    if (posRes.ok) {
+      const data = await posRes.json();
+      renderCcPositions(data.positions || []);
+    }
+  } catch (e) { console.error('Failed to load positions:', e); }
+
+  // Load webhooks
+  loadCcWebhooks();
+
+  // Load alert log
+  loadCcAlertLog();
+}
+
+function renderCcPositions(positions) {
+  const tbody = document.getElementById('ccPositionsTable');
+  if (!tbody) return;
+
+  if (positions.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" class="px-3 py-8 text-center text-sm" style="color:var(--text-dim);">No positions found.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = positions.map(p => {
+    const tierColor = TIER_COLORS[p.risk_level] || 'var(--text-dim)';
+    const tierBg = TIER_BG[p.risk_level] || 'transparent';
+    const statusColor = STATUS_COLORS[p.status] || 'var(--text-dim)';
+    const created = p.created_at ? new Date(p.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+    const conf = p.ai_confidence ? `${(p.ai_confidence * 100).toFixed(0)}%` : '—';
+
+    let ops = '';
+    if (p.status === 'pending') {
+      ops = `
+        <button onclick="ccApplyPosition(${p.id})" class="px-2 py-0.5 rounded text-xs" style="background:var(--green);color:#fff;" title="Apply AI suggestion">Apply</button>
+        <button onclick="ccOverridePosition(${p.id})" class="px-2 py-0.5 rounded text-xs" style="background:var(--purple);color:#fff;" title="Override AI suggestion">Override</button>
+      `;
+    } else if (p.status === 'applied') {
+      ops = `<span class="text-xs" style="color:var(--text-dim);">by ${escapeHtml(p.executed_by || 'system')}</span>`;
+    } else if (p.status === 'overridden') {
+      ops = `<span class="text-xs" style="color:var(--purple);">${escapeHtml(p.execution_note || 'Overridden')}</span>`;
+    }
+
+    return `<tr class="border-b" style="border-color:var(--border);">
+      <td class="px-3 py-2 font-mono">${escapeHtml(p.customer_id)}</td>
+      <td class="px-3 py-2 text-center"><span class="px-1.5 py-0.5 rounded text-xs font-bold" style="background:${tierBg};color:${tierColor};">${p.risk_level}</span></td>
+      <td class="px-3 py-2 text-right font-mono">$${(p.suggested_max_exposure || 0).toLocaleString()}</td>
+      <td class="px-3 py-2 text-right font-mono">$${(p.suggested_wager_limit || 0).toLocaleString()}</td>
+      <td class="px-3 py-2 text-center"><span class="px-1.5 py-0.5 rounded text-xs" style="background:var(--bg);color:var(--text);">${p.suggested_action || '—'}</span></td>
+      <td class="px-3 py-2 text-center"><span class="px-1.5 py-0.5 rounded text-xs font-medium" style="color:${statusColor};">${p.status}</span></td>
+      <td class="px-3 py-2 text-center">${conf}</td>
+      <td class="px-3 py-2 text-center text-xs" style="color:var(--text-dim);">${created}</td>
+      <td class="px-3 py-2 text-center"><div class="flex items-center justify-center gap-1">${ops}</div></td>
+    </tr>`;
+  }).join('');
+}
+
+async function ccApplyPosition(positionId) {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/positions/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ position_id: positionId, action: 'apply', trader_name: 'ui_trader' }),
+    });
+    if (res.ok) {
+      showToast('Position applied', 'success');
+      loadCommandCenter();
+    } else {
+      const err = await res.json();
+      showToast(err.error || 'Failed to apply', 'error');
+    }
+  } catch (e) {
+    showToast('Network error', 'error');
+  }
+}
+
+async function ccOverridePosition(positionId) {
+  const reason = prompt('Override reason:');
+  if (!reason) return;
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/positions/override`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ position_id: positionId, reason, trader_name: 'ui_trader' }),
+    });
+    if (res.ok) {
+      showToast('Position overridden', 'success');
+      loadCommandCenter();
+    } else {
+      const err = await res.json();
+      showToast(err.error || 'Failed to override', 'error');
+    }
+  } catch (e) {
+    showToast('Network error', 'error');
+  }
+}
+
+// ─── Webhook Management (Command Center) ─────────────────────────────
+
+function toggleCcWebhookForm() {
+  const form = document.getElementById('ccWebhookForm');
+  if (form) form.classList.toggle('hidden');
+}
+
+async function loadCcWebhooks() {
+  const base = getApiBaseUrl();
+  const container = document.getElementById('ccWebhookList');
+  if (!container) return;
+
+  try {
+    const res = await fetch(`${base}/api/webhooks`);
+    if (!res.ok) return;
+    const webhooks = await res.json();
+
+    if (webhooks.length === 0) {
+      container.innerHTML = '<div class="text-xs text-center py-4" style="color:var(--text-dim);">No alert channels configured. Add one to receive risk alerts.</div>';
+      return;
+    }
+
+    container.innerHTML = webhooks.map(h => {
+      const platformColors = { discord: '#5865F2', telegram: '#0088cc', slack: '#4A154B', generic: 'var(--text-dim)' };
+      const color = platformColors[h.platform] || 'var(--text-dim)';
+      const triggers = Array.isArray(h.triggers) ? h.triggers.join(', ') : h.triggers;
+      return `<div class="flex items-center justify-between p-2 rounded-lg" style="background:var(--bg);">
+        <div class="flex items-center gap-3">
+          <span class="px-2 py-0.5 rounded text-xs font-bold" style="background:${color}22;color:${color};">${h.platform.toUpperCase()}</span>
+          <span class="text-xs font-medium">${escapeHtml(h.name)}</span>
+          <span class="text-xs" style="color:var(--text-dim);">${escapeHtml(triggers)}</span>
+          ${h.enabled ? '<span class="text-xs" style="color:var(--green);">● Active</span>' : '<span class="text-xs" style="color:var(--text-dim);">○ Disabled</span>'}
+        </div>
+        <div class="flex items-center gap-1">
+          <button onclick="ccTestWebhook(${h.id})" class="px-2 py-0.5 rounded text-xs" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" title="Send test alert">Test</button>
+          <button onclick="ccDeleteWebhook(${h.id})" class="px-2 py-0.5 rounded text-xs" style="background:var(--red);color:#fff;" title="Delete">✕</button>
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    container.innerHTML = '<div class="text-xs text-center py-4" style="color:var(--red);">Failed to load webhooks</div>';
+  }
+}
+
+async function addCcWebhook() {
+  const base = getApiBaseUrl();
+  const name = document.getElementById('ccHookName')?.value?.trim();
+  const platform = document.getElementById('ccHookPlatform')?.value;
+  const url = document.getElementById('ccHookUrl')?.value?.trim();
+  const triggersStr = document.getElementById('ccHookTriggers')?.value?.trim() || '["BLACK","RED"]';
+
+  if (!name || !url) {
+    showToast('Name and URL are required', 'error');
+    return;
+  }
+
+  let triggers;
+  try {
+    triggers = JSON.parse(triggersStr);
+    if (!Array.isArray(triggers)) triggers = [triggers];
+  } catch {
+    triggers = triggersStr.split(',').map(t => t.trim().toUpperCase());
+  }
+
+  try {
+    const res = await fetch(`${base}/api/webhooks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, platform, url, triggers, enabled: true }),
+    });
+    if (res.ok) {
+      showToast('Alert channel added', 'success');
+      toggleCcWebhookForm();
+      loadCcWebhooks();
+      // Clear form
+      document.getElementById('ccHookName').value = '';
+      document.getElementById('ccHookUrl').value = '';
+    } else {
+      const err = await res.json();
+      showToast(err.error || 'Failed to add webhook', 'error');
+    }
+  } catch (e) {
+    showToast('Network error', 'error');
+  }
+}
+
+async function ccTestWebhook(webhookId) {
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/risk-alerts/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ webhook_id: webhookId }),
+    });
+    const result = await res.json();
+    if (result.success) {
+      showToast(`Test sent (${result.status})`, 'success');
+    } else {
+      showToast(`Test failed: ${result.error || 'Unknown'}`, 'error');
+    }
+  } catch (e) {
+    showToast('Network error', 'error');
+  }
+}
+
+async function ccDeleteWebhook(webhookId) {
+  if (!confirm('Delete this alert channel?')) return;
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/webhooks/${webhookId}`, { method: 'DELETE' });
+    if (res.ok) {
+      showToast('Channel deleted', 'success');
+      loadCcWebhooks();
+    }
+  } catch (e) {
+    showToast('Network error', 'error');
+  }
+}
+
+// ─── Alert Log ───────────────────────────────────────────────────────
+
+async function loadCcAlertLog() {
+  const base = getApiBaseUrl();
+  const tbody = document.getElementById('ccAlertLogTable');
+  if (!tbody) return;
+
+  try {
+    const res = await fetch(`${base}/api/risk-alerts/log?limit=20`);
+    if (!res.ok) return;
+    const logs = await res.json();
+
+    if (logs.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="px-3 py-6 text-center text-sm" style="color:var(--text-dim);">No alerts dispatched yet.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = logs.map(l => {
+      const tierColor = TIER_COLORS[l.risk_level] || 'var(--text-dim)';
+      const sentAt = l.sent_at ? new Date(l.sent_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+      const statusColor = l.response_status >= 200 && l.response_status < 300 ? 'var(--green)' : 'var(--red)';
+      return `<tr class="border-b" style="border-color:var(--border);">
+        <td class="px-3 py-2 font-mono">${escapeHtml(l.customer_id || '—')}</td>
+        <td class="px-3 py-2 text-center"><span class="px-1.5 py-0.5 rounded text-xs font-bold" style="color:${tierColor};">${l.risk_level || '—'}</span></td>
+        <td class="px-3 py-2 text-center text-xs">${l.platform || '—'}</td>
+        <td class="px-3 py-2 text-center"><span class="text-xs font-mono" style="color:${statusColor};">${l.response_status || '—'}</span></td>
+        <td class="px-3 py-2 text-center text-xs" style="color:var(--text-dim);">${sentAt}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="5" class="px-3 py-6 text-center text-sm" style="color:var(--red);">Failed to load alert log</td></tr>';
+  }
+}
+
+// ─── Risk Position Card (Player Detail) ──────────────────────────────
+
+async function loadRiskPositionCard(customerId) {
+  const card = document.getElementById('riskPositionCard');
+  if (!card) return;
+
+  const base = getApiBaseUrl();
+  try {
+    const res = await fetch(`${base}/api/positions/latest?customerId=${encodeURIComponent(customerId)}`);
+    if (!res.ok) { card.classList.add('hidden'); return; }
+    const position = await res.json();
+    if (!position) { card.classList.add('hidden'); return; }
+
+    card.classList.remove('hidden');
+
+    // Tier badge
+    const tierBadge = document.getElementById('rpTierBadge');
+    const tierColor = TIER_COLORS[position.risk_level] || 'var(--text)';
+    const tierBg = TIER_BG[position.risk_level] || 'transparent';
+    tierBadge.textContent = position.risk_level;
+    tierBadge.style.background = tierBg;
+    tierBadge.style.color = tierColor;
+
+    // Status badge
+    const statusBadge = document.getElementById('rpStatusBadge');
+    const statusColor = STATUS_COLORS[position.status] || 'var(--text-dim)';
+    statusBadge.textContent = position.status.toUpperCase();
+    statusBadge.style.color = statusColor;
+
+    // Content
+    const content = document.getElementById('rpContent');
+    const conf = position.ai_confidence ? `${(position.ai_confidence * 100).toFixed(0)}%` : '—';
+    const created = position.created_at ? new Date(position.created_at).toLocaleString() : '—';
+
+    let actionsHtml = '';
+    if (position.status === 'pending') {
+      actionsHtml = `
+        <div class="flex items-center gap-2 mt-3 pt-3 border-t" style="border-color:var(--border);">
+          <button onclick="ccApplyPosition(${position.id})" class="px-3 py-1.5 rounded text-xs font-medium" style="background:var(--green);color:#fff;">✓ Apply AI Suggestion</button>
+          <button onclick="ccOverridePosition(${position.id})" class="px-3 py-1.5 rounded text-xs font-medium" style="background:var(--panel);border:1px solid var(--border);color:var(--text);">✕ Override</button>
+        </div>`;
+    } else if (position.status === 'applied') {
+      const modified = position.executed_action !== position.suggested_action;
+      actionsHtml = `
+        <div class="mt-3 pt-3 border-t text-xs" style="border-color:var(--border);color:var(--text-dim);">
+          Applied by <strong>${escapeHtml(position.executed_by || 'system')}</strong> at ${position.executed_at ? new Date(position.executed_at).toLocaleString() : '—'}
+          ${modified ? '<span class="ml-2 px-1.5 py-0.5 rounded" style="background:var(--yellow)22;color:var(--yellow);">Modified from AI suggestion</span>' : ''}
+        </div>`;
+    } else if (position.status === 'overridden') {
+      actionsHtml = `
+        <div class="mt-3 pt-3 border-t text-xs" style="border-color:var(--border);color:var(--purple);">
+          Overridden by ${escapeHtml(position.executed_by || 'trader')}: ${escapeHtml(position.execution_note || 'No reason')}
+        </div>`;
+    }
+
+    content.innerHTML = `
+      <div class="grid grid-cols-4 gap-3 mb-3">
+        <div>
+          <div class="text-xs" style="color:var(--text-dim);">Max Exposure</div>
+          <div class="text-sm font-bold font-mono">$${(position.suggested_max_exposure || 0).toLocaleString()}</div>
+        </div>
+        <div>
+          <div class="text-xs" style="color:var(--text-dim);">Wager Limit</div>
+          <div class="text-sm font-bold font-mono">$${(position.suggested_wager_limit || 0).toLocaleString()}</div>
+        </div>
+        <div>
+          <div class="text-xs" style="color:var(--text-dim);">Suggested Action</div>
+          <div class="text-sm font-bold">${position.suggested_action || '—'}</div>
+        </div>
+        <div>
+          <div class="text-xs" style="color:var(--text-dim);">AI Confidence</div>
+          <div class="text-sm font-bold">${conf}</div>
+        </div>
+      </div>
+      ${position.ai_summary ? `<div class="text-xs p-2 rounded mb-2" style="background:var(--bg);color:var(--text-dim);">${escapeHtml(position.ai_summary)}</div>` : ''}
+      <div class="text-xs" style="color:var(--text-dim);">Created: ${created}${position.expires_at ? ` · Expires: ${new Date(position.expires_at).toLocaleString()}` : ''}</div>
+      ${actionsHtml}
+    `;
+  } catch (e) {
+    card.classList.add('hidden');
+  }
+}
+
+// ─── A/B Test UI ───────────────────────────────────────────────────────
+
+function toggleCcAbTestForm() {
+  const el = document.getElementById('ccAbTestForm');
+  if (el) el.classList.toggle('hidden');
+}
+
+async function ccRunAbTest() {
+  const base = getApiBaseUrl();
+  const customer = document.getElementById('ccAbCustomer')?.value?.trim() || '';
+  const contextRaw = document.getElementById('ccAbContext')?.value?.trim() || '{}';
+  const promptA = document.getElementById('ccAbPromptA')?.value?.trim() || '';
+  const promptB = document.getElementById('ccAbPromptB')?.value?.trim() || '';
+  const statusEl = document.getElementById('ccAbStatus');
+  const resultsEl = document.getElementById('ccAbResults');
+
+  if (!customer) { statusEl.textContent = 'Enter a Customer ID.'; return; }
+  if (!promptA || !promptB) { statusEl.textContent = 'Both prompts required.'; return; }
+
+  let snapshot;
+  try { snapshot = JSON.parse(contextRaw); } catch { snapshot = {}; }
+
+  statusEl.textContent = 'Running…';
+  resultsEl.classList.add('hidden');
+
+  try {
+    const res = await fetch(`${base}/api/ab-test/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customer_id: customer, prompt_a: promptA, prompt_b: promptB, snapshot }),
+    });
+    if (!res.ok) { statusEl.textContent = `Error ${res.status}`; return; }
+    const data = await res.json();
+    statusEl.textContent = data.ok ? `Done · Agreement ${Math.round((data.agreement || 0) * 100)}%` : 'Test failed';
+
+    const render = (r) => {
+      if (!r) return '<div style="color:var(--text-dim);">No result</div>';
+      const tierColor = TIER_COLORS[r.risk_level] || 'var(--text-dim)';
+      return `<div><strong style="color:${tierColor};">${r.risk_level || '?'}</strong> · conf ${Math.round((r.confidence || 0) * 100)}%</div>
+        <div style="color:var(--text-dim);">${escapeHtml(r.raw?.slice(0, 200) || '')}</div>`;
+    };
+
+    document.getElementById('ccAbResultA').innerHTML = render(data.result_a);
+    document.getElementById('ccAbResultB').innerHTML = render(data.result_b);
+    resultsEl.classList.remove('hidden');
+  } catch (e) {
+    statusEl.textContent = 'Request failed.';
+  }
+}
+
+// ─── Kimi Stream Analysis ────────────────────────────────────────────
+
+let ccStreamSource = null;
+
+function ccStartStreamAnalysis() {
+  const base = getApiBaseUrl();
+  const customer = document.getElementById('ccStreamCustomer')?.value?.trim() || '';
+  const output = document.getElementById('ccStreamOutput');
+  if (!output) return;
+  if (!customer) { output.innerHTML = '<span style="color:var(--red);">Enter a Customer ID.</span>'; return; }
+
+  ccStopStreamAnalysis();
+  output.innerHTML = '';
+
+  const url = `${base}/api/analysis/stream?customer_id=${encodeURIComponent(customer)}`;
+  const es = new EventSource(url);
+  ccStreamSource = es;
+
+  es.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'token') {
+        output.textContent += msg.content;
+        output.scrollTop = output.scrollHeight;
+      } else if (msg.type === 'done') {
+        output.textContent += '\n[Done]';
+        es.close();
+        ccStreamSource = null;
+      } else if (msg.type === 'error') {
+        output.textContent += `\n[Error: ${msg.content}]`;
+        es.close();
+        ccStreamSource = null;
+      }
+    } catch {
+      output.textContent += ev.data;
+      output.scrollTop = output.scrollHeight;
+    }
+  };
+
+  es.onerror = () => {
+    output.textContent += '\n[Stream error]';
+    es.close();
+    ccStreamSource = null;
+  };
+}
+
+function ccStopStreamAnalysis() {
+  if (ccStreamSource) { ccStreamSource.close(); ccStreamSource = null; }
+}
+
 // Compatibility layer: existing markup still uses inline event attributes while the SPA is split into modules.
 // New code should import from focused modules instead of adding more inline handlers.
 Object.assign(window, {
@@ -9954,6 +11308,7 @@ Object.assign(window, {
   escapeHtml,
   executeTrade,
   exportPlayerProfileCsv,
+  exportIpIntelligence,
   exportPositions,
   exportWagers,
   FactoryWager,
@@ -9966,6 +11321,7 @@ Object.assign(window, {
   focusPlayerFlagComposer,
   focusPlayerNoteComposer,
   createIntegrityCaseFromSyndicate,
+  deleteAgentRule,
   findBestBook,
   findTreeNodeAt,
   fitTreeToCanvas,
@@ -10011,11 +11367,15 @@ Object.assign(window, {
   inferSportFromTeams,
   initAgentCanvas,
   initSidebarGroups,
+  importProxySecrets,
   isCacheFresh,
   isLegitimateWager,
   keepTooltip,
   loadBookPreferences,
+  loadAgentRules,
   loadPendingWagers,
+  loadIpSuspicious,
+  loadProxyNetworkStats,
   loadIntegrityCases,
   loadPlayerSearch,
   loadSyndicateIntel,
@@ -10057,7 +11417,9 @@ Object.assign(window, {
   recordPerformanceWager,
   refreshData,
   refreshIncomingBetsFromArchive,
+  refreshProxySecretStatus,
   renderAccessLogMonitor,
+  renderAgentRules,
   renderAgentExposure,
   renderAgentPerformanceDetail,
   renderAgentPerformanceTable,
@@ -10086,6 +11448,8 @@ Object.assign(window, {
   renderPlayerProfileAccess,
   loadGlobalIpTracker,
   exportGlobalIpTrackerCsv,
+  renderIpHistoryChart,
+  resetRuleForm,
   renderPlayerProfileOverview,
   renderPlayerProfilePerformance,
   renderPlayerProfileStatus,
@@ -10113,6 +11477,8 @@ Object.assign(window, {
   resyncBuckeye,
   runAgentTreeSearch,
   saveAndConnect,
+  saveAgentRule,
+  saveProxySecrets,
   selectZone1Game,
   selectZone1League,
   selectZone1Sport,
@@ -10134,6 +11500,8 @@ Object.assign(window, {
   setPlayerTransactionTab,
   setPlayerWagerPage,
   setAgentNetworkMode,
+  editAgentRule,
+  setIpTrackerLookup,
   setAgentTreeLoading,
   setMarketTab,
   setPatternCategory,
@@ -10178,6 +11546,7 @@ Object.assign(window, {
   toggleSidebarGroup,
   toggleVIP,
   treeScreenToWorld,
+  deleteProxySecrets,
   updateAgentRow,
   updateAgentSummary,
   updateAlertsToastButton,
@@ -10197,7 +11566,28 @@ Object.assign(window, {
   updateWagerFilterCounts,
   updateWSStatus,
   viewPlayerRelated,
-  viewPlayer
+  viewPlayer,
+  loadCommandCenter,
+  renderCcPositions,
+  ccApplyPosition,
+  ccOverridePosition,
+  toggleCcWebhookForm,
+  loadCcWebhooks,
+  addCcWebhook,
+  ccTestWebhook,
+  ccDeleteWebhook,
+  loadCcAlertLog,
+  loadRiskPositionCard,
+  ccConnectSse,
+  ccDisconnectSse,
+  ccRefreshDashboard,
+  ccPlayerSuggest,
+  ccRefreshPnlChart,
+  ccRenderPnlChart,
+  toggleCcAbTestForm,
+  ccRunAbTest,
+  ccStartStreamAnalysis,
+  ccStopStreamAnalysis,
 });
 Object.assign(window, {
   matrixState,
@@ -10207,5 +11597,6 @@ Object.assign(window, {
   zone1TaxonomyState,
   syndicateIntelState,
   integrityCaseState,
+  agentRulesState,
   performanceState,
 });

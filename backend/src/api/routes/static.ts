@@ -28,7 +28,9 @@ export async function registerStaticRoutes(url: URL): Promise<Response | null> {
           : 'public, max-age=3600',
       },
     });
-  } catch {
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[Static] Failed to serve ${filePath}: ${msg}`);
     return null;
   }
 }

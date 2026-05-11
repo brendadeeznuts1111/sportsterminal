@@ -2,6 +2,7 @@
  * Shared API utilities extracted from index.ts
  */
 
+/** Structured API error with HTTP status and machine-readable code. */
 export class ApiError extends Error {
   status: number;
   code: string;
@@ -13,6 +14,13 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Clamp a string value to an integer within [min, max].
+ * @param value - The string to parse
+ * @param fallback - Value returned when input is null/empty/unparseable
+ * @param min - Minimum allowed value
+ * @param max - Maximum allowed value
+ */
 export function clampInt(value: string | null, fallback: number, min: number, max: number): number {
   if (value === null || value.trim() === '') return fallback;
   const parsed = Number.parseInt(value, 10);
@@ -20,6 +28,12 @@ export function clampInt(value: string | null, fallback: number, min: number, ma
   return Math.min(Math.max(parsed, min), max);
 }
 
+/**
+ * Parse a required ID from a string path parameter.
+ * @param value - The string to parse
+ * @param label - Human-readable name for error messages (default: 'id')
+ * @throws ApiError(400) if the value is not a positive integer
+ */
 export function parseRequiredId(value: string | undefined, label = 'id'): number {
   const parsed = Number.parseInt(value || '', 10);
   if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -28,6 +42,10 @@ export function parseRequiredId(value: string | undefined, label = 'id'): number
   return parsed;
 }
 
+/**
+ * Safely read and parse JSON from a Request body.
+ * @throws ApiError(400) if the body is not valid JSON
+ */
 export async function readJsonBody<T = Record<string, never>>(request: Request): Promise<T> {
   try {
     return await request.json() as T;
@@ -36,6 +54,10 @@ export async function readJsonBody<T = Record<string, never>>(request: Request):
   }
 }
 
+/**
+ * Enforce admin token if ADMIN_API_TOKEN is configured.
+ * @returns null when access is allowed, or a 403 Response when denied
+ */
 export function requireAdminTokenIfConfigured(request: Request): Response | null {
   const expected = process.env.ADMIN_API_TOKEN;
   if (!expected) return null;
@@ -73,6 +95,10 @@ type BuckeyeLocalExport = {
   PLAYERS?: LocalAgentExportRow[];
 };
 
+/**
+ * Load and parse local Buckeye agent export files (docs/agentobject.md or docs/agentslistharz.md).
+ * Enriches agents with player counts and computed parent/child relationships.
+ */
 export async function parseAgentHierarchyAndPlayers(): Promise<ParsedLocalAgentExport> {
   const agentCandidates = ['docs/agentobject.md', '../docs/agentobject.md'];
   const combinedCandidates = ['docs/agentslistharz.md', '../docs/agentslistharz.md'];
@@ -88,8 +114,9 @@ export async function parseAgentHierarchyAndPlayers(): Promise<ParsedLocalAgentE
       if (agents.length > 0) {
         return buildParsedLocalAgentExport(agents, combined.players, 'docs/agentobject.md');
       }
-    } catch {
-      // Try the next relative path.
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.debug(`[Helpers] Failed to load agent export from ${path}: ${msg}`);
     }
   }
 
@@ -111,6 +138,9 @@ export async function parseAgentHierarchyAndPlayers(): Promise<ParsedLocalAgentE
   };
 }
 
+/**
+ * Convenience wrapper that returns only the agent GENERAL array + meta.
+ */
 export async function loadLocalAgentHierarchy(): Promise<{
   GENERAL: LocalAgentExportRow[];
   meta: ParsedLocalAgentExport['meta'];
@@ -137,8 +167,9 @@ async function loadLocalAgentExport(
         agents: Array.isArray(exportObject?.GENERAL) ? exportObject.GENERAL : Array.isArray(parsed) ? parsed : [],
         players: Array.isArray(exportObject?.PLAYERS) ? exportObject.PLAYERS : [],
       };
-    } catch {
-      // Try the next relative path.
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.debug(`[Helpers] Failed to load local export from ${path}: ${msg}`);
     }
   }
   return { agents: [], players: [] };
@@ -226,6 +257,10 @@ function buildParsedLocalAgentExport(
   };
 }
 
+/**
+ * Wrap an async handler so it always returns a Response.
+ * Success → JSON 200. ApiError → matching status + code. Other errors → 500.
+ */
 export function handleAsync(
   handler: () => Promise<unknown>,
   headers: Record<string, string>

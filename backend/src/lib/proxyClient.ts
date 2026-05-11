@@ -3,6 +3,7 @@
 // Provides typed wrappers for all 68+ proxy endpoints.
 
 import { CONFIG } from '../../../config';
+import { parseJsonOrText } from '../utils/parseJson';
 import {
   type ProxyCredentialProvider,
   type EnhancedProxyCredentials,
@@ -24,7 +25,18 @@ export interface ProxyClientConfig {
   timeoutMs: number;
   retries: number;
   retryBackoffMs: number;
+  fetchProxyUrl?: string;
+  fetchProxyToken?: string;
 }
+
+type BunProxyOption = string | {
+  url: string;
+  headers?: Record<string, string>;
+};
+
+type ProxyFetchInit = RequestInit & {
+  proxy?: BunProxyOption;
+};
 
 // Generic JSON response shape used by most proxy endpoints
 export interface ProxyResponse<T = unknown> {
@@ -45,6 +57,8 @@ function buildClientConfig(): ProxyClientConfig {
     timeoutMs: 30000,
     retries: CONFIG.maxRetries || 3,
     retryBackoffMs: CONFIG.retryBaseMs || 1000,
+    fetchProxyUrl: Bun.env.PROXY_FETCH_PROXY_URL?.trim() || undefined,
+    fetchProxyToken: Bun.env.PROXY_FETCH_PROXY_TOKEN?.trim() || undefined,
   };
 }
 
@@ -54,7 +68,7 @@ function buildClientConfig(): ProxyClientConfig {
 
 async function fetchWithRetry(
   url: string,
-  options: RequestInit,
+  options: ProxyFetchInit,
   cfg: ProxyClientConfig
 ): Promise<Response> {
   const controller = new AbortController();
@@ -63,7 +77,7 @@ async function fetchWithRetry(
   let lastError: unknown;
   for (let attempt = 0; attempt <= cfg.retries; attempt++) {
     try {
-      const res = await fetch(url, { ...options, signal: controller.signal });
+      const res = await fetch(url, { ...options, signal: controller.signal } as ProxyFetchInit);
       if (res.status < 500 || attempt === cfg.retries) {
         clearTimeout(timeout);
         return res;
@@ -88,9 +102,25 @@ async function fetchWithRetry(
   throw lastError;
 }
 
+function withProxyFetchHeaders(options: RequestInit, cfg: ProxyClientConfig): ProxyFetchInit {
+  if (!cfg.fetchProxyUrl) return options;
+
+  const proxyToken = cfg.fetchProxyToken || cfg.apiKey;
+  return {
+    ...options,
+    proxy: {
+      url: cfg.fetchProxyUrl,
+      headers: {
+        'X-API-Key': cfg.apiKey,
+        ...(proxyToken ? { 'Proxy-Authorization': `Bearer ${proxyToken}` } : {}),
+      },
+    },
+  };
+}
+
 function parsePayload(text: string): unknown {
   if (!text) return null;
-  try { return JSON.parse(text); } catch { return text; }
+  return parseJsonOrText(text);
 }
 
 // ==========================================
@@ -128,7 +158,7 @@ export async function proxyClientCall<T = unknown>(
 
   const response = await fetchWithRetry(
     `${cfg.baseUrl}${opts.endpoint}`,
-    {
+    withProxyFetchHeaders({
       method,
       headers: {
         'Accept': 'application/json',
@@ -136,7 +166,7 @@ export async function proxyClientCall<T = unknown>(
         'X-API-Key': cfg.apiKey,
       },
       body: method === 'GET' ? undefined : JSON.stringify(body),
-    },
+    }, cfg),
     cfg
   );
 

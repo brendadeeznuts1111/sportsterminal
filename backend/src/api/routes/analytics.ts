@@ -3,8 +3,10 @@
  * Provides endpoints for audit analytics, performance metrics, and CSV export.
  */
 
-import { ApiError, clampInt, corsHeaders, handleAsync } from '../helpers';
+import { ApiError, clampInt, corsHeaders, handleAsync, requireAdminTokenIfConfigured } from '../helpers';
 import { logDebug } from '../../utils/logger';
+import { IPTracker } from '../../services/IPTracker';
+import { deleteRule, listRules, upsertRule, type RuleInput } from '../../services/RulesEngine';
 import type { Database } from '../../database';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 
@@ -335,6 +337,76 @@ export function registerAnalyticsRoutes(
     }, corsHeaders);
   }
 
+  if (url.pathname === '/api/agent/ip-suspicious' && request.method === 'GET') {
+    return handleAsync(async () => {
+      const limit = clampInt(url.searchParams.get('limit'), 20, 1, 100);
+      return new IPTracker(db, scraperManager).getSuspiciousIPs(limit);
+    }, corsHeaders);
+  }
+
+  if (url.pathname === '/api/agent/ip-lookup' && request.method === 'GET') {
+    return handleAsync(async () => {
+      const tracker = new IPTracker(db, scraperManager);
+      const ip = (url.searchParams.get('ip') || '').trim();
+      const player = (url.searchParams.get('player') || url.searchParams.get('playerId') || '').trim();
+      const agentId = (url.searchParams.get('agentId') || '').trim() || undefined;
+      const live = url.searchParams.get('live') !== '0';
+      const start = url.searchParams.get('start') || undefined;
+      const end = url.searchParams.get('end') || undefined;
+      const limit = clampInt(url.searchParams.get('limit'), 100, 1, 500);
+
+      if (ip) {
+        return tracker.getAccountsByIP(ip, { agentId, start, end, live, limit });
+      }
+      if (player) {
+        return tracker.getIPsForPlayer(player, { agentId, start, end, live, limit });
+      }
+      throw new ApiError(400, 'ip or player parameter is required');
+    }, corsHeaders);
+  }
+
+  if (url.pathname === '/api/agent/ip-block' && request.method === 'POST') {
+    const adminResponse = requireAdminTokenIfConfigured(request);
+    if (adminResponse) return adminResponse;
+    return handleAsync(async () => {
+      const tracker = new IPTracker(db, scraperManager);
+      const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+      const ip = String(body.ip || '').trim();
+      const reason = String(body.reason || 'Operator block').trim();
+      if (!ip) throw new ApiError(400, 'ip is required');
+      await tracker.blockIP(ip, reason);
+      return { success: true, ip, reason };
+    }, corsHeaders);
+  }
+
+  if (url.pathname === '/api/agent/ip-export' && request.method === 'GET') {
+    const adminResponse = requireAdminTokenIfConfigured(request);
+    if (adminResponse) return adminResponse;
+    return handleIpExport(db, scraperManager, url);
+  }
+
+  if (url.pathname === '/api/agent/rules' && request.method === 'GET') {
+    return handleAsync(async () => ({ rules: await listRules(db) }), corsHeaders);
+  }
+
+  if (url.pathname === '/api/agent/rules' && request.method === 'POST') {
+    const adminResponse = requireAdminTokenIfConfigured(request);
+    if (adminResponse) return adminResponse;
+    return handleAsync(async () => {
+      const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+      return { success: true, ...(await upsertRule(db, body as unknown as RuleInput)) };
+    }, corsHeaders);
+  }
+
+  if (/^\/api\/agent\/rules\/\d+$/.test(url.pathname) && request.method === 'DELETE') {
+    const adminResponse = requireAdminTokenIfConfigured(request);
+    if (adminResponse) return adminResponse;
+    return handleAsync(async () => {
+      const id = Number(url.pathname.split('/').pop());
+      return { success: await deleteRule(db, id), id };
+    }, corsHeaders);
+  }
+
   if (url.pathname === '/api/master/history' && request.method === 'GET') {
     return handleAsync(async () => {
       const limit = clampInt(url.searchParams.get('limit'), 100, 1, 500);
@@ -454,6 +526,37 @@ export function registerAnalyticsRoutes(
   return null;
 }
 
+async function handleIpExport(
+  db: Database,
+  scraperManager: BuckeyeScraperManager,
+  url: URL
+): Promise<Response> {
+  try {
+    const format = (url.searchParams.get('format') || 'json').toLowerCase();
+    const rows = await new IPTracker(db, scraperManager).getExportData();
+    if (format === 'csv') {
+      return new Response(toCsv(rows), {
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': 'attachment; filename="ip_intelligence_export.csv"',
+        },
+      });
+    }
+
+    return new Response(JSON.stringify({
+      data: rows,
+      count: rows.length,
+      generatedAt: new Date().toISOString(),
+    }), { headers: corsHeaders });
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ error: error instanceof Error ? error.message : 'IP export failed' }),
+      { status: 500, headers: corsHeaders }
+    );
+  }
+}
+
 function summarizeParams(value: unknown): string {
   if (!value) return '';
   const text = String(value);
@@ -515,6 +618,7 @@ function toCsv(rows: SqlRow[]): string {
 
 function csvCell(value: unknown): string {
   if (value === null || value === undefined) return '';
-  const text = String(value).replace(/"/g, '""');
+  const source = typeof value === 'object' ? JSON.stringify(value) : String(value);
+  const text = source.replace(/"/g, '""');
   return /[",\r\n]/.test(text) ? `"${text}"` : text;
 }

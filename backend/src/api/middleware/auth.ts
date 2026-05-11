@@ -10,6 +10,7 @@
  * Dev bypass: NODE_ENV=development skips verification (existing behaviour).
  */
 import { verifyToken, isDevMode } from '../../auth/jwt';
+import { COMMAND_CENTER_MAP } from '../../config/commandCenterMap';
 import { getEnv } from '../../config/env';
 import { corsHeaders } from '../helpers';
 
@@ -84,15 +85,15 @@ export async function requireAuth(
   if (isPublicPath(pathname, request.method)) return null;
 
   const header = request.headers.get('Authorization') || '';
-  const match = header.match(/^Bearer\s+(.+)$/i);
-  if (!match) {
+  const match = header.match(new RegExp(`^${COMMAND_CENTER_MAP.auth.bearerPrefix}\\s*(.+)$`, 'i'));
+  const queryToken = extractQueryToken(request);
+  const token = match?.[1] || queryToken;
+  if (!token) {
     return new Response(
       JSON.stringify({ error: 'Unauthorized — Bearer token required' }),
       { status: 401, headers: corsHeaders }
     );
   }
-
-  const token = match[1];
   const env = getEnv();
 
   try {
@@ -103,5 +104,14 @@ export async function requireAuth(
       JSON.stringify({ error: 'Unauthorized — invalid or expired token' }),
       { status: 401, headers: corsHeaders }
     );
+  }
+}
+
+function extractQueryToken(request: Request): string | null {
+  try {
+    const url = new URL(request.url);
+    return url.searchParams.get(COMMAND_CENTER_MAP.auth.queryTokenParam);
+  } catch {
+    return null;
   }
 }

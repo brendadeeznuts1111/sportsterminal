@@ -4,6 +4,7 @@
 import { createParamRouteHandler, createRouteHandler } from './base';
 import { ApiError, clampInt, corsHeaders, readJsonBody } from '../helpers';
 import { logRequest, logWarn } from '../../utils/logger';
+import { parseJsonOrText } from '../../utils/parseJson';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 import type { Database } from '../../database';
 import {
@@ -570,6 +571,7 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
      LIMIT 10`,
     [playerId]
   );
+  const ipRisk = await getPlayerIpRisk(db, playerId);
 
   const wagerCount = Number(stats?.wagerCount || 0);
   const totalVolume = Number(stats?.totalVolume || 0);
@@ -597,6 +599,8 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
     (totalVolume >= 50000 ? 70 : totalVolume / 750)
     + (Math.max(totalRisk, performanceRisk) >= 50000 ? 25 : Math.max(totalRisk, performanceRisk) / 2500)
     + Math.min(10, Math.abs(performanceNet) / 5000)
+    + (ipRisk.sharedIpFlag ? 10 : 0)
+    + (ipRisk.newIpFlag ? 5 : 0)
   ));
   const intelligence = buildWagerIntelligence(wagers);
   const agentContext = await getPlayerAgentContext(db, playerId, stats?.agentLogin || '');
@@ -617,6 +621,7 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
       patternHits: intelligence.metrics.patternHits,
       performanceNet,
       performanceRisk,
+      ipRisk,
       performanceLastPulledAt: agentPerformance?.lastPulledAt || null,
       agentId: agentContext.assigned?.agentId || '',
       agentLogin: agentContext.assigned?.login || stats?.agentLogin || '',
@@ -642,11 +647,91 @@ async function getArchivePlayerProfile(scraperManager: BuckeyeScraperManager, pl
       device: extractAccessMeta(row, 'device'),
       geo: extractAccessMeta(row, 'geo'),
     })),
+    ipIntelligence: {
+      recentIps: ipRisk.recentIps,
+      sharedIpFlag: ipRisk.sharedIpFlag,
+      newIpFlag: ipRisk.newIpFlag,
+      sharedIpCount: ipRisk.sharedIpCount,
+      newIpCount: ipRisk.newIpCount,
+      riskPoints: ipRisk.riskPoints,
+    },
     agentPerformance: normalizeNumbers(agentPerformance || {}),
     agent: agentContext.assigned,
     allAgents: agentContext.lineage,
     agentContext,
     freePlaySummary,
+  };
+}
+
+async function getPlayerIpRisk(db: Database, playerId: string): Promise<{
+  recentIps: string[];
+  sharedIpFlag: boolean;
+  newIpFlag: boolean;
+  sharedIpCount: number;
+  newIpCount: number;
+  riskPoints: number;
+}> {
+  const [recentRows, sharedRow, newRows] = await Promise.all([
+    db.all<{ ip_address: string }>(
+      `SELECT DISTINCT ip_address
+       FROM access_logs
+       WHERE login_id = ?
+         AND ip_address IS NOT NULL
+         AND ip_address <> ''
+         AND access_datetime >= datetime('now', '-1 day')
+       ORDER BY access_datetime DESC
+       LIMIT 10`,
+      [playerId]
+    ),
+    db.get<{ sharedCount: number }>(
+      `SELECT COUNT(DISTINCT other.login_id) AS sharedCount
+       FROM access_logs mine
+       JOIN access_logs other
+         ON other.ip_address = mine.ip_address
+        AND other.login_id <> mine.login_id
+       WHERE mine.login_id = ?
+         AND mine.ip_address IS NOT NULL
+         AND mine.ip_address <> ''
+         AND mine.access_datetime >= datetime('now', '-1 day')`,
+      [playerId]
+    ),
+    db.all<{ ip_address: string; access_datetime: string }>(
+      `WITH first_pair AS (
+         SELECT login_id, ip_address, MIN(access_datetime) AS first_seen
+         FROM access_logs
+         WHERE login_id = ?
+           AND ip_address IS NOT NULL
+           AND ip_address <> ''
+         GROUP BY login_id, ip_address
+       )
+       SELECT l.ip_address, l.access_datetime
+       FROM access_logs l
+       JOIN first_pair fp
+         ON fp.login_id = l.login_id
+        AND fp.ip_address = l.ip_address
+        AND fp.first_seen = l.access_datetime
+       WHERE l.login_id = ?
+         AND l.access_datetime >= datetime('now', '-1 day')
+         AND EXISTS (
+           SELECT 1
+           FROM access_logs prior
+           WHERE prior.login_id = l.login_id
+             AND prior.ip_address <> l.ip_address
+             AND prior.access_datetime < l.access_datetime
+         )`,
+      [playerId, playerId]
+    ),
+  ]);
+
+  const sharedIpCount = Number(sharedRow?.sharedCount || 0);
+  const newIpCount = newRows.length;
+  return {
+    recentIps: recentRows.map((row) => row.ip_address).filter(Boolean),
+    sharedIpFlag: sharedIpCount > 0,
+    newIpFlag: newIpCount > 0,
+    sharedIpCount,
+    newIpCount,
+    riskPoints: (sharedIpCount > 0 ? 10 : 0) + (newIpCount > 0 ? 5 : 0),
   };
 }
 
@@ -1205,11 +1290,7 @@ async function rawEndpointProbe(db: Database, endpoints: string[]): Promise<{ se
 }
 
 function parseMaybeJson(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
+  return parseJsonOrText(value);
 }
 
 async function getPlayerDeposits(scraperManager: BuckeyeScraperManager, playerId: string): Promise<RouteRow[]> {
