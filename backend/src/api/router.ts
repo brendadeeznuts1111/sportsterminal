@@ -847,6 +847,27 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
   router.post('/api/agent/shadow-ab', async (url, request) => {
     return registerCommandCenterRoutes(url, request, deps.scraperManager);
   });
+  router.get('/api/risk/summary', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/risk/positions', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.post('/api/risk/positions', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/risk/violations', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/risk/timeseries', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/risk/players/:id', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/risk/webhooks/health', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
 
   // Versioned API bridge. The SPA probes /api/v1 first while the existing route
   // handlers remain mounted at /api for compatibility with older terminals.
