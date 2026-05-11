@@ -1,4 +1,5 @@
 import type { EnrichedWager } from '../risk/AlertEngine';
+import { decodeEntities } from '../utils/decodeEntities';
 
 export interface AgentDelta {
   agent: string;
@@ -241,12 +242,7 @@ export class LiveAgentTree {
 
   private extractGame(shortDesc: string): string {
     if (!shortDesc) return 'Unknown';
-    const decoded = shortDesc
-      .replace(/&#189;/g, '½')
-      .replace(/&#188;/g, '¼')
-      .replace(/&#190;/g, '¾')
-      .replace(/&#038;/g, '&')
-      .replace(/&amp;/g, '&');
+    const decoded = decodeEntities(shortDesc);
 
     const standard = decoded.match(/^[A-Z][.:\s][\w\s]+?\s+#\d+\s+(.+?)(?:\s+-\s+For\s|\s+for\s+Game|\s+\/|\s+-\s+\d)/i);
     if (standard) return standard[1].trim().substring(0, 35);

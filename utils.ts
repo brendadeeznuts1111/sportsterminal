@@ -1,5 +1,5 @@
 // utils.ts — Shared utilities for Buckeye Proxy
-import { randomUUID } from "node:crypto";
+import { randomUUIDv7 } from "bun";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -106,10 +106,11 @@ export class CircuitBreaker {
   }
 }
 
-export function requestContext(req: Request): { reqId: string; start: number } {
+export function requestContext(req: Request): { reqId: string; start: number; method: string } {
   return {
-    reqId: req.headers.get("X-Request-ID") || randomUUID(),
+    reqId: req.headers.get("X-Request-ID") || randomUUIDv7(),
     start: performance.now(),
+    method: req.method,
   };
 }
 
@@ -123,14 +124,14 @@ export async function fetchWithRetry(
       const res = await fetch(url, options);
       if (res.status >= 500 && attempt < retries - 1) {
         const delay = 1000 * Math.pow(2, attempt);
-        await new Promise(r => setTimeout(r, delay));
+        await Bun.sleep(delay);
         continue;
       }
       return res;
     } catch (err) {
       if (attempt === retries - 1) throw err;
       const delay = 1000 * Math.pow(2, attempt);
-      await new Promise(r => setTimeout(r, delay));
+      await Bun.sleep(delay);
     }
   }
   throw new Error("Max retries exceeded");

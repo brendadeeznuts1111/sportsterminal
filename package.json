@@ -15,7 +15,7 @@
     "serve": "bun run scripts/serve-frontend.ts",
     "backend:dev": "bun --watch backend/src/index.ts",
     "backend:start": "bun backend/src/index.ts",
-    "db:reset": "rm -f backend/data/terminal.db && echo 'Database reset. Run bun run dev to recreate.'",
+    "db:reset": "bun run scripts/db-reset.ts",
     "db:migrate": "bun run --cwd backend scripts/migrate.ts",
     "probe:player360": "bun run --cwd backend scripts/probe-player360.ts",
     "backfill:hierarchy": "bun run --cwd backend scripts/backfill-hierarchy.ts",

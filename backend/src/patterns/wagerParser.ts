@@ -1,4 +1,5 @@
 import type { ParsedWager } from './types';
+import { decodeEntities } from '../utils/decodeEntities';
 
 const PRICE_RE = /([+-]\d{2,4})(?!.*[+-]\d{2,4})/;
 const PROP_RE = /\b(points|assists|rebounds|shots|saves|strikeouts|hits|runs|yards|touchdowns)\b/i;
@@ -91,11 +92,4 @@ function extractTeams(game: string): string[] {
   return parts.length >= 2 ? parts.slice(0, 2) : [game.trim()];
 }
 
-function decodeEntities(value: string): string {
-  return value
-    .replace(/&#189;/g, '½')
-    .replace(/&#188;/g, '¼')
-    .replace(/&#190;/g, '¾')
-    .replace(/&#038;/g, '&')
-    .replace(/&amp;/g, '&');
-}
+export { decodeEntities };

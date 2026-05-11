@@ -74,24 +74,19 @@ export interface ProxyConfig {
   defaultRateLimit: RateLimitConfig;
   tokenRenewal: TokenRenewalConfig;
   otel: OpenTelemetryConfig;
-  tunables: {
-    wsBatchIntervalMs: number;
-    maxRetries: number;
-    retryBaseMs: number;
-  };
 }
 
 // ==========================================
 // BUILD CONFIG FROM PARSED ENV
 // ==========================================
 function buildConfig(env: ParsedEnv = parseProxyEnv(Bun.env)): ProxyConfig {
-  const autoRetry = env.ENABLE_AUTO_RETRY === "true";
-  const rateLimiting = env.ENABLE_RATE_LIMITING === "true";
-  const tokenPreRenewal = env.ENABLE_TOKEN_PRE_RENEWAL === "true";
-  const demoMode = env.DEMO_MODE === "true";
+  const autoRetry = env.ENABLE_AUTO_RETRY;
+  const rateLimiting = env.ENABLE_RATE_LIMITING;
+  const tokenPreRenewal = env.ENABLE_TOKEN_PRE_RENEWAL;
+  const demoMode = env.DEMO_MODE;
 
   return {
-    production: env.PROXY_PRODUCTION === "true",
+    production: env.PROXY_PRODUCTION,
     port: env.PROXY_PORT,
     baseUrl: env.BUCKEYE_BASE_URL,
     authEndpoint: "/cloud/api/System/authenticateCustomer",
@@ -100,33 +95,33 @@ function buildConfig(env: ParsedEnv = parseProxyEnv(Bun.env)): ProxyConfig {
     adminApiKey: env.ADMIN_API_KEY || env.PROXY_API_KEY,
     backendUrl: env.PROXY_INTERNAL_URL,
     jwtSecret: env.JWT_SECRET || env.BACKEND_JWT_SECRET || "",
-    jwtAuthEnabled: env.ENABLE_JWT_AUTH === "true",
+    jwtAuthEnabled: env.ENABLE_JWT_AUTH,
     demoMode,
 
     features: {
-      wsCompression: env.ENABLE_WS_COMPRESSION === "true",
-      metrics: env.ENABLE_METRICS === "true",
-      requestLogging: env.ENABLE_REQUEST_LOGGING === "true",
-      responseNormalize: env.ENABLE_RESPONSE_NORMALIZE === "true",
-      responseCompression: env.ENABLE_RESPONSE_COMPRESSION === "true",
+      wsCompression: env.ENABLE_WS_COMPRESSION,
+      metrics: env.ENABLE_METRICS,
+      requestLogging: env.ENABLE_REQUEST_LOGGING,
+      responseNormalize: env.ENABLE_RESPONSE_NORMALIZE,
+      responseCompression: env.ENABLE_RESPONSE_COMPRESSION,
       rateLimiting,
-      wsBatching: env.ENABLE_WS_BATCHING === "true",
+      wsBatching: env.ENABLE_WS_BATCHING,
       autoRetry,
       gracefulShutdown: true,
       walCheckpoint: true,
       tokenPreRenewal,
-      idempotency: env.ENABLE_IDEMPOTENCY === "true",
-      streamMode: env.ENABLE_STREAM_MODE === "true",
-      tokenExpiryCheck: env.ENABLE_TOKEN_EXPIRY_CHECK === "true",
-      wsValidation: env.ENABLE_WS_VALIDATION === "true",
-      wsClientBatching: env.ENABLE_WS_CLIENT_BATCHING === "true",
-      memoryCache: env.ENABLE_MEMORY_CACHE === "true",
-      requestDedupe: env.ENABLE_REQUEST_DEDUPE === "true",
-      tokenCache: env.ENABLE_TOKEN_MEM_CACHE === "true",
-      tokenMemCache: env.ENABLE_TOKEN_MEM_CACHE === "true",
-      adminApi: env.ENABLE_ADMIN_API === "true",
-      analytics: env.ENABLE_ANALYTICS === "true",
-      riskEngine: env.ENABLE_RISK_ENGINE === "true",
+      idempotency: env.ENABLE_IDEMPOTENCY,
+      streamMode: env.ENABLE_STREAM_MODE,
+      tokenExpiryCheck: env.ENABLE_TOKEN_EXPIRY_CHECK,
+      wsValidation: env.ENABLE_WS_VALIDATION,
+      wsClientBatching: env.ENABLE_WS_CLIENT_BATCHING,
+      memoryCache: env.ENABLE_MEMORY_CACHE,
+      requestDedupe: env.ENABLE_REQUEST_DEDUPE,
+      tokenCache: env.ENABLE_TOKEN_MEM_CACHE,
+      tokenMemCache: env.ENABLE_TOKEN_MEM_CACHE,
+      adminApi: env.ENABLE_ADMIN_API,
+      analytics: env.ENABLE_ANALYTICS,
+      riskEngine: env.ENABLE_RISK_ENGINE,
       requestSampling: env.SAMPLE_RATE < 1,
       demoMode,
     },
@@ -149,16 +144,10 @@ function buildConfig(env: ParsedEnv = parseProxyEnv(Bun.env)): ProxyConfig {
     },
 
     otel: {
-      enabled: env.ENABLE_OTEL === "true",
+      enabled: env.ENABLE_OTEL,
       endpoint: env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://localhost:4318/v1/traces",
       serviceName: env.OTEL_SERVICE_NAME || "buckeye-proxy",
       exportIntervalMs: env.OTEL_EXPORT_INTERVAL_MS || 10000,
-    },
-
-    tunables: {
-      wsBatchIntervalMs: env.WS_BATCH_INTERVAL_MS,
-      maxRetries: env.MAX_RETRIES,
-      retryBaseMs: env.RETRY_BASE_MS,
     },
   };
 }

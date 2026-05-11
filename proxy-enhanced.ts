@@ -3,8 +3,8 @@
 // renewToken, status, endpoints, openapi.json, dashboard, request tracking,
 // JWT auth, per-endpoint rate limiting, token scheduling, idempotency
 import { Database } from "bun:sqlite";
-import { heapStats as jscHeapStats } from "bun:jsc";
-import { randomUUID } from "node:crypto";
+import { heapStats as jscHeapStats, estimateShallowMemoryUsageOf } from "bun:jsc";
+import { randomUUIDv7 } from "bun";
 import { watch } from "node:fs";
 import { CONFIG, reloadFromEnv } from "./config";
 import { CircuitBreaker, logger, hashPayload as utilsHashPayload, fetchWithRetry as utilsFetchWithRetry, requestContext, json as utilsJson, atomicWrite } from "./utils";
@@ -94,6 +94,168 @@ interface PerformanceBucket {
   commission: number;
   customers: number;
 }
+
+// ==========================================
+// OTEL TRACE COLLECTOR (Enhancement — OTLP export)
+// ==========================================
+interface TraceSpan {
+  traceId: string;
+  spanId: string;
+  parentId?: string;
+  name: string;
+  startTime: number;
+  endTime?: number;
+  status: "UNSET" | "OK" | "ERROR";
+  attributes: Record<string, string | number | boolean>;
+  events: Array<{ name: string; timestamp: number; attributes?: Record<string, unknown> }>;
+}
+
+class TraceCollector {
+  private spans: TraceSpan[] = [];
+  private maxSpans = 1000;
+  private exporting = false;
+
+  startSpan(name: string, parentId?: string, attributes?: Record<string, unknown>): { spanId: string; end: (status?: "OK" | "ERROR", attrs?: Record<string, unknown>) => void } {
+    const traceId = randomUUIDv7().replace(/-/g, "");
+    const spanId = randomUUIDv7().replace(/-/g, "").slice(0, 16);
+    const span: TraceSpan = {
+      traceId,
+      spanId,
+      parentId,
+      name,
+      startTime: Date.now(),
+      status: "UNSET",
+      attributes: attributes ? Object.fromEntries(Object.entries(attributes).map(([k, v]) => [k, typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? v : String(v)])) : {},
+      events: [],
+    };
+    this.spans.push(span);
+    if (this.spans.length > this.maxSpans) this.spans.shift();
+    return {
+      spanId,
+      end: (status = "OK", attrs) => {
+        span.endTime = Date.now();
+        span.status = status;
+        if (attrs) Object.assign(span.attributes, Object.fromEntries(Object.entries(attrs).map(([k, v]) => [k, typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? v : String(v)])));
+      },
+    };
+  }
+
+  addEvent(spanId: string, name: string, attributes?: Record<string, unknown>) {
+    const span = this.spans.find(s => s.spanId === spanId);
+    if (span) span.events.push({ name, timestamp: Date.now(), attributes });
+  }
+
+  getRecent(limit = 100): TraceSpan[] {
+    return this.spans.slice(-limit);
+  }
+
+  prettyPrint(limit = 20): string {
+    const recent = this.getRecent(limit);
+    if (recent.length === 0) return "No trace spans recorded.";
+    const lines = recent.map((s, i) => {
+      const duration = s.endTime ? `${(s.endTime - s.startTime).toFixed(2)}ms` : "incomplete";
+      const attrs = Object.entries(s.attributes).map(([k, v]) => `${k}=${v}`).join(", ");
+      return `  ${i + 1}. [${s.status}] ${s.name} | ${duration} | traceId=${s.traceId.slice(0, 8)}… | ${attrs}`;
+    });
+    return `Trace Spans (last ${recent.length}):\n${lines.join("\n")}`;
+  }
+
+  async export() {
+    if (!CONFIG.otel.enabled || this.exporting || this.spans.length === 0) return;
+    this.exporting = true;
+    try {
+      const finished = this.spans.filter(s => s.endTime !== undefined);
+      if (finished.length === 0) return;
+      const resourceSpans = [{
+        resource: { attributes: [{ key: "service.name", value: { stringValue: CONFIG.otel.serviceName } }] },
+        scopeSpans: [{
+          scope: { name: "buckeye-proxy", version: "2.0" },
+          spans: finished.map(s => ({
+            traceId: s.traceId,
+            spanId: s.spanId,
+            parentSpanId: s.parentId || undefined,
+            name: s.name,
+            kind: 1,
+            startTimeUnixNano: String(Math.floor(s.startTime * 1e6)),
+            endTimeUnixNano: String(Math.floor((s.endTime || s.startTime) * 1e6)),
+            attributes: Object.entries(s.attributes).map(([k, v]) => ({ key: k, value: typeof v === "number" ? { intValue: v } : typeof v === "boolean" ? { boolValue: v } : { stringValue: v } })),
+            status: { code: s.status === "ERROR" ? 2 : s.status === "OK" ? 1 : 0 },
+            events: s.events.map(e => ({ name: e.name, timeUnixNano: String(Math.floor(e.timestamp * 1e6)), attributes: [] })),
+          })),
+        }],
+      }];
+      const body = JSON.stringify({ resourceSpans });
+      const res = await fetch(CONFIG.otel.endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      }).catch(() => undefined);
+      if (res && res.ok) {
+        this.spans = this.spans.filter(s => s.endTime === undefined);
+      }
+    } catch {
+      // silent fail — OTel is best-effort
+    } finally {
+      this.exporting = false;
+    }
+  }
+}
+
+const tracer = new TraceCollector();
+
+// ==========================================
+// REQUEST LISTENER (in-memory ring buffer)
+// ==========================================
+interface RequestEvent {
+  id: string;
+  timestamp: number;
+  method: string;
+  path: string;
+  status: number;
+  durationMs: number;
+  customerID: string | null;
+  error: string | null;
+}
+
+class RequestListener {
+  private buffer: RequestEvent[] = [];
+  private maxSize = 500;
+
+  push(ev: RequestEvent) {
+    this.buffer.push(ev);
+    if (this.buffer.length > this.maxSize) this.buffer.shift();
+  }
+
+  getRecent(limit = 100): RequestEvent[] {
+    return this.buffer.slice(-limit).reverse();
+  }
+
+  getStats(minutes = 5): { total: number; errors: number; avgDuration: number; topPaths: Array<{ path: string; count: number }> } {
+    const cutoff = Date.now() - minutes * 60000;
+    const recent = this.buffer.filter(e => e.timestamp >= cutoff);
+    const total = recent.length;
+    const errors = recent.filter(e => e.status >= 400).length;
+    const avgDuration = total > 0 ? Math.round(recent.reduce((s, e) => s + e.durationMs, 0) / total) : 0;
+    const pathCounts = new Map<string, number>();
+    for (const e of recent) pathCounts.set(e.path, (pathCounts.get(e.path) || 0) + 1);
+    const topPaths = Array.from(pathCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([path, count]) => ({ path, count }));
+    return { total, errors, avgDuration, topPaths };
+  }
+
+  prettyPrint(limit = 20): string {
+    const recent = this.getRecent(limit);
+    if (recent.length === 0) return "No request events recorded.";
+    const lines = recent.map((e, i) => {
+      const time = new Date(e.timestamp).toISOString().split("T")[1].slice(0, 8);
+      const err = e.error ? ` | ERROR: ${e.error}` : "";
+      const dur = `${e.durationMs}ms`;
+      return `  ${i + 1}. [${time}] ${e.method} ${e.path} → ${e.status} (${dur}) | id=${e.id.slice(0, 8)}…${err}`;
+    });
+    return `Request Events (last ${recent.length}):\n${lines.join("\n")}`;
+  }
+}
+
+const requestListener = new RequestListener();
 
 interface PerformanceReport {
   period: PerformancePeriod;
@@ -431,7 +593,20 @@ function getEndpointDescription(key: string): string {
 // ==========================================
 let shuttingDown = false;
 let activeRequests = 0;
-let currentReqId: string | undefined;
+const activeSpans = new Map<string, ReturnType<TraceCollector["startSpan"]>>();
+
+function startRequestSpan(reqId: string, path: string, method: string) {
+  if (!CONFIG.otel.enabled) return;
+  const span = tracer.startSpan("proxy_request", undefined, { path, method, service: CONFIG.otel.serviceName });
+  activeSpans.set(reqId, span);
+}
+
+function endRequestSpan(reqId: string, status: number, error?: string) {
+  const span = activeSpans.get(reqId);
+  if (!span) return;
+  activeSpans.delete(reqId);
+  span.end(status >= 400 ? "ERROR" : "OK", { status, error: error || undefined });
+}
 
 // ==========================================
 // CIRCUIT BREAKER INSTANCE
@@ -856,6 +1031,14 @@ setInterval(() => {
 }, 3600000);
 
 // ==========================================
+// OTEL TRACE EXPORTER — background flush
+// ==========================================
+if (CONFIG.otel.enabled) {
+  setInterval(() => { void tracer.export().catch(() => {}); }, CONFIG.otel.exportIntervalMs);
+  logger.info("OTel trace exporter enabled", { endpoint: CONFIG.otel.endpoint, intervalMs: CONFIG.otel.exportIntervalMs });
+}
+
+// ==========================================
 // RISK ENGINE — background alert evaluation
 // ==========================================
 let riskEngineRunning = false;
@@ -1187,8 +1370,7 @@ function getDemoCfClearance(): string {
 function json(data: unknown, status = 200, headers: Record<string, string> = {}, acceptEncoding = "") {
   const body = JSON.stringify(data, null, 2);
   const responseHeaders: Record<string, string> = { "Content-Type": "application/json", ...cors, ...headers };
-  if (currentReqId && !responseHeaders["X-Request-ID"]) responseHeaders["X-Request-ID"] = currentReqId;
-  const gzip = (Bun as unknown as { gzipSync?: (input: string) => Uint8Array }).gzipSync;
+  const gzip = Bun.gzipSync;
   if (CONFIG.features.responseCompression && gzip && acceptEncoding.includes("gzip") && body.length > 1024) {
     const compressed = gzip(body);
     const bytes = new Uint8Array(compressed.byteLength);
@@ -1487,7 +1669,7 @@ function buildSyndicateFromCluster(cluster: Wager[], minBettors: number, minStak
   ];
 
   return {
-    id: crypto.randomUUID(),
+    id: randomUUIDv7(),
     members: Array.from(uniqueBettors),
     commonGame: first.gameId,
     pattern: `${first.wagerType} ${first.side || "ANY"} ${first.line}`,
@@ -1858,6 +2040,8 @@ if (CONFIG.features.analytics) {
 const memCache = new Map<string, { value: unknown; expires: number }>();
 const tokenMemCache = new Map<string, { token: TokenRow | null; expires: number }>();
 const inflight = new Map<string, Promise<unknown>>();
+let cacheHits = 0;
+let cacheMisses = 0;
 
 function setMemCache(key: string, value: unknown, ttlMs = CONFIG.memoryCacheTtlMs): void {
   if (!CONFIG.features.memoryCache) return;
@@ -1867,11 +2051,13 @@ function setMemCache(key: string, value: unknown, ttlMs = CONFIG.memoryCacheTtlM
 function getMemCache(key: string): unknown | null {
   if (!CONFIG.features.memoryCache) return null;
   const hit = memCache.get(key);
-  if (!hit) return null;
+  if (!hit) { cacheMisses++; return null; }
   if (Date.now() > hit.expires) {
     memCache.delete(key);
+    cacheMisses++;
     return null;
   }
+  cacheHits++;
   return hit.value;
 }
 
@@ -3060,7 +3246,7 @@ function processSyndicateCluster(cluster: StoredWagerAnalytic[], syndicates: Syn
   const repeatScore = Math.min(15, cluster.length * 3);
   const riskScore = Math.min(100, Math.round(speedScore + bettorScore + stakeScore + repeatScore));
   syndicates.push({
-    id: randomUUID(),
+    id: randomUUIDv7(),
     members,
     commonGame: first.gameId,
     pattern: `${first.wagerType} ${first.side} ${first.line}`.trim(),
@@ -3254,9 +3440,13 @@ function recordLatency(endpoint: string, durationMs: number, isError: boolean) {
   endpointLatencies.set(endpoint, arr);
 }
 
-function requestFinished(ctx: { reqId: string; start: number }, endpoint: string, customerID: string | null, status: number, error?: unknown) {
+function requestFinished(ctx: { reqId: string; start: number; method: string }, endpoint: string, customerID: string | null, status: number, error?: unknown) {
   const duration = Math.round(performance.now() - ctx.start);
   const message = error instanceof Error ? error.message : error ? String(error) : null;
+  // Push to in-memory request listener ring buffer
+  requestListener.push({ id: ctx.reqId, timestamp: Date.now(), method: ctx.method, path: endpoint, status, durationMs: duration, customerID, error: message });
+  // End OTel span for this request
+  endRequestSpan(ctx.reqId, status, message || undefined);
   if (CONFIG.features.requestLogging && shouldLog()) {
     logRequestStmt.run({ $customerID: customerID || null, $req_id: ctx.reqId, $endpoint: endpoint, $status: status, $duration_ms: duration, $error: message || null });
     logger.info("Proxy request completed", { reqId: ctx.reqId, endpoint, customerID, status, durationMs: duration, error: message });
@@ -3279,7 +3469,7 @@ async function buckeyeFetch(url: string, options: RequestInit, retries = CONFIG.
       if (i === retries - 1) throw err;
       if (!CONFIG.features.autoRetry) throw err;
       const delay = Math.min(CONFIG.retryBaseMs * Math.pow(2, i) + Math.random() * 500, 10000);
-      await new Promise(r => setTimeout(r, delay));
+      await Bun.sleep(delay);
     }
   }
   throw new Error("Unreachable");
@@ -3585,9 +3775,22 @@ function runtimeMetrics() {
 
   const dbRow = totalRequestCount.get() as CountRow | null;
   const errRow = errorRequestCount.get() as CountRow | null;
+  const tokenRow = tokenCount.get() as { total: number } | null;
+  const totalLat = Object.values(avgLatencies);
+  const overallAvgLatency = totalLat.length
+    ? Math.round(totalLat.reduce((s, v) => s + v.avg, 0) / totalLat.length)
+    : 0;
+  const cacheTotal = cacheHits + cacheMisses;
+
+  const shallowMemory = {
+    endpoints: estimateShallowMemoryUsageOf(ENDPOINT_COUNTS),
+    subscribers: estimateShallowMemoryUsageOf(subscribers),
+    sessions: estimateShallowMemoryUsageOf(sessions),
+    activeSpans: estimateShallowMemoryUsageOf(activeSpans),
+  };
 
   return {
-    memory: { rss: Math.round(memory.rss / 1024 / 1024) + "MB", heapTotal: Math.round(memory.heapTotal / 1024 / 1024) + "MB", heapUsed: Math.round(memory.heapUsed / 1024 / 1024) + "MB" },
+    memory: { rss: Math.round(memory.rss / 1024 / 1024) + "MB", heapTotal: Math.round(memory.heapTotal / 1024 / 1024) + "MB", heapUsed: Math.round(memory.heapUsed / 1024 / 1024) + "MB", shallowEstimate: shallowMemory },
     cpu: { user: cpu.user, system: cpu.system },
     jsc,
     heap,
@@ -3599,6 +3802,9 @@ function runtimeMetrics() {
     requests: { total: totalRequests, errors: errorRequests },
     dbLog: { total: dbRow?.count ?? 0, errors: errRow?.count ?? 0 },
     latency: avgLatencies,
+    overallAvgLatency,
+    tokens: tokenRow?.total ?? 0,
+    cache: { hits: cacheHits, misses: cacheMisses, ratio: cacheTotal > 0 ? cacheHits / cacheTotal : 0 },
     circuitBreaker: circuitBreaker.getStatus(),
   };
 }
@@ -3844,6 +4050,17 @@ function buildAdminHtml(): string {
   button { background: #1f6feb; color: #fff; border: 0; border-radius: 4px; padding: 8px 12px; font: inherit; cursor: pointer; }
   form { display: grid; grid-template-columns: minmax(160px, 1fr) 100px 100px auto; gap: 8px; align-items: end; }
   .muted { color: #91a0b5; }
+  .health-green { color: #4ade80; }
+  .health-yellow { color: #facc15; }
+  .health-red { color: #f87171; }
+  .health-grey { color: #94a3b8; }
+  tr.health-green td:first-child { border-left: 3px solid #4ade80; }
+  tr.health-yellow td:first-child { border-left: 3px solid #facc15; }
+  tr.health-red td:first-child { border-left: 3px solid #f87171; }
+  tr.health-grey td:first-child { border-left: 3px solid #94a3b8; }
+  .card-value-green { color: #00d084; }
+  .card-value-yellow { color: #ffcc00; }
+  .card-value-red { color: #ff2d55; }
   @media (max-width: 720px) { form { grid-template-columns: 1fr; } header { align-items: flex-start; flex-direction: column; } }
 </style>
 </head>
@@ -3854,6 +4071,22 @@ function buildAdminHtml(): string {
 </header>
 <main>
   <div class="grid" id="cards"></div>
+  <section>
+    <h2>Endpoint Latency Matrix</h2>
+    <table>
+      <thead><tr><th>Endpoint</th><th>Requests</th><th>Avg (ms)</th><th>p50 (ms)</th><th>p99 (ms)</th><th>Health</th></tr></thead>
+      <tbody id="latencyMatrix"></tbody>
+    </table>
+    <div class="muted" id="latencyMatrixEmpty">No endpoint data yet.</div>
+  </section>
+  <section>
+    <h2>Sample Rate</h2>
+    <form id="sampleRateForm">
+      <input id="sampleRate" type="number" min="0" max="1" step="0.01" placeholder="0.01" value="0.01">
+      <button type="submit">Update</button>
+    </form>
+    <div class="muted" id="sampleRateStatus"></div>
+  </section>
   <section>
     <h2>Rate Limit Override</h2>
     <form id="overrideForm">
@@ -3881,19 +4114,50 @@ function buildAdminHtml(): string {
   const apiKey = new URLSearchParams(location.search).get('api_key') || '';
   const headers = apiKey ? { 'X-Admin-Key': apiKey } : {};
   function cell(value) { return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  function healthClass(p99) {
+    if (!Number.isFinite(p99)) return 'health-grey';
+    if (p99 < 500) return 'health-green';
+    if (p99 < 2000) return 'health-yellow';
+    return 'health-red';
+  }
+  function healthLabel(p99) {
+    if (!Number.isFinite(p99)) return 'No data';
+    if (p99 < 500) return 'Healthy';
+    if (p99 < 2000) return 'Degraded';
+    return 'Slow';
+  }
   function render(summary, config) {
     document.getElementById('generatedAt').textContent = summary.generatedAt || '';
+    const dbTotal = summary.metrics?.dbLog?.total || 0;
+    const dbErrors = summary.metrics?.dbLog?.errors || 0;
+    const errorRate = dbTotal > 0 ? dbErrors / dbTotal : 0;
+    const circuitState = summary.health?.circuitBreaker?.state || 'UNKNOWN';
+    const cacheRatio = summary.metrics?.cache?.ratio ?? 0;
     const cards = [
-      ['Active Requests', summary.health?.activeRequests],
-      ['Subscribers', summary.health?.subscribers],
-      ['Sessions', summary.health?.sessions],
-      ['Circuit', summary.health?.circuitBreaker?.state],
-      ['Requests', summary.metrics?.dbLog?.total],
-      ['Errors', summary.metrics?.dbLog?.errors],
+      { label: 'Total Requests', value: dbTotal },
+      { label: 'Errors', value: dbErrors, color: errorRate > 0.1 ? 'card-value-red' : '' },
+      { label: 'Avg Latency', value: (summary.metrics?.overallAvgLatency || 0) + 'ms' },
+      { label: 'Active Tokens', value: summary.metrics?.tokens || 0 },
+      { label: 'Cache Hit Ratio', value: cacheRatio > 0 ? Math.round(cacheRatio * 100) + '%' : '0%', color: cacheRatio < 0.5 ? 'card-value-red' : cacheRatio < 0.8 ? 'card-value-yellow' : 'card-value-green' },
+      { label: 'Circuit Breaker', value: circuitState, color: circuitState === 'OPEN' ? 'card-value-red' : circuitState === 'HALF_OPEN' ? 'card-value-yellow' : '' },
+      { label: 'WebSocket Clients', value: summary.health?.subscribers },
+      { label: 'Active Requests', value: summary.health?.activeRequests },
+      { label: 'Sample Rate', value: config.sampleRate },
     ];
-    document.getElementById('cards').innerHTML = cards.map(([label, value]) => '<div class="card"><div class="label">' + cell(label) + '</div><div class="value">' + cell(value) + '</div></div>').join('');
+    document.getElementById('cards').innerHTML = cards.map(c => '<div class="card"><div class="label">' + cell(c.label) + '</div><div class="value ' + (c.color || '') + '">' + cell(c.value) + '</div></div>').join('');
+    const latency = summary.metrics?.latency || {};
+    const latencyEntries = Object.entries(latency);
+    document.getElementById('latencyMatrixEmpty').style.display = latencyEntries.length ? 'none' : 'block';
+    document.getElementById('latencyMatrix').innerHTML = latencyEntries.map(([ep, stats]) => {
+      const cls = healthClass(stats.p99);
+      const label = healthLabel(stats.p99);
+      return '<tr class="' + cls + '"><td>' + cell(ep) + '</td><td>' + cell(stats.count) + '</td><td>' + cell(stats.avg) + '</td><td>' + cell(stats.p50) + '</td><td>' + cell(stats.p99) + '</td><td class="' + cls + '">' + cell(label) + '</td></tr>';
+    }).join('');
     document.getElementById('logs').innerHTML = (summary.logs || []).map(log => '<tr><td>' + cell(log.logged_at) + '</td><td>' + cell(log.endpoint) + '</td><td>' + cell(log.status) + '</td><td>' + cell(log.duration_ms) + 'ms</td><td>' + cell(log.customerID) + '</td></tr>').join('');
     document.getElementById('config').textContent = JSON.stringify(config, null, 2);
+    if (typeof config.sampleRate === 'number') {
+      document.getElementById('sampleRate').value = String(config.sampleRate);
+    }
   }
   async function refresh() {
     try {
@@ -3907,6 +4171,13 @@ function buildAdminHtml(): string {
       render(boot.summary, boot.config);
     }
   }
+  document.getElementById('sampleRateForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const rate = Number(document.getElementById('sampleRate').value);
+    const response = await fetch('/api/proxy/admin/sample-rate', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ rate }) });
+    document.getElementById('sampleRateStatus').textContent = response.ok ? 'Updated' : 'Update failed';
+    await refresh();
+  });
   document.getElementById('overrideForm').addEventListener('submit', async (event) => {
     event.preventDefault();
     const body = {
@@ -4164,45 +4435,45 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
   async fetch(req, server) {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...cors, "Access-Control-Allow-Methods": corsMethods.join(", "), "Access-Control-Allow-Headers": corsHeaders.join(", ") } });
 
-    // WebSocket upgrade
-    const upgradeUrl = new URL(req.url);
-    if (upgradeUrl.pathname === "/ws" || req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-      const reqId = req.headers.get("X-Request-ID") || randomUUID();
-      let customerID: string | undefined;
-      let authenticated = true;
-
-      // JWT auth for WS (if enabled via validated config)
-      const jwtEnabled = CONFIG.jwtAuthEnabled;
-      if (jwtEnabled) {
-        const bearer = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "");
-        const token = upgradeUrl.searchParams.get("token") || bearer || "";
-        const payload = token ? await verifyJwt(token).catch(() => null) : null;
-        customerID = typeof payload?.customerID === "string" ? payload.customerID : undefined;
-        authenticated = Boolean(payload);
-      }
-
-      if (!authenticated && jwtEnabled) {
-        return new Response(JSON.stringify({ error: 'Invalid WebSocket token' }), { status: 401, headers: { 'Content-Type': 'application/json', ...cors } });
-      }
-
-      const ok = server.upgrade(req, { data: { url: req.url, reqId, customerID, authenticated } satisfies WsData });
-      return ok ? undefined : new Response(JSON.stringify({ error: 'WebSocket upgrade failed' }), { status: 400, headers: { 'Content-Type': 'application/json', ...cors } });
-    }
-
-    const url = upgradeUrl;
-    const path = url.pathname;
-
-    if (path === "/ping" || path === "/ping/") {
-      const pingHeaders: Record<string, string> = { ...cors };
-      if (currentReqId) pingHeaders["X-Request-ID"] = currentReqId;
-      return new Response("pong", { status: 200, headers: pingHeaders });
-    }
-
-    if (shuttingDown) return json({ error: "Server is shutting down" }, 503);
-
-    const acceptEncoding = req.headers.get("accept-encoding") || "";
     const ctx = requestContext(req);
-    currentReqId = ctx.reqId;
+    const url = new URL(req.url);
+    const path = url.pathname;
+    startRequestSpan(ctx.reqId, path, req.method);
+
+    try {
+      // WebSocket upgrade
+      if (path === "/ws" || req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        let customerID: string | undefined;
+        let authenticated = true;
+
+        // JWT auth for WS (if enabled via validated config)
+        const jwtEnabled = CONFIG.jwtAuthEnabled;
+        if (jwtEnabled) {
+          const bearer = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "");
+          const token = url.searchParams.get("token") || bearer || "";
+          const payload = token ? await verifyJwt(token).catch(() => null) : null;
+          customerID = typeof payload?.customerID === "string" ? payload.customerID : undefined;
+          authenticated = Boolean(payload);
+        }
+
+        if (!authenticated && jwtEnabled) {
+          return new Response(JSON.stringify({ error: 'Invalid WebSocket token' }), { status: 401, headers: { 'Content-Type': 'application/json', ...cors } });
+        }
+
+        const ok = server.upgrade(req, { data: { url: req.url, reqId: ctx.reqId, customerID, authenticated } satisfies WsData });
+        return ok ? undefined : new Response(JSON.stringify({ error: 'WebSocket upgrade failed' }), { status: 400, headers: { 'Content-Type': 'application/json', ...cors } });
+      }
+
+      if (path === "/ping" || path === "/ping/") {
+        const pingHeaders: Record<string, string> = { "X-Request-ID": ctx.reqId, ...cors };
+        return new Response("pong", { status: 200, headers: pingHeaders });
+      }
+
+      if (shuttingDown) {
+        return json({ error: "Server is shutting down" }, 503);
+      }
+
+      const acceptEncoding = req.headers.get("accept-encoding") || "";
 
     // ---- / ----
     if (path === "/" || path === "") {
@@ -4270,13 +4541,6 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
 
     if (path === "/metrics" && CONFIG.features.metrics) {
       return json(runtimeMetrics());
-    }
-
-    // ---- /PING (liveness probe) ----
-    if (path === "/ping") {
-      const pingHeaders: Record<string, string> = {};
-      if (currentReqId) pingHeaders["X-Request-ID"] = currentReqId;
-      return new Response("pong", { status: 200, headers: pingHeaders });
     }
 
     // ---- /READY (k8s probe) ----
@@ -5748,7 +6012,7 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       const body = await readBody(req);
       const agentID = String(body.agentID || "");
       if (!agentID) { activeRequests--; return json({ error: "agentID required" }, 400, { "X-Request-ID": ctx.reqId }); }
-      const id = randomUUID();
+      const id = randomUUIDv7();
       const status = normalizeCaseStatus(body.status);
       const priority = normalizeCasePriority(body.priority);
       const title = String(body.title || body.syndicateId || "Integrity review").slice(0, 160);
@@ -6110,6 +6374,31 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
       return json({ count: clients.length, clients });
     }
 
+    // ---- /ADMIN/TRACES ----
+    if (path === "/admin/traces" && req.method === "GET") {
+      const authErr = adminApiKeyAuth(req);
+      if (authErr) return authErr;
+      const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "100", 10), 1), 500);
+      return json({
+        service: CONFIG.otel.serviceName,
+        otelEnabled: CONFIG.otel.enabled,
+        endpoint: CONFIG.otel.endpoint,
+        spans: tracer.getRecent(limit),
+      });
+    }
+
+    // ---- /ADMIN/REQUESTS ----
+    if (path === "/admin/requests" && req.method === "GET") {
+      const authErr = adminApiKeyAuth(req);
+      if (authErr) return authErr;
+      const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "100", 10), 1), 500);
+      const statsMinutes = Math.min(Math.max(parseInt(url.searchParams.get("statsMinutes") || "5", 10), 1), 60);
+      return json({
+        recent: requestListener.getRecent(limit),
+        stats: requestListener.getStats(statsMinutes),
+      });
+    }
+
     // ---- /API/PROXY/RENEWTOKEN ----
     if (path === "/api/proxy/renewToken" && req.method === "POST") {
       activeRequests++;
@@ -6170,6 +6459,9 @@ async message(ws: ServerWebSocket<WsData>, message: string | Uint8Array) {
 
     activeRequests--;
     return json({ error: "Not found" }, 404);
+  } finally {
+    endRequestSpan(ctx.reqId, 404);
+  }
   },
 });
 
@@ -6189,7 +6481,7 @@ async function shutdown(signal: string) {
     try { ws.send(JSON.stringify({ type: "shutdown", reason: "server restart", delayMs: 5000 })); } catch {}
   }
 
-  await new Promise(r => setTimeout(r, 5000));
+  await Bun.sleep(5000);
 
   for (const [id, sub] of subscribers) {
     try { sub.ws.close(1000, "Graceful shutdown"); } catch {}
@@ -6203,7 +6495,7 @@ async function shutdown(signal: string) {
 
   const deadline = Date.now() + 10000;
   while (activeRequests > 0 && Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, 100));
+    await Bun.sleep(100);
   }
 
   // Clear renewal timers

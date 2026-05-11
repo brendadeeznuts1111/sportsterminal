@@ -197,6 +197,29 @@ runRiskEngine()                      — Background task (30s interval)
 - All prepared statements (48 total) are finalized on shutdown
 - Inline `db.prepare()` calls replaced with pre-prepared statements (`deleteRiskConfig`, `deleteRateLimitOverrideInline`)
 
+## Frontend Component Matrix
+
+| Component | Endpoints | CSS Classes | Hex Colors |
+|-----------|-----------|-------------|------------|
+| Odds Matrix | `GET /api/odds/live` | `.matrix-container`, `.matrix-table`, `.sticky-col`, `.odds-price`, `.detail-drawer` | `#0a0e17`, `#111827`, `#1f2937`, `#ff6600`, `#10b981`, `#ef4444` |
+| Player Profile | `GET /api/players/{id}/details`, `GET /api/players/{id}/wagers`, `GET /api/players/{id}/pnl`, `GET /api/players/{id}/agent-context`, `GET /api/v1/players/{id}/intelligence-map` | `.player-profile-overlay`, `.profile-stat-grid`, `.profile-stat-card`, `.profile-chart-card` | `#0a0e17`, `#111827`, `#1a2332`, `#e5e7eb`, `#6b7280`, `#ff6600` |
+| Live Betting | `POST /api/proxy/Report/getScoresLiveDynamic`, `POST /api/proxy/Manager/getDynamicLive`, `POST /api/proxy/Manager/getSportsTypesLive` | `.live-badge`, `.game-card`, `.book-pill` | `#0a0e17`, `#10b981`, `#ef4444`, `#f59e0b`, `#3b82f6` |
+| Agent Network | `GET /api/v1/agents/hierarchy`, `GET /api/agents/downline` | `.agent-lineage-row`, `.agent-node-row`, `.agent-rate-grid`, `.agent-level-bars` | `#0a0e17`, `#111827`, `#8b5cf6`, `#06b6d4` |
+| Exposure Panels | `GET /api/exposure/sports`, `GET /api/exposure/agents` | `.exposure-bar`, `.exposure-bar-fill`, `.exposure-bar-label`, `.exposure-table` | `#0a0e17`, `#ef4444`, `#f59e0b`, `#10b981`, `#3b82f6` |
+| Pattern Detection | `GET /api/patterns/history`, `GET /api/patterns/summary`, `GET /api/patterns/catalog` | `.pattern-row-critical`, `.pattern-row-warning`, `.pattern-row-watch`, `.pattern-badge-pulse` | `#ef4444`, `#f59e0b`, `#3b82f6`, `#8b5cf6`, `#10b981` |
+| Syndicate Intel | `POST /api/proxy/analytics/syndicates` | `.intel-identity-card`, `.intel-avatar`, `.intel-risk-meter`, `.intel-stat-card`, `.intel-wager-card` | `#0a0e17`, `#111827`, `#f43f5e`, `#8b5cf6`, `#84cc16` |
+| Integrity Cases | `GET /api/proxy/integrity/cases`, `PATCH /api/proxy/integrity/cases/{id}` | Inline styles (`rounded`, `border`, `p-2` case cards) | `#0a0e17`, `#1a2332`, `#e5e7eb`, `#6b7280` |
+| Performance Dashboard | `GET /api/betting/velocity`, `GET /api/betting/live-vs-pre`, `GET /api/master/history`, `GET /api/performance/summary` | `.analytics-chart` | `#0a0e17`, `#111827`, `#3b82f6`, `#10b981`, `#f59e0b` |
+| Webhooks Manager | `GET /api/webhooks`, `POST /api/webhooks`, `PUT /api/webhooks/{id}`, `DELETE /api/webhooks/{id}` | Inline styles (`rounded-lg`, `border`, `p-3` panels) | `#0a0e17`, `#111827`, `#ff6600`, `#e5e7eb` |
+| Alerts & Notifications | WebSocket `/ws` | `.alert-critical`, `.alert-warning`, `.alert-info`, `.alert-row`, `.gslive-row` | `#ef4444`, `#f59e0b`, `#3b82f6`, `#10b981`, `#8b5cf6` |
+| Settings / Vault | `GET /api/buckeye/vault-status` | Inline styles (`flex`, `rounded`, `px-2`, `py-1` agent rows) | `#0a0e17`, `#111827`, `#06b6d4`, `#e5e7eb` |
+
+**Theme**: Sports Terminal Dark (`frontend/public/css/terminal.css`)
+- `--bg: #0a0e17`, `--panel: #111827`, `--border: #1f2937`, `--text: #e5e7eb`, `--text-dim: #6b7280`
+- `--accent: #ff6600`, `--green: #10b981`, `--red: #ef4444`, `--yellow: #f59e0b`, `--blue: #3b82f6`, `--purple: #8b5cf6`, `--cyan: #06b6d4`
+
+**Full interactive reference**: `docs/API_REFERENCE.html` → "UI Matrix" tab
+
 ## Proxy API Endpoints
 
 | Method | Path | Description |
@@ -213,6 +236,24 @@ runRiskEngine()                      — Background task (30s interval)
 | GET | `/api/proxy/risk/syndicates` | Cached syndicate detections |
 | GET/POST/PUT/DELETE | `/api/proxy/line-rules` | Auto line adjustment rule CRUD |
 | GET | `/api/proxy/line-adjustments/log` | Line adjustment audit log |
+| GET | `/admin/traces` | Recent OTel trace spans (requires admin key) |
+| GET | `/admin/requests` | Recent proxy request events + stats (requires admin key) |
+| GET | `/admin/ws` | Active WebSocket subscriber list (requires admin key) |
+
+### OpenTelemetry Tracing
+
+Set `ENABLE_OTEL=true` to enable trace collection. Spans are created for every incoming request and exported to `OTEL_EXPORTER_OTLP_ENDPOINT` (default: `http://localhost:4318/v1/traces`) every `OTEL_EXPORT_INTERVAL_MS` (default: 10000ms). View collected spans via `GET /admin/traces`.
+
+### Request Listener
+
+An in-memory ring buffer (500 events) tracks proxy API requests. Access via `GET /admin/requests?limit=100&statsMinutes=5`. Returns recent events plus aggregated stats (total, errors, avg duration, top paths).
+
+**Pretty-print in logs** (for debugging):
+```typescript
+// In proxy-enhanced.ts or any script importing it:
+console.log(tracer.prettyPrint(10));     // Last 10 trace spans
+console.log(requestListener.prettyPrint(10)); // Last 10 request events
+```
 
 ## Testing
 

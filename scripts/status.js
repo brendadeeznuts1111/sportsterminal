@@ -1,53 +1,52 @@
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { execSync } from "node:child_process";
 
-const execAsync = promisify(exec);
+const isWin = process.platform === "win32";
 
-async function status() {
-  console.log('🔍 SportsTerminal Status\n');
-
-  // Check port 3000
+function findPidsOnPort(port: number): { pid: string; name: string }[] {
   try {
-    const { stdout } = await execAsync('netstat -ano | findstr :3000 | findstr LISTENING');
-    const lines = stdout.split(/\r?\n/).filter(line => line.trim());
-    console.log(`📡 Port 3000: ${lines.length > 0 ? 'IN USE' : 'FREE'}`);
-    for (const line of lines) {
-      const parts = line.trim().split(/\s+/);
-      const pid = parts.pop();
-      console.log(`   PID: ${pid}`);
+    if (isWin) {
+      const out = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: "utf-8" });
+      return out.split(/\r?\n/).filter(l => l.trim()).map(l => {
+        const parts = l.trim().split(/\s+/);
+        return { pid: parts[parts.length - 1] || "", name: "" };
+      });
     }
+    const out = execSync(`lsof -ti:${port} -P`, { encoding: "utf-8" });
+    return out.split(/\n/).filter(l => l.trim()).map(l => ({ pid: l.trim(), name: "" }));
   } catch {
-    console.log('📡 Port 3000: FREE');
-  }
-
-  // Check Bun processes
-  try {
-    const { stdout } = await execAsync('tasklist | findstr bun');
-    const lines = stdout.split(/\r?\n/).filter(line => line.trim());
-    console.log(`\n🥟 Bun processes: ${lines.length}`);
-    for (const line of lines) {
-      const parts = line.trim().split(/\s+/);
-      const name = parts[0];
-      const pid = parts[1];
-      console.log(`   ${name} (PID: ${pid})`);
-    }
-  } catch {
-    console.log('\n🥟 Bun processes: 0');
-  }
-
-  // Check frontend port 3001
-  try {
-    const { stdout } = await execAsync('netstat -ano | findstr :3001 | findstr LISTENING');
-    const lines = stdout.split(/\r?\n/).filter(line => line.trim());
-    console.log(`\n📡 Port 3001 (frontend): ${lines.length > 0 ? 'IN USE' : 'FREE'}`);
-    for (const line of lines) {
-      const parts = line.trim().split(/\s+/);
-      const pid = parts.pop();
-      console.log(`   PID: ${pid}`);
-    }
-  } catch {
-    console.log('\n📡 Port 3001 (frontend): FREE');
+    return [];
   }
 }
 
-status();
+function findBunProcesses(): { pid: string; name: string }[] {
+  try {
+    if (isWin) {
+      const out = execSync("tasklist | findstr bun", { encoding: "utf-8" });
+      return out.split(/\r?\n/).filter(l => l.trim()).map(l => {
+        const parts = l.trim().split(/\s+/);
+        return { name: parts[0], pid: parts[1] };
+      });
+    }
+    const out = execSync("ps aux | grep bun | grep -v grep", { encoding: "utf-8" });
+    return out.split(/\n/).filter(l => l.trim()).map(l => {
+      const parts = l.trim().split(/\s+/);
+      return { name: "bun", pid: parts[1] };
+    });
+  } catch {
+    return [];
+  }
+}
+
+console.log("SportsTerminal Status\n");
+
+const port3000 = findPidsOnPort(3000);
+console.log(`Port 3000: ${port3000.length > 0 ? "IN USE" : "FREE"}`);
+for (const { pid } of port3000) console.log(`  PID: ${pid}`);
+
+const port3001 = findPidsOnPort(3001);
+console.log(`\nPort 3001 (proxy): ${port3001.length > 0 ? "IN USE" : "FREE"}`);
+for (const { pid } of port3001) console.log(`  PID: ${pid}`);
+
+const bunProcs = findBunProcesses();
+console.log(`\nBun processes: ${bunProcs.length}`);
+for (const { name, pid } of bunProcs) console.log(`  ${name} (PID: ${pid})`);

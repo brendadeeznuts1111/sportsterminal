@@ -1,31 +1,33 @@
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { execSync } from "node:child_process";
 
-const execAsync = promisify(exec);
+const isWin = process.platform === "win32";
 
-async function stop() {
+function findPidsOnPort(port: number): string[] {
   try {
-    // Find PIDs listening on :3000
-    const { stdout } = await execAsync('netstat -ano | findstr :3000 | findstr LISTENING');
-    const pids = [...new Set(
-      stdout
-        .split(/\r?\n/)
-        .map(line => line.trim().split(/\s+/).pop())
-        .filter(Boolean)
-    )];
-
-    if (pids.length === 0) {
-      console.log('ℹ️  No process found on port 3000.');
-      return;
+    if (isWin) {
+      const out = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: "utf-8" });
+      return [...new Set(out.split(/\r?\n/).map(l => l.trim().split(/\s+/).pop()).filter(Boolean))];
     }
-
-    for (const pid of pids) {
-      await execAsync(`taskkill /F /PID ${pid}`).catch(() => {});
-    }
-    console.log(`🛑 Killed ${pids.length} process(es) on port 3000.`);
-  } catch (err) {
-    console.log('✅ Port 3000 already free or no permission needed.');
+    const out = execSync(`lsof -ti:${port}`, { encoding: "utf-8" });
+    return out.split(/\n/).map(p => p.trim()).filter(Boolean);
+  } catch {
+    return [];
   }
 }
 
-stop();
+function killPids(pids: string[]) {
+  for (const pid of pids) {
+    try {
+      if (isWin) execSync(`taskkill /F /PID ${pid}`, { stdio: "ignore" });
+      else process.kill(Number(pid), "SIGKILL");
+    } catch {}
+  }
+}
+
+const pids = findPidsOnPort(3000);
+if (pids.length === 0) {
+  console.log("Port 3000 already free or no permission needed.");
+} else {
+  killPids(pids);
+  console.log(`Killed ${pids.length} process(es) on port 3000.`);
+}

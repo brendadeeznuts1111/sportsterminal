@@ -23,10 +23,15 @@ const NumberEnv = z.preprocess(
   z.number().finite()
 );
 
+const BoolEnv = z.preprocess(
+  (value) => value === "true",
+  z.boolean()
+);
+
 const EnvSchema = z.object({
   // Proxy
   PROXY_PORT: NumberEnv.default(3001),
-  PROXY_PRODUCTION: z.enum(["true", "false"]).default("false"),
+  PROXY_PRODUCTION: BoolEnv.default(false),
   PROXY_API_KEY: z.string().min(8, "API key must be >= 8 chars").default("dev-key-123"),
   BUCKEYE_BASE_URL: z.string().url().default("https://fantasy402.com"),
   DB_PATH: z.string().default("buckeye_cache.sqlite"),
@@ -35,33 +40,33 @@ const EnvSchema = z.object({
   PROXY_API_KEY_HASH: z.string().optional(),
 
   // Feature flags
-  ENABLE_METRICS: z.enum(["true", "false"]).default("true"),
-  ENABLE_REQUEST_LOGGING: z.enum(["true", "false"]).default("true"),
-  ENABLE_RETRY: z.enum(["true", "false"]).optional(),
-  ENABLE_AUTO_RETRY: z.enum(["true", "false"]).default("true"),
-  ENABLE_PER_CUSTOMER_RATE_LIMIT: z.enum(["true", "false"]).optional(),
-  ENABLE_RATE_LIMITING: z.enum(["true", "false"]).default("false"),
-  ENABLE_WS_BATCHING: z.enum(["true", "false"]).default("true"),
-  ENABLE_TOKEN_MEM_CACHE: z.enum(["true", "false"]).default("true"),
-  ENABLE_MEMORY_CACHE: z.enum(["true", "false"]).default("true"),
-  ENABLE_RESPONSE_NORMALIZE: z.enum(["true", "false"]).default("true"),
-  ENABLE_REQUEST_DEDUPE: z.enum(["true", "false"]).default("true"),
-  ENABLE_IDEMPOTENCY: z.enum(["true", "false"]).default("false"),
-  ENABLE_WS_COMPRESSION: z.enum(["true", "false"]).default("false"),
-  ENABLE_RESPONSE_COMPRESSION: z.enum(["true", "false"]).default("false"),
-  ENABLE_AUTO_RENEWAL: z.enum(["true", "false"]).optional(),
-  ENABLE_TOKEN_PRE_RENEWAL: z.enum(["true", "false"]).default("true"),
-  ENABLE_RISK_ENGINE: z.enum(["true", "false"]).default("true"),
-  ENABLE_ANALYTICS: z.enum(["true", "false"]).default("true"),
-  ENABLE_ADMIN_API: z.enum(["true", "false"]).default("false"),
-  ENABLE_STREAM_MODE: z.enum(["true", "false"]).default("true"),
-  ENABLE_TOKEN_EXPIRY_CHECK: z.enum(["true", "false"]).default("true"),
-  ENABLE_WS_VALIDATION: z.enum(["true", "false"]).default("true"),
-  ENABLE_WS_CLIENT_BATCHING: z.enum(["true", "false"]).default("true"),
-  ENABLE_JWT_AUTH: z.enum(["true", "false"]).default("false"),
-  ENABLE_OTEL: z.enum(["true", "false"]).default("false"),
-  ENABLE_DEMO_MODE: z.enum(["true", "false"]).optional(),
-  DEMO_MODE: z.enum(["true", "false"]).default("false"),
+  ENABLE_METRICS: BoolEnv.default(true),
+  ENABLE_REQUEST_LOGGING: BoolEnv.default(true),
+  ENABLE_RETRY: BoolEnv.optional(),
+  ENABLE_AUTO_RETRY: BoolEnv.default(true),
+  ENABLE_PER_CUSTOMER_RATE_LIMIT: BoolEnv.optional(),
+  ENABLE_RATE_LIMITING: BoolEnv.default(false),
+  ENABLE_WS_BATCHING: BoolEnv.default(true),
+  ENABLE_TOKEN_MEM_CACHE: BoolEnv.default(true),
+  ENABLE_MEMORY_CACHE: BoolEnv.default(true),
+  ENABLE_RESPONSE_NORMALIZE: BoolEnv.default(true),
+  ENABLE_REQUEST_DEDUPE: BoolEnv.default(true),
+  ENABLE_IDEMPOTENCY: BoolEnv.default(false),
+  ENABLE_WS_COMPRESSION: BoolEnv.default(false),
+  ENABLE_RESPONSE_COMPRESSION: BoolEnv.default(false),
+  ENABLE_AUTO_RENEWAL: BoolEnv.optional(),
+  ENABLE_TOKEN_PRE_RENEWAL: BoolEnv.default(true),
+  ENABLE_RISK_ENGINE: BoolEnv.default(true),
+  ENABLE_ANALYTICS: BoolEnv.default(true),
+  ENABLE_ADMIN_API: BoolEnv.default(false),
+  ENABLE_STREAM_MODE: BoolEnv.default(true),
+  ENABLE_TOKEN_EXPIRY_CHECK: BoolEnv.default(true),
+  ENABLE_WS_VALIDATION: BoolEnv.default(true),
+  ENABLE_WS_CLIENT_BATCHING: BoolEnv.default(true),
+  ENABLE_JWT_AUTH: BoolEnv.default(false),
+  ENABLE_OTEL: BoolEnv.default(false),
+  ENABLE_DEMO_MODE: BoolEnv.optional(),
+  DEMO_MODE: BoolEnv.default(false),
 
   // Tunables
   WS_BATCH_INTERVAL_MS: NumberEnv.default(200),
@@ -177,7 +182,7 @@ const fetchWithTimeout = async (input: any, init: RequestInit = {}) => {
   }
 
   // Log in dev mode
-  if (parsedEnv.PROXY_PRODUCTION !== "true" && parsedEnv.ENABLE_REQUEST_LOGGING === "true") {
+  if (!parsedEnv.PROXY_PRODUCTION && parsedEnv.ENABLE_REQUEST_LOGGING) {
     const url = typeof input === "string" ? input : (input as Request).url;
     console.log(`[fetch] ${init.method || "GET"} ${url?.slice(0, 80)}`);
   }
@@ -240,7 +245,7 @@ export class StructuredLogger {
       meta,
     };
 
-    if (parsedEnv.PROXY_PRODUCTION !== "true") {
+    if (!parsedEnv.PROXY_PRODUCTION) {
       const color = { debug: "\x1b[36m", info: "\x1b[32m", warn: "\x1b[33m", error: "\x1b[31m" }[level] || "\x1b[0m";
       const metaStr = meta ? ` | ${JSON.stringify(meta).slice(0, 120)}` : "";
       console.log(`${color}[${level.toUpperCase().padStart(5)}] [${source.padStart(12)}]\x1b[0m ${message}${metaStr}`);
@@ -274,7 +279,7 @@ const logger = new StructuredLogger();
 // ==========================================
 // 6. PERFORMANCE HOOKS
 // ==========================================
-if (parsedEnv.ENABLE_METRICS === "true") {
+if (parsedEnv.ENABLE_METRICS) {
   const startMem = process.memoryUsage();
 
   setInterval(() => {
@@ -314,7 +319,7 @@ process.on("unhandledRejection", (reason: any) => {
 // ==========================================
 // 8. DEMO MODE WARNINGS
 // ==========================================
-if (parsedEnv.DEMO_MODE === "true") {
+if (parsedEnv.DEMO_MODE) {
   console.log("\n🎮 DEMO MODE ACTIVE — All Buckeye calls return synthetic data");
   console.log("   Mocked endpoints: accountInfo, agentDownline, agentBilling, betTicker, pending, dynamicLive, playerInfo, sportsLeagues\n");
 }

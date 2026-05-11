@@ -34,6 +34,7 @@ import { backfillAgentsAndPlayers, upsertLiveAgentHierarchy } from '../services/
 import { clearAgentHierarchyTreeCache } from '../api/routes/agentHierarchyTree';
 import type { BunSecretVault } from '../services/BunSecretVault';
 import { PerformanceCache } from '../services/PerformanceCache';
+import { decodeEntities } from '../utils/decodeEntities';
 import { RawApiLogger } from '../services/RawApiLogger';
 import { extractBuckeyeCookies, type EnhancedProxyCredentials } from '../services/ProxyClient';
 import { createManagedInterval, type ManagedIntervalTask } from '../services/Scheduler';
@@ -3085,7 +3086,7 @@ export class BuckeyeScraperManager {
 
   private parseSport(desc: string): string {
     if (!desc) return 'Other';
-    desc = this.decodeEntities(desc);
+    desc = decodeEntities(desc);
     // GSLIVE: "M.G123456 - Top Soccer - ..." or "M.G123456 - Tennis - ..."
     const match = desc.match(/^[A-Z][.:]G?\d+\s*-\s*(?:Top\s+)?([A-Za-z]+)/);
     if (match) return match[1];
@@ -3109,7 +3110,7 @@ export class BuckeyeScraperManager {
 
   private parseLeague(desc: string): string | null {
     if (!desc) return null;
-    const decoded = this.decodeEntities(desc);
+    const decoded = decodeEntities(desc);
     const leagueMatch = decoded.match(/#([A-Z0-9 ]{2,20})(?:\s+Futures|\s+-|\s+#|\s+[A-Z][a-z])/);
     if (leagueMatch) {
       const candidate = leagueMatch[1].trim();
@@ -3124,7 +3125,7 @@ export class BuckeyeScraperManager {
 
   private parsePrice(desc: string): number | null {
     if (!desc) return null;
-    const decoded = this.decodeEntities(desc);
+    const decoded = decodeEntities(desc);
     const prices = Array.from(decoded.matchAll(/(?:^|\s)([+-]\d{2,4})(?=\s|$)/g))
       .map((match) => Number.parseInt(match[1], 10))
       .filter((price) => Number.isFinite(price));
@@ -3139,7 +3140,7 @@ export class BuckeyeScraperManager {
 
   private parseGame(desc: string): string {
     if (!desc) return 'Unknown';
-    desc = this.decodeEntities(desc);
+    desc = decodeEntities(desc);
     // Handle parlays with \r\n
     if (desc.includes('\r\n')) {
       const firstLeg = desc.split('\r\n')[0];
@@ -3151,7 +3152,7 @@ export class BuckeyeScraperManager {
   }
 
   private parseGameSingle(desc: string): string {
-    desc = this.decodeEntities(desc);
+    desc = decodeEntities(desc);
     // GSLIVE: "M.G123456 - Top Tennis - Player vs Player..."
     const gs = desc.match(/^[A-Z][.:]G?\d+\s+-\s+(?:Top\s+)?\w+\s+-\s+(.+?)(?:\s+\/|\s+-\s+For\s|$)/);
     if (gs) return gs[1].trim().substring(0, 35);
@@ -3169,7 +3170,7 @@ export class BuckeyeScraperManager {
 
   private parseSide(desc: string): string {
     if (!desc) return '';
-    desc = this.decodeEntities(desc);
+    desc = decodeEntities(desc);
     // Remove prefix and suffix noise
     let clean = desc.replace(/^[A-Z][.:]\s*/, '');
     clean = clean.replace(/^G\d+\s*-\s*/, '');
@@ -3216,14 +3217,10 @@ export class BuckeyeScraperManager {
 
   private extractPrice(desc: string): string {
     if (!desc) return '';
-    desc = this.decodeEntities(desc);
+    desc = decodeEntities(desc);
     // Look for price before " - For Game" / "for Game" or at the very end
     const m = desc.match(/\s([+-]\d+(?:\.\d+)?)(?:\s+-\s+For|\s+for\s+Game|\s*$)/i);
     return m ? m[1] : '';
-  }
-
-  private decodeEntities(desc: string): string {
-    return desc.replace(/&#189;/g, '½').replace(/&#188;/g, '¼').replace(/&#190;/g, '¾').replace(/&#038;/g, '&').replace(/&amp;/g, '&');
   }
 
   /**

@@ -10,6 +10,7 @@
  */
 
 import type { EnrichedWager } from '../risk/AlertEngine';
+import { decodeEntities } from '../utils/decodeEntities';
 
 export interface BuckeyeCredentials {
   agentId: string;
@@ -1574,10 +1575,7 @@ export class BuckeyeAPI {
     const toWinAmount = (Number(raw.ToWinAmount) || 0) / 100;
     const volumeAmount = (Number(raw.VolumeAmount) || 0) / 100;
 
-    // Decode HTML entities in descriptions (e.g. &#189; → ½)
-    let shortDesc = String(raw.ShortDesc || '').trim();
-    shortDesc = shortDesc.replace(/&#189;/g, '½').replace(/&#188;/g, '¼').replace(/&#190;/g, '¾');
-    shortDesc = shortDesc.replace(/&#038;/g, '&').replace(/&amp;/g, '&');
+    const shortDesc = decodeEntities(String(raw.ShortDesc || '').trim());
 
     return {
       WagerNumber: Number(raw.WagerNumber) || 0,
