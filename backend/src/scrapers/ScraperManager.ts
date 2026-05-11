@@ -212,6 +212,7 @@ interface PlayerDetailsResult {
 interface ScraperAgentMetrics {
   agentId: string;
   isPolling: boolean;
+  pollingScheduled: boolean;
   lastPoll: string | null;
   errorCount: number;
   consecutiveErrors: number;
@@ -1661,6 +1662,7 @@ export class BuckeyeScraperManager {
       agents: Array.from(this.agents.entries()).map(([id, inst]) => ({
         agentId: id,
         isPolling: inst.isPolling,
+        pollingScheduled: Boolean(inst.pollTask),
         lastPoll: inst.lastPoll ? new Date(inst.lastPoll).toISOString() : null,
         errorCount: inst.errorCount,
         consecutiveErrors: inst.consecutiveErrors,

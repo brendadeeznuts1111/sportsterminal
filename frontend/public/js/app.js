@@ -1,4 +1,5 @@
 import { fetchBlob, fetchDelete, fetchJson, fetchPost, getApiBaseUrl } from './api.js';
+import { COMMAND_CENTER_MAP } from './command-center-map.js';
 import { createPlayerDocsRenderer } from './player-docs.js';
 import { createPlayerTransactionRenderer } from './player-transactions.js';
 import { initPropBuilder } from './prop-builder.js';
@@ -10466,6 +10467,30 @@ let ccSseSource = null;
 let ccSseReconnectTimer = null;
 const ccSseBuffer = []; // last 8 ticker events
 
+function ccAuthToken() {
+  return COMMAND_CENTER_MAP.auth.tokenStorageKeys
+    .map((key) => localStorage.getItem(key))
+    .find(Boolean) || '';
+}
+
+function ccAuthHeaders() {
+  const token = ccAuthToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function ccEndpoint(key) {
+  return COMMAND_CENTER_MAP.endpoints[key] || '';
+}
+
+function ccBuildUrl(path) {
+  return new URL(`${getApiBaseUrl()}${path}`);
+}
+
+function ccSetText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
 function ccSetSseStatus(state) {
   const dot = document.getElementById('ccSseDot');
   const label = document.getElementById('ccSseLabel');
@@ -10486,14 +10511,22 @@ function ccConnectSse() {
     try { ccSseSource.close(); } catch { /* ignore */ }
     ccSseSource = null;
   }
-  const base = getApiBaseUrl();
   ccSetSseStatus('connecting');
 
   try {
-    const url = `${base}/api/stream/all`;
-    ccSseSource = new EventSource(url);
+    const url = ccBuildUrl(ccEndpoint('liveWagersStream'));
+    const token = ccAuthToken();
+    if (token) url.searchParams.set(COMMAND_CENTER_MAP.auth.queryTokenParam, token);
+    ccSseSource = new EventSource(url.toString());
 
     ccSseSource.addEventListener('open', () => ccSetSseStatus('connected'));
+
+    ccSseSource.addEventListener('connected', (e) => {
+      const d = safeJsonParse(e.data);
+      ccSetSseStatus('connected');
+      ccSetText('ccRuntimeSse', `${Number(d?.replayed || 0).toLocaleString()} replayed`);
+      ccPushTicker({ icon: '●', text: `Stream connected${d?.replayed ? ` · ${d.replayed} replayed` : ''}` });
+    });
 
     ccSseSource.addEventListener('wager', (e) => {
       const data = safeJsonParse(e.data);
@@ -10505,6 +10538,14 @@ function ccConnectSse() {
       ccPushTicker({ icon: '🚨', text: `${d?.risk_level} • ${d?.customer_id} • ${(d?.confidence * 100).toFixed(0)}%` });
       // Also refresh dashboard counters since alerts shift state
       ccRefreshDashboard();
+    });
+
+    ccSseSource.addEventListener('position', (e) => {
+      const d = safeJsonParse(e.data);
+      const type = d?.type || 'position';
+      const customer = d?.customer_id || d?.position?.customer_id || '';
+      ccPushTicker({ icon: '◆', text: `${type}: ${customer || 'portfolio'} ${d?.risk_level || d?.position?.risk_level || ''}`.trim() });
+      loadCommandCenter();
     });
 
     ccSseSource.addEventListener('position_generated', (e) => {
@@ -10536,6 +10577,11 @@ function ccConnectSse() {
     });
 
     ccSseSource.addEventListener('tick', (e) => {
+      const d = safeJsonParse(e.data);
+      ccUpdateHeartbeatStat(d);
+    });
+
+    ccSseSource.addEventListener('heartbeat', (e) => {
       const d = safeJsonParse(e.data);
       ccUpdateHeartbeatStat(d);
     });
@@ -10602,7 +10648,10 @@ function ccTimeAgo(ts) {
   return `${Math.floor(s / 3600)}h`;
 }
 
-function ccUpdateHeartbeatStat(_d) {
+function ccUpdateHeartbeatStat(d) {
+  if (d?.subscribers != null) {
+    ccSetText('ccRuntimeSse', `${ccFormatCount(d.subscribers)} clients`);
+  }
   // Re-render ticker to refresh the relative timestamps; also a safe place
   // to do a periodic refresh of pending counters.
   ccRenderTicker();
@@ -10610,6 +10659,91 @@ function ccUpdateHeartbeatStat(_d) {
 
 function safeJsonParse(s) {
   try { return JSON.parse(s); } catch { return null; }
+}
+
+function ccFormatCount(value) {
+  return Number(value || 0).toLocaleString();
+}
+
+function ccFormatPercent(value) {
+  if (value == null || Number.isNaN(Number(value))) return '—';
+  return `${(Number(value) * 100).toFixed(1)}%`;
+}
+
+function ccFormatAge(seconds) {
+  if (seconds == null || Number.isNaN(Number(seconds))) return 'unknown age';
+  const s = Math.max(0, Math.floor(Number(seconds)));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+function ccRenderRuntimeMap(data) {
+  const container = document.getElementById('ccRuntimeMap');
+  if (!container) return;
+  const map = data?.map || {};
+  const schedules = map.schedules || {};
+  const chips = [
+    `${ccFormatCount(map.endpoints)} endpoints`,
+    `${ccFormatCount(map.sse_events)} SSE events`,
+    `${ccFormatCount(map.tables)} tables`,
+    `features ${Math.round(Number(schedules.featureExtractMs || 0) / 60000)}m`,
+    `portfolio ${Math.round(Number(schedules.portfolioRefreshMs || 0) / 60000)}m`,
+  ];
+  container.innerHTML = chips.map((chip) => (
+    `<span class="px-2 py-1 rounded font-mono" style="background:var(--bg);border:1px solid var(--border);color:var(--text-dim);">${escapeHtml(chip)}</span>`
+  )).join('');
+}
+
+async function ccRefreshRuntimeStatus() {
+  const statusEl = document.getElementById('ccRuntimeStatus');
+  if (statusEl) {
+    statusEl.textContent = 'checking';
+    statusEl.style.color = 'var(--yellow)';
+  }
+
+  try {
+    const url = ccBuildUrl(ccEndpoint('backendStatus'));
+    const res = await fetch(url.toString(), { headers: ccAuthHeaders() });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    const counts = data.live_data?.table_counts || {};
+    const latest = data.live_data?.latest_wager;
+    const coverage = data.live_data?.feature_coverage_ratio;
+    const ingestion = data.ingestion || {};
+    const streams = data.streams || {};
+    const flowing = Boolean(data.live_data?.flowing);
+
+    ccSetText('ccRuntimeWagers', ccFormatCount(counts.wagers));
+    ccSetText('ccRuntimeFeatures', ccFormatCount(counts.customer_features));
+    ccSetText('ccRuntimeCoverage', ccFormatPercent(coverage));
+    ccSetText('ccRuntimeIngestion', `${ccFormatCount(ingestion.authenticated_agents)}/${ccFormatCount(ingestion.active_agents)}`);
+    ccSetText('ccRuntimeSse', `${ccFormatCount(streams.subscribers)} clients`);
+    ccSetText(
+      'ccRuntimeLatest',
+      latest
+        ? `Latest wager ${latest.wager_number || '—'} · ${latest.customer_id || 'unknown'} · ${latest.agent_login || 'agent'} · ${ccFormatAge(data.live_data?.latest_wager_age_seconds)}`
+        : 'No persisted live wagers found yet.'
+    );
+
+    if (statusEl) {
+      statusEl.textContent = flowing ? 'flowing' : 'waiting';
+      statusEl.style.color = flowing ? 'var(--green)' : 'var(--yellow)';
+    }
+    ccRenderRuntimeMap(data);
+    return data;
+  } catch (error) {
+    console.error('[CC] Runtime status failed:', error);
+    if (statusEl) {
+      statusEl.textContent = 'status error';
+      statusEl.style.color = 'var(--red)';
+    }
+    ccSetText('ccRuntimeLatest', 'Runtime status is unavailable. Check auth token and backend health.');
+    return null;
+  }
 }
 
 // ─── Dashboard rendering ─────────────────────────────────────────────
@@ -10808,6 +10942,7 @@ async function loadCommandCenter() {
 
   // Load dashboard cards
   ccRefreshDashboard();
+  ccRefreshRuntimeStatus();
 
   // Load stats
   try {
@@ -11581,6 +11716,7 @@ Object.assign(window, {
   ccConnectSse,
   ccDisconnectSse,
   ccRefreshDashboard,
+  ccRefreshRuntimeStatus,
   ccPlayerSuggest,
   ccRefreshPnlChart,
   ccRenderPnlChart,

@@ -74,7 +74,8 @@ export class CommandCenterStatusService {
       ingestion: {
         active_agents: metrics.activeAgents,
         authenticated_agents: metrics.agents.filter((agent) => agent.authenticated).length,
-        polling_agents: metrics.agents.filter((agent) => agent.isPolling).length,
+        polling_agents: metrics.agents.filter((agent) => agent.pollingScheduled).length,
+        polls_in_flight: metrics.agents.filter((agent) => agent.isPolling).length,
         last_poll: latestAgentPoll(metrics.agents),
         counters: metrics.counters,
       },
