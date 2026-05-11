@@ -227,6 +227,22 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
       last_refreshed DATETIME DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (provider, player_id)
     );
+
+    CREATE TABLE IF NOT EXISTS agent_closure (
+      provider TEXT NOT NULL DEFAULT 'buckeye',
+      ancestor TEXT NOT NULL,
+      descendant TEXT NOT NULL,
+      depth INTEGER NOT NULL,
+      PRIMARY KEY (provider, ancestor, descendant)
+    );
+
+    CREATE TABLE IF NOT EXISTS source_freshness (
+      source TEXT PRIMARY KEY,
+      last_pull TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      row_count INTEGER DEFAULT 0,
+      checksum TEXT,
+      metadata TEXT
+    );
   `);
 
     // Migration: add seq_number to players if missing (pre-2026-05-09 schema)
@@ -292,7 +308,14 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
       raw_json TEXT NOT NULL,
       sport TEXT,
       league TEXT,
-      price REAL
+      price REAL,
+      agent_level INTEGER,
+      agent_type TEXT,
+      parent_agent_id TEXT,
+      mapped_agent_id TEXT,
+      mapped_agent_login TEXT,
+      agent_path_json TEXT,
+      hierarchy_source TEXT
     );
 
     CREATE TABLE IF NOT EXISTS master_snapshots (
@@ -644,6 +667,14 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
       parsed_period TEXT,
       matched_event_id TEXT,
       pin_reference_json TEXT,
+      raw_json TEXT,
+      agent_level INTEGER,
+      agent_type TEXT,
+      parent_agent_id TEXT,
+      mapped_agent_id TEXT,
+      mapped_agent_login TEXT,
+      agent_path_json TEXT,
+      hierarchy_source TEXT,
       scraped_at TEXT NOT NULL
     );
 
@@ -1254,6 +1285,13 @@ export async function migrateDatabase(db: Database) {
       ['matched_event_id', 'TEXT'],
       ['pin_reference_json', 'TEXT'],
       ['raw_json', 'TEXT'],
+      ['agent_level', 'INTEGER'],
+      ['agent_type', 'TEXT'],
+      ['parent_agent_id', 'TEXT'],
+      ['mapped_agent_id', 'TEXT'],
+      ['mapped_agent_login', 'TEXT'],
+      ['agent_path_json', 'TEXT'],
+      ['hierarchy_source', 'TEXT'],
     ];
     for (const [name, type] of wagerAdds) {
       if (!wagerColumnNames.has(name)) {
@@ -1262,6 +1300,39 @@ export async function migrateDatabase(db: Database) {
       }
     }
     await removeLegacyWagerTypeConstraint(db);
+
+    const wagerArchiveColumns = await db.all<PragmaColumnRow>(`PRAGMA table_info(wager_archive)`);
+    const wagerArchiveColumnNames = new Set(wagerArchiveColumns.map((c) => c.name));
+    const wagerArchiveAdds: Array<[string, string]> = [
+      ['agent_level', 'INTEGER'],
+      ['agent_type', 'TEXT'],
+      ['parent_agent_id', 'TEXT'],
+      ['mapped_agent_id', 'TEXT'],
+      ['mapped_agent_login', 'TEXT'],
+      ['agent_path_json', 'TEXT'],
+      ['hierarchy_source', 'TEXT'],
+    ];
+    for (const [name, type] of wagerArchiveAdds) {
+      if (!wagerArchiveColumnNames.has(name)) {
+        await db.exec(`ALTER TABLE wager_archive ADD COLUMN ${name} ${type}`);
+        console.log(`Migration: added ${name} to wager_archive`);
+      }
+    }
+
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_closure (
+        provider TEXT NOT NULL DEFAULT 'buckeye',
+        ancestor TEXT NOT NULL,
+        descendant TEXT NOT NULL,
+        depth INTEGER NOT NULL,
+        PRIMARY KEY (provider, ancestor, descendant)
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_closure_descendant ON agent_closure(provider, descendant, depth);
+      CREATE INDEX IF NOT EXISTS idx_agent_closure_ancestor_depth ON agent_closure(provider, ancestor, depth);
+    `);
+    await rebuildAgentClosureMigration(db);
+    await backfillWagerHierarchyMigration(db, 'wagers', 'insert_datetime');
+    await backfillWagerHierarchyMigration(db, 'wager_archive', 'insert_date_time');
 
     const patternColumns = await db.all<PragmaColumnRow>(`PRAGMA table_info(detected_patterns)`);
     const patternColumnNames = new Set(patternColumns.map((c) => c.name));
@@ -1629,10 +1700,12 @@ export async function migrateDatabase(db: Database) {
       CREATE INDEX IF NOT EXISTS idx_agents_seq ON agents(seq_number);
       CREATE INDEX IF NOT EXISTS idx_players_agent_id ON players(agent_id);
       CREATE INDEX IF NOT EXISTS idx_players_agent_login ON players(agent_login);
-      CREATE INDEX IF NOT EXISTS idx_agent_hierarchy_parent ON agent_hierarchy(provider, parent_agent_id);
-      CREATE INDEX IF NOT EXISTS idx_agent_hierarchy_level ON agent_hierarchy(provider, level);
-      CREATE INDEX IF NOT EXISTS idx_player_agent_map_agent ON player_agent_map(provider, agent_id);
-      CREATE INDEX IF NOT EXISTS idx_player_agent_map_login ON player_agent_map(provider, player_login);
+    CREATE INDEX IF NOT EXISTS idx_agent_hierarchy_parent ON agent_hierarchy(provider, parent_agent_id);
+    CREATE INDEX IF NOT EXISTS idx_agent_hierarchy_level ON agent_hierarchy(provider, level);
+    CREATE INDEX IF NOT EXISTS idx_agent_closure_descendant ON agent_closure(provider, descendant, depth);
+    CREATE INDEX IF NOT EXISTS idx_agent_closure_ancestor_depth ON agent_closure(provider, ancestor, depth);
+    CREATE INDEX IF NOT EXISTS idx_player_agent_map_agent ON player_agent_map(provider, agent_id);
+    CREATE INDEX IF NOT EXISTS idx_player_agent_map_login ON player_agent_map(provider, player_login);
       CREATE INDEX IF NOT EXISTS idx_checkpoints_provider_entity ON ingestion_checkpoints(provider, entity_type);
       CREATE INDEX IF NOT EXISTS idx_buckeye_sport_types_label ON buckeye_sport_types(label);
       CREATE INDEX IF NOT EXISTS idx_raw_logs_endpoint_time ON raw_api_logs(endpoint, fetched_at);
@@ -1853,6 +1926,18 @@ export async function migrateDatabase(db: Database) {
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_buckeye_write_success ON buckeye_write_log(success, timestamp)`);
     console.log('📊 Migration: ensured buckeye_write_log table');
 
+    // ─── Source Freshness Watermark ───────────────────────────────────────
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS source_freshness (
+        source TEXT PRIMARY KEY,
+        last_pull TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        row_count INTEGER DEFAULT 0,
+        checksum TEXT,
+        metadata TEXT
+      )
+    `);
+    console.log('📊 Migration: ensured source_freshness table');
+
     await seedBuckeyeSportTypes(db);
   } catch (err) {
     console.error('📊 Migration error:', err);
@@ -1894,6 +1979,13 @@ async function removeLegacyWagerTypeConstraint(db: Database): Promise<void> {
         matched_event_id TEXT,
         pin_reference_json TEXT,
         raw_json TEXT,
+        agent_level INTEGER,
+        agent_type TEXT,
+        parent_agent_id TEXT,
+        mapped_agent_id TEXT,
+        mapped_agent_login TEXT,
+        agent_path_json TEXT,
+        hierarchy_source TEXT,
         scraped_at TEXT NOT NULL
       )
     `);
@@ -1903,6 +1995,8 @@ async function removeLegacyWagerTypeConstraint(db: Database): Promise<void> {
         to_win_amount, volume_amount, insert_datetime, ticket_writer, short_desc,
         vip, agent_login, sport, parsed_game, parsed_market, parsed_side,
         parsed_price, parsed_period, matched_event_id, pin_reference_json, raw_json,
+        agent_level, agent_type, parent_agent_id, mapped_agent_id, mapped_agent_login,
+        agent_path_json, hierarchy_source,
         scraped_at
       )
       SELECT
@@ -1910,6 +2004,8 @@ async function removeLegacyWagerTypeConstraint(db: Database): Promise<void> {
         to_win_amount, volume_amount, insert_datetime, ticket_writer, short_desc,
         vip, agent_login, sport, parsed_game, parsed_market, parsed_side,
         parsed_price, parsed_period, matched_event_id, pin_reference_json, raw_json,
+        agent_level, agent_type, parent_agent_id, mapped_agent_id, mapped_agent_login,
+        agent_path_json, hierarchy_source,
         scraped_at
       FROM wagers
     `);
@@ -1933,6 +2029,127 @@ async function removeLegacyWagerTypeConstraint(db: Database): Promise<void> {
     await db.exec('ROLLBACK').catch(() => { });
     throw err;
   }
+}
+
+async function rebuildAgentClosureMigration(db: Database): Promise<void> {
+  await db.run(`DELETE FROM agent_closure WHERE provider = 'buckeye'`);
+  await db.run(`
+    INSERT OR IGNORE INTO agent_closure (provider, ancestor, descendant, depth)
+    WITH RECURSIVE closure(provider, ancestor, descendant, depth) AS (
+      SELECT provider, agent_id, agent_id, 0
+      FROM agent_hierarchy
+      WHERE provider = 'buckeye'
+
+      UNION ALL
+
+      SELECT c.provider, c.ancestor, child.agent_id, c.depth + 1
+      FROM closure c
+      JOIN agent_hierarchy child
+       ON child.provider = c.provider
+      AND child.parent_agent_id = c.descendant
+      WHERE c.depth < 64
+    )
+    SELECT provider, ancestor, descendant, depth FROM closure
+  `);
+}
+
+async function backfillWagerHierarchyMigration(
+  db: Database,
+  tableName: 'wagers' | 'wager_archive',
+  timeColumn: 'insert_datetime' | 'insert_date_time'
+): Promise<void> {
+  await db.run(`
+    UPDATE ${tableName}
+    SET
+      mapped_agent_id = COALESCE(
+        (SELECT pam.agent_id
+         FROM player_agent_map pam
+         WHERE pam.provider = 'buckeye'
+          AND (pam.player_id = ${tableName}.customer_id OR pam.player_login = ${tableName}.login)
+         LIMIT 1),
+        (SELECT ah.agent_id
+         FROM agent_hierarchy ah
+         WHERE ah.provider = 'buckeye'
+          AND (ah.agent_id = ${tableName}.agent_login OR ah.login = ${tableName}.agent_login OR ah.agent_id = ${tableName}.agent_id)
+         LIMIT 1),
+        mapped_agent_id
+      ),
+      mapped_agent_login = COALESCE(
+        (SELECT COALESCE(ah.login, pam.agent_login, pam.agent_id)
+         FROM player_agent_map pam
+         LEFT JOIN agent_hierarchy ah ON ah.provider = pam.provider AND ah.agent_id = pam.agent_id
+         WHERE pam.provider = 'buckeye'
+          AND (pam.player_id = ${tableName}.customer_id OR pam.player_login = ${tableName}.login)
+         LIMIT 1),
+        (SELECT ah.login
+         FROM agent_hierarchy ah
+         WHERE ah.provider = 'buckeye'
+          AND (ah.agent_id = ${tableName}.agent_login OR ah.login = ${tableName}.agent_login OR ah.agent_id = ${tableName}.agent_id)
+         LIMIT 1),
+        mapped_agent_login
+      ),
+      agent_level = COALESCE(
+        (SELECT ah.level
+         FROM agent_hierarchy ah
+         WHERE ah.provider = 'buckeye'
+          AND ah.agent_id = COALESCE(
+            (SELECT pam.agent_id
+             FROM player_agent_map pam
+             WHERE pam.provider = 'buckeye'
+              AND (pam.player_id = ${tableName}.customer_id OR pam.player_login = ${tableName}.login)
+             LIMIT 1),
+            ${tableName}.mapped_agent_id,
+            ${tableName}.agent_id
+          )
+         LIMIT 1),
+        agent_level
+      ),
+      agent_type = COALESCE(
+        (SELECT ah.agent_type
+         FROM agent_hierarchy ah
+         WHERE ah.provider = 'buckeye'
+          AND ah.agent_id = COALESCE(
+            (SELECT pam.agent_id
+             FROM player_agent_map pam
+             WHERE pam.provider = 'buckeye'
+              AND (pam.player_id = ${tableName}.customer_id OR pam.player_login = ${tableName}.login)
+             LIMIT 1),
+            ${tableName}.mapped_agent_id,
+            ${tableName}.agent_id
+          )
+         LIMIT 1),
+        agent_type
+      ),
+      parent_agent_id = COALESCE(
+        (SELECT ah.parent_agent_id
+         FROM agent_hierarchy ah
+         WHERE ah.provider = 'buckeye'
+          AND ah.agent_id = COALESCE(
+            (SELECT pam.agent_id
+             FROM player_agent_map pam
+             WHERE pam.provider = 'buckeye'
+              AND (pam.player_id = ${tableName}.customer_id OR pam.player_login = ${tableName}.login)
+             LIMIT 1),
+            ${tableName}.mapped_agent_id,
+            ${tableName}.agent_id
+          )
+         LIMIT 1),
+        parent_agent_id
+      ),
+      hierarchy_source = COALESCE(
+        hierarchy_source,
+        CASE
+          WHEN EXISTS (
+            SELECT 1 FROM player_agent_map pam
+            WHERE pam.provider = 'buckeye'
+             AND (pam.player_id = ${tableName}.customer_id OR pam.player_login = ${tableName}.login)
+          ) THEN 'migration:player_agent_map'
+          ELSE 'migration:wager_agent'
+        END
+      )
+    WHERE mapped_agent_id IS NULL
+      AND ${timeColumn} IS NOT NULL
+  `);
 }
 
 async function dedupeWagerViolations(db: Database): Promise<void> {

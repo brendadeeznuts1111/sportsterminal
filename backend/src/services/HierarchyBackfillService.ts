@@ -1,5 +1,5 @@
 import type { Database } from '../database';
-import { parseAgentHierarchyAndPlayers } from '../api/helpers';
+import { parseAgentHierarchyAndPlayers, type ParseAgentHierarchyOptions } from '../api/helpers';
 
 export interface HierarchyBackfillResult {
   success: boolean;
@@ -10,6 +10,12 @@ export interface HierarchyBackfillResult {
   placeholderAgents: number;
   skippedPlayers: number;
   maxSeqNumber: number;
+  invalidAgents?: number;
+  topAgentsByPlayers?: Array<{ agent_login: string; player_count: number }>;
+}
+
+export interface HierarchyBackfillOptions extends ParseAgentHierarchyOptions {
+  source?: string;
 }
 
 const PROVIDER = 'buckeye';
@@ -50,10 +56,29 @@ interface LivePlayerSourceRow {
   SeqNumber?: unknown;
 }
 
-export async function backfillAgentsAndPlayers(db: Database): Promise<HierarchyBackfillResult> {
-  const parsed = await parseAgentHierarchyAndPlayers();
-  const agents = parsed.agents;
+export async function backfillAgentsAndPlayers(
+  db: Database,
+  options: HierarchyBackfillOptions = {}
+): Promise<HierarchyBackfillResult> {
+  const parsed = await parseAgentHierarchyAndPlayers(options);
+  let agents = parsed.agents;
   const players = parsed.players;
+
+  // ─── Validation ─────────────────────────────────────────────────────────
+  const validAgents: typeof agents = [];
+  let invalidAgents = 0;
+  for (const agent of agents) {
+    const login = String(agent.Login || '').trim();
+    const agentId = String(agent.AgentID || '').trim();
+    if (!login || !agentId) {
+      invalidAgents++;
+      console.warn(`[HierarchyBackfill] Skipping invalid agent row: missing Login=${login} or AgentID=${agentId}`);
+      continue;
+    }
+    validAgents.push(agent);
+  }
+  agents = validAgents;
+
   const agentLoginToId = new Map<string, string>();
   const agentIds = new Set<string>();
   for (const agent of [...agents].sort((a, b) => (Number(a?.SeqNumber) || 0) - (Number(b?.SeqNumber) || 0))) {
@@ -72,11 +97,17 @@ export async function backfillAgentsAndPlayers(db: Database): Promise<HierarchyB
     await replaceCurrentAgentIdTempTable(db, agentIds);
     await removePlaceholderAgents(db);
 
+    // ─── Insert Agents ──────────────────────────────────────────────────────
+    let agentIdx = 0;
     for (const agent of agents) {
       const login = String(agent.Login || agent.AgentID || '').trim();
       const agentId = String(agent.AgentID || login).trim();
       if (!agentId) continue;
       await upsertAgent(db, agent, agentId, login || agentId);
+      agentIdx++;
+      if (agentIdx % 500 === 0) {
+        console.log(`[HierarchyBackfill] Inserted ${agentIdx}/${agents.length} agents...`);
+      }
     }
 
     for (const agent of agents) {
@@ -92,10 +123,15 @@ export async function backfillAgentsAndPlayers(db: Database): Promise<HierarchyB
       );
     }
 
+    // ─── Insert Players ─────────────────────────────────────────────────────
     let linkedPlayers = 0;
     let skippedPlayers = 0;
+    let playerIdx = 0;
     for (const player of players) {
-      if (!player.login) continue;
+      if (!player.login) {
+        skippedPlayers++;
+        continue;
+      }
       const agentId = agentLoginToId.get(player.agentLogin || '') || '';
       if (!agentId) {
         skippedPlayers++;
@@ -134,10 +170,15 @@ export async function backfillAgentsAndPlayers(db: Database): Promise<HierarchyB
           }),
         ]
       );
+      playerIdx++;
+      if (playerIdx % 5000 === 0) {
+        console.log(`[HierarchyBackfill] Inserted ${playerIdx}/${players.length} players...`);
+      }
     }
 
     await removeAgentsOutsideCurrentSet(db);
 
+    // ─── Checkpoints & Freshness ────────────────────────────────────────────
     const maxSeqNumber = agents.reduce((max, agent) => Math.max(max, Number(agent.SeqNumber) || 0), 0);
     await upsertCheckpoint(db, 'hierarchy', maxSeqNumber, {
       source: parsed.meta.source,
@@ -155,9 +196,40 @@ export async function backfillAgentsAndPlayers(db: Database): Promise<HierarchyB
       skippedPlayers,
       hasSeqNumbers: maxPlayerSeq > 0,
     });
-    await syncAgentProjectionTables(db, 'hierarchy_backfill');
+
+    // Source freshness watermark
+    const checksum = `${agents.length}:${players.length}:${linkedPlayers}`;
+    await db.run(
+      `INSERT INTO source_freshness (source, last_pull, row_count, checksum, metadata)
+       VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?)
+       ON CONFLICT(source) DO UPDATE SET
+        last_pull = excluded.last_pull,
+        row_count = excluded.row_count,
+        checksum = excluded.checksum,
+        metadata = excluded.metadata`,
+      ['hierarchy_backfill', agents.length + players.length, checksum, JSON.stringify({ agentCount: agents.length, playerCount: players.length, linkedPlayers })]
+    );
+
+    await syncAgentProjectionTables(db, options.source || 'hierarchy_backfill');
+    await rebuildAgentClosure(db);
+
+    // ─── Per-Agent Player Count Summary ─────────────────────────────────────
+    const topAgents = await db.all<{ agent_login: string; player_count: number }>(
+      `SELECT agent_login, COUNT(*) AS player_count
+       FROM players
+       WHERE provider = ?
+       GROUP BY agent_login
+       ORDER BY player_count DESC
+       LIMIT 10`,
+      [PROVIDER]
+    );
 
     await db.run('COMMIT');
+    console.log(`[HierarchyBackfill] Top agents by player count:`);
+    for (const a of topAgents) {
+      console.log(`  ${a.agent_login}: ${a.player_count} players`);
+    }
+
     return {
       success: true,
       provider: PROVIDER,
@@ -167,6 +239,8 @@ export async function backfillAgentsAndPlayers(db: Database): Promise<HierarchyB
       placeholderAgents: 0,
       skippedPlayers,
       maxSeqNumber,
+      invalidAgents,
+      topAgentsByPlayers: topAgents,
     };
   } catch (error) {
     await db.run('ROLLBACK').catch(() => ({ lastID: 0, changes: 0 }));
@@ -179,8 +253,25 @@ export async function upsertLiveAgentHierarchy(
   payload: LiveHierarchyPayload,
   source = 'buckeye_api'
 ): Promise<HierarchyBackfillResult> {
-  const agents = deriveAgentParentLinks(Array.isArray(payload?.GENERAL) ? payload.GENERAL : []);
-  const players = Array.isArray(payload?.PLAYERS) ? payload.PLAYERS : [];
+  const rawAgents = Array.isArray(payload?.GENERAL) ? payload.GENERAL : [];
+  const rawPlayers = Array.isArray(payload?.PLAYERS) ? payload.PLAYERS : [];
+
+  // ─── Validation ─────────────────────────────────────────────────────────
+  const validRawAgents: typeof rawAgents = [];
+  let invalidAgents = 0;
+  for (const agent of rawAgents) {
+    const login = String(agent.Login || '').trim();
+    const agentId = String(agent.AgentID || '').trim();
+    if (!login || !agentId) {
+      invalidAgents++;
+      console.warn(`[HierarchyBackfill] Skipping invalid live agent row: missing Login=${login} or AgentID=${agentId}`);
+      continue;
+    }
+    validRawAgents.push(agent);
+  }
+
+  const agents = deriveAgentParentLinks(validRawAgents);
+  const players = rawPlayers;
   const agentLoginToId = new Map<string, string>();
   const agentIds = new Set<string>();
   for (const agent of agents) {
@@ -198,15 +289,21 @@ export async function upsertLiveAgentHierarchy(
       await removePlaceholderAgents(db);
     }
 
+    let agentIdx = 0;
     for (const agent of agents) {
       const login = String(agent.Login || agent.AgentID || '').trim();
       const agentId = String(agent.AgentID || login).trim();
       if (!agentId) continue;
       await upsertAgent(db, agent, agentId, login || agentId);
+      agentIdx++;
+      if (agentIdx % 500 === 0) {
+        console.log(`[HierarchyBackfill] Upserted ${agentIdx}/${agents.length} live agents...`);
+      }
     }
 
     let linkedPlayers = 0;
     let skippedPlayers = 0;
+    let playerIdx = 0;
     for (const player of players) {
       const login = String(player?.Login || player?.customerID || '').trim();
       const agentLogin = String(player?.Agent || '').trim();
@@ -248,9 +345,28 @@ export async function upsertLiveAgentHierarchy(
           }),
         ]
       );
+      playerIdx++;
+      if (playerIdx % 5000 === 0) {
+        console.log(`[HierarchyBackfill] Upserted ${playerIdx}/${players.length} live players...`);
+      }
     }
 
     await syncAgentProjectionTables(db, source);
+    await rebuildAgentClosure(db);
+
+    // Source freshness watermark
+    const checksum = `${agents.length}:${players.length}:${linkedPlayers}`;
+    await db.run(
+      `INSERT INTO source_freshness (source, last_pull, row_count, checksum, metadata)
+       VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?)
+       ON CONFLICT(source) DO UPDATE SET
+        last_pull = excluded.last_pull,
+        row_count = excluded.row_count,
+        checksum = excluded.checksum,
+        metadata = excluded.metadata`,
+      [source, agents.length + players.length, checksum, JSON.stringify({ agentCount: agents.length, playerCount: players.length, linkedPlayers })]
+    );
+
     const maxSeqNumber = agents.reduce((max, agent) => Math.max(max, Number(agent.SeqNumber) || 0), 0);
     await upsertCheckpoint(db, 'hierarchy', maxSeqNumber, {
       source,
@@ -258,7 +374,24 @@ export async function upsertLiveAgentHierarchy(
       playerCount: players.length,
       skippedPlayers,
     });
+
+    // Per-agent summary
+    const topAgents = await db.all<{ agent_login: string; player_count: number }>(
+      `SELECT agent_login, COUNT(*) AS player_count
+       FROM players
+       WHERE provider = ?
+       GROUP BY agent_login
+       ORDER BY player_count DESC
+       LIMIT 10`,
+      [PROVIDER]
+    );
+
     await db.run('COMMIT');
+    console.log(`[HierarchyBackfill] Live ingest complete. Top agents by player count:`);
+    for (const a of topAgents) {
+      console.log(`  ${a.agent_login}: ${a.player_count} players`);
+    }
+
     return {
       success: true,
       provider: PROVIDER,
@@ -268,6 +401,8 @@ export async function upsertLiveAgentHierarchy(
       placeholderAgents: 0,
       skippedPlayers,
       maxSeqNumber,
+      invalidAgents,
+      topAgentsByPlayers: topAgents,
     };
   } catch (error) {
     await db.run('ROLLBACK').catch(() => ({ lastID: 0, changes: 0 }));
@@ -362,6 +497,30 @@ export async function syncAgentProjectionTables(db: Database, source = 'hierarch
       linked_accounts_json = excluded.linked_accounts_json,
       last_refreshed = CURRENT_TIMESTAMP`,
     [source, PROVIDER]
+  );
+}
+
+export async function rebuildAgentClosure(db: Database): Promise<void> {
+  await db.run('DELETE FROM agent_closure WHERE provider = ?', [PROVIDER]);
+  await db.run(
+    `INSERT OR IGNORE INTO agent_closure (provider, ancestor, descendant, depth)
+     WITH RECURSIVE closure(provider, ancestor, descendant, depth) AS (
+       SELECT provider, agent_id, agent_id, 0
+       FROM agent_hierarchy
+       WHERE provider = ?
+
+       UNION ALL
+
+       SELECT c.provider, c.ancestor, child.agent_id, c.depth + 1
+       FROM closure c
+       JOIN agent_hierarchy child
+        ON child.provider = c.provider
+       AND child.parent_agent_id = c.descendant
+       WHERE c.depth < 64
+     )
+     SELECT provider, ancestor, descendant, depth
+     FROM closure`,
+    [PROVIDER]
   );
 }
 
