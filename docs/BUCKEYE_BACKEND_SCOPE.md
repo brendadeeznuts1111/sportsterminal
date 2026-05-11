@@ -47,6 +47,107 @@ Product-context notes from Buckeye's public `manual-agent.pdf` and `FAQ.pdf` are
 | Messages | `getMessage` | POST | `/cloud/api/Manager/getMessage` | Manager message context |
 | Messages | `getNewEmailsCount` | POST | `/cloud/api/Manager/getNewEmailsCount` | Notification count |
 | Agents | `getListAgenstByAgent` | POST | `/cloud/api/Manager/getListAgenstByAgent` | Downline/list context, name is misspelled upstream |
+| Agents | `getHeriarchy` | POST | `/cloud/api/Manager/getHeriarchy` | Flat agent hierarchy list (used by classic skin) |
+| Agents | `getPlayers` | POST | `/cloud/api/Manager/getPlayers` | Players under current agent |
+| Search | `searchCustomerAdmin` | POST | `/cloud/api/Manager/searchCustomerAdmin` | Customer search by ID/Name/Password; returns `CustomerID`, `Login`, `info.Password`, `info.NameFirst` |
+| Account settings | `getAddedInfo` | POST | `/cloud/api/Manager/getAddedInfo` | Telegram ID, email, `MaxAmountNotifyTelegram` |
+| Account settings | `saveNotifyAgent` | POST | `/cloud/api/Manager/saveNotifyAgent` | Save Telegram ID, email, minimum notify amount |
+| Account settings | `updateBasicSettings` | POST | `/cloud/api/Manager/updateBasicSettings` | Update language, timezone, menu style, notify flag |
+| Account settings | `changePassword` | POST | `/cloud/api/Manager/changePassword` | Change password (current password in `accountInfo.Password`) |
+| Accounting | `updateDistribution` | POST | `/cloud/api/Manager/updateDistribution` | Update agent makeup/distribution (value × 100) |
+| Accounting | `getMasterSheet` | POST | `/cloud/api/Manager/getMasterSheet` | Weekly accounting data by agent + date |
+| Reports | `getReportPlayerAnalysis` | POST | `/cloud/api/Manager/getReportPlayerAnalysis` | Player analysis report with date range |
+| Reports | `getLineTypes` | POST | `/cloud/api/Manager/getLineTypes` | Available line types for sport dropdown |
+| Messages | `getCommunicationMessages` | POST | `/cloud/api/Manager/getCommunicationMessages` | Pop-up messages, stamp messages, preferences |
+| Messages | `mailAgentUpdate` | POST | `/cloud/api/Manager/mailAgentUpdate` | Mark message as read (`msgID`, `from`) |
+| Feedback | `sendFeedback` | POST | `/cloud/api/Manager/sendFeedback` | Send feedback message (`acc`, `message`, `subject`) |
+
+## Authorization Flags
+
+Returned by `getAuthorizations` in `a.INFO`. These control UI visibility and permissions.
+
+| Flag | Values | UI Effect When Restricted |
+|------|--------|---------------------------|
+| `AllowPlaceBet` | `Y`/`N` | Removes "Lines" menu if `N` AND `AllowPlaceLateWagers` is `N` |
+| `AllowPlaceLateWagers` | `Y`/`N` | Paired with `AllowPlaceBet` for lines menu |
+| `AddNewAccountFlag` | `Y`/`N` | Removes "Add Account" menu if `N` |
+| `AllowDeletedWagersReport` | `Y`/`N` | Removes "Delete Wager" menu if `N` |
+| `EnterTransactionFlag` | `Y`/`N` | Removes "Transactions" menu if `N` |
+| `DenyIpChecker` | `Y`/`N` | Removes "IP Tracker" menu if `Y` |
+| `DenyEmail` | `Y`/`N` | Removes "Messaging" menu + stats cards if `Y` |
+| `DenyGameAdmin` | `Y`/`N` | Removes "Game Admin" menu if `Y` |
+| `DenyBetTicker` | `Y`/`N` | Removes "Bet Ticker" menu if `Y` |
+| `DenyAgentBilling` | `Y`/`N` | Removes "Agent Billing" menu if `Y` |
+| `DenyAgentPerformance` | `Y`/`N` | Removes "Agent Performance" menu if `Y` |
+| `DenySettings` | `Y`/`N` | Removes settings gear if `Y` |
+| `DenyContactUs` | `Y`/`N` | Removes "Contact" menu if `Y` |
+| `AllowSetLiveBettingLimits` | `Y`/`N` | Removes "Live Betting Limits" menu if not `Y` |
+| `AllowSetVirtualBetLimits` | `Y`/`N` | Part of live betting new menu gate |
+| `AllowAdjExtProps` | `Y`/`N` | Part of live betting new menu gate |
+| `AllowEditLCasinoLimits` | `Y`/`N` | Part of live betting new menu gate |
+| `PokerOnly` | `Y`/`N` | Strips ALL menus except transaction history + home + signout |
+| `ReadOnlyFlag` | `Y`/`N` | Switches to read-only mode, disables most actions |
+| `Active` | `Y`/`N` | `N` = account disabled, shows lockout screen |
+| `ForceReset` | `Y`/`N` | `Y` = forces password change modal on login |
+| `CommissionType` | `S`/`?` | `S` hides accounting history + distribution |
+| `NotifyVipBets` | `Y`/`N` | VIP bet notification setting |
+| `MasterAgentID` | string | Used for hierarchy root context |
+
+### Third-Party Module Permissions
+
+| Module | Flag | Buckeye Operation |
+|--------|------|-------------------|
+| Dynamic Live | `AllowSetLiveBettingLimits` | `Manager/getDynamicLines` |
+| Crash | `AllowSetVirtualBetLimits` | `Manager/getCrash` |
+| Extended Props | `AllowAdjExtProps` | `Manager/getExtendedProps` |
+| Live Casino | `AllowEditLCasinoLimits` | `Manager/getLiveCasino` |
+
+## Account Info Fields
+
+Returned by `getAccountInfoOwner` and stored in `accountInfo`.
+
+| Field | Type | Usage |
+|-------|------|-------|
+| `Login` | string | Display name, header |
+| `AgentType` | `M`/`A` | Master vs Agent |
+| `AgentMenuStyle` | `Tile Menu` / `Left Menu` | UI layout mode |
+| `Language` | string | UI language |
+| `TimeZone` | number | Offset for score times |
+| `CurrencyCode` | string | For `$` formatting |
+| `CurrentBalance` | cents | Displayed as dollars/100 |
+| `Active` | `Y`/`N` | Account enabled |
+| `ReadOnlyFlag` | `Y`/`N` | Read-only mode |
+| `ForceReset` | `Y`/`N` | Force password change |
+| `Office` | string | Office ID |
+| `customerID` | string | Internal ID (same as agent ID) |
+| `CryptoCashierType` | string | Cashier type for crypto |
+| `AppsCryptoCashierType` | string | App cashier type |
+| `ezliveID` | string | `buck2` = system 2 |
+| `email` | string | Contact email |
+| `Password` | string | **Plaintext in response** |
+| `preferenceDate` | array | Message preference dates |
+| `DefaultSiteSkin` | string | Skin/theme |
+| `ShowHowManyWeeks` | number | Max week filter range |
+| `CommentsForCustomer` | string | Pop-up message text |
+
+## Hierarchy Engine
+
+The Buckeye manager uses a 12-level recursive hierarchy with lazy loading.
+
+| Function | Purpose |
+|----------|---------|
+| `baseHeriarchy(data)` | Builds nested object from flat list, 12 levels deep |
+| `buildTree(list, result, parentId, depth)` | Recursive tree builder, max depth 13 |
+| `findInTree(list, master)` | Finds children of a given master |
+| `getAgentCountChildren({list, search})` | Counts direct children |
+| `searchCompleteHeriarchy({agent, level, li, ...})` | Lazy-loads on tree expand |
+
+**Key behaviors:**
+- 12 levels explicitly handled (Level 1-12)
+- Max depth 13 guard against infinite recursion
+- Lazy loading on click, not all at once
+- Agents (`AgentType: "A"`) can have `players[]` array
+- Tree nodes have checkboxes for bulk operations
 
 Manual-derived context:
 
@@ -94,7 +195,7 @@ The backend already calls this through `BuckeyeAPI.getAgentHierarchy()`. `/api/a
 
 1. Persisted Buckeye `agents` rows from the local database.
 2. Live `getListAgenstByAgent` when an authenticated Buckeye session is active.
-3. Ignored local seed exports in `docs/agentobject.md` or `docs/agentslistharz.md`.
+3. Ignored local seed exports in `docs/archive/legacy/agentobject.md` or `docs/archive/legacy/agentslistharz.md`.
 
 This keeps the downline and player/customer seed available without calling Buckeye every page load. Run `POST /api/agents/backfill/hierarchy` to parse the ignored seed files and upsert agents/players into the database.
 

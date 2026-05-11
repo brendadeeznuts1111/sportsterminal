@@ -9,10 +9,11 @@
  * - Required fields: agentID, agentOwner, agentSite=1, operation, RRO=1, wagerNumber
  */
 
-import type { EnrichedWager } from '../risk/AlertEngine';
-import { decodeEntities } from '../utils/decodeEntities';
-import { fetchWithTimeout } from '../utils/fetchWithTimeout';
 import { buildBrowserHeaders } from '../../../utils/connection';
+import type { EnrichedWager } from '../risk/AlertEngine';
+import { BUCKEYE_USER_AGENT } from '../utils/constants';
+import { decodeEntities } from '../utils/decodeEntities';
+import { fetchWithTimeout, type BunFetchOptions } from '../utils/fetchWithTimeout';
 
 export interface BuckeyeCredentials {
   agentId: string;
@@ -439,12 +440,17 @@ export class BuckeyeAPI {
   private debugMode: boolean;
   private lastWagerNumber: number = 0;
 
+  /** Per-endpoint ETag cache: key → { etag, response, timestamp } */
+  private etagCache: Map<string, { etag: string; response: unknown; timestamp: number }> = new Map();
+  private readonly etagCacheTtlMs = 60_000; // 60s TTL for cached responses
+
   constructor(credentials: BuckeyeCredentials, debugMode: boolean = false) {
     this.baseUrl = credentials.baseUrl?.replace(/\/$/, '') || 'https://fantasy402.com';
     this.agentId = credentials.agentId.toUpperCase().trim();
     this.password = credentials.password;
     this.cfCookie = credentials.cfCookie || '';
-    this.debugMode = debugMode;
+    // Enable via constructor arg, or global env var BUCKEYE_DEBUG=true
+    this.debugMode = debugMode || Bun.env.BUCKEYE_DEBUG === 'true' || Bun.env.BUCKEYE_DEBUG === '1';
 
     // If a pre-authenticated token is provided, use it directly
     if (credentials.token) {
@@ -467,6 +473,16 @@ export class BuckeyeAPI {
     return this.agentId;
   }
 
+  /** Toggle verbose fetch debugging at runtime. */
+  setDebugMode(enabled: boolean): void {
+    this.debugMode = enabled;
+    this.log('Debug mode set to:', enabled);
+  }
+
+  isDebugMode(): boolean {
+    return this.debugMode;
+  }
+
   private log(...args: unknown[]) {
     if (this.debugMode) console.log('[BuckeyeAPI]', ...args);
   }
@@ -482,8 +498,12 @@ export class BuckeyeAPI {
     return parts.join('; ');
   }
 
-  private buildHeaders(options: { contentType?: string; accept?: string; referer?: string } = {}): Record<string, string> {
-    return buildBrowserHeaders({
+  public getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  public buildHeaders(options: { contentType?: string; accept?: string; referer?: string } = {}): Record<string, string> {
+    const headers = buildBrowserHeaders({
       token: this.token,
       cookie: this.getCookieHeader() || undefined,
       origin: this.baseUrl,
@@ -491,6 +511,37 @@ export class BuckeyeAPI {
       contentType: options.contentType,
       accept: options.accept ?? "application/json, text/javascript, */*; q=0.01",
     });
+    // Allow env override of User-Agent while preserving browser fingerprint headers
+    headers['User-Agent'] = BUCKEYE_USER_AGENT;
+    return headers;
+  }
+
+  // ============================================================
+  // ETAG CACHE HELPERS
+  // ============================================================
+
+  private etagCacheKey(endpoint: string, body: URLSearchParams): string {
+    return `${endpoint}?${body.toString()}`;
+  }
+
+  private getCachedResponse(key: string): unknown | undefined {
+    const entry = this.etagCache.get(key);
+    if (!entry) return undefined;
+    if (Date.now() - entry.timestamp > this.etagCacheTtlMs) {
+      this.etagCache.delete(key);
+      return undefined;
+    }
+    this.log('[ETag] Cache hit for', key.slice(0, 120));
+    return entry.response;
+  }
+
+  private setCachedResponse(key: string, etag: string, response: unknown): void {
+    this.etagCache.set(key, { etag, response, timestamp: Date.now() });
+    this.log('[ETag] Cached response for', key.slice(0, 120), 'etag:', etag.slice(0, 40));
+  }
+
+  private getCachedEtag(key: string): string | undefined {
+    return this.etagCache.get(key)?.etag;
   }
 
   /**
@@ -521,6 +572,7 @@ export class BuckeyeAPI {
         method: 'POST',
         headers: this.buildHeaders({ contentType: 'application/x-www-form-urlencoded', referer: `${this.baseUrl}/index.php` }),
         body,
+        ...(this.debugMode ? { verbose: true } : {}),
       });
 
       const text = await response.text();
@@ -573,6 +625,7 @@ export class BuckeyeAPI {
         method: 'POST',
         headers: this.buildHeaders(),
         body,
+        ...(this.debugMode ? { verbose: true } : {}),
       });
 
       return response.ok;
@@ -603,6 +656,7 @@ export class BuckeyeAPI {
       method: 'POST',
       headers: this.buildHeaders({ referer: `${this.baseUrl}/manager.html?bet-ticker=active` }),
       body,
+      ...(this.debugMode ? { verbose: true } : {}),
     });
 
     if (!response.ok) {
@@ -649,6 +703,7 @@ export class BuckeyeAPI {
         method: 'POST',
         headers: this.buildHeaders({ contentType: 'application/x-www-form-urlencoded', accept: 'application/json' }),
         body,
+        ...(this.debugMode ? { verbose: true } : {}),
       });
 
       if (response.ok) {
@@ -695,6 +750,7 @@ export class BuckeyeAPI {
       method: 'POST',
       headers: this.buildHeaders(),
       body,
+      ...(this.debugMode ? { verbose: true } : {}),
     });
 
     if (!response.ok) {
@@ -732,6 +788,7 @@ export class BuckeyeAPI {
       method: 'POST',
       headers: this.buildHeaders(),
       body,
+      ...(this.debugMode ? { verbose: true } : {}),
     });
 
     if (!response.ok) {
@@ -767,6 +824,7 @@ export class BuckeyeAPI {
       method: 'POST',
       headers: this.buildHeaders(),
       body,
+      ...(this.debugMode ? { verbose: true } : {}),
     });
 
     if (!response.ok) {
@@ -810,6 +868,7 @@ export class BuckeyeAPI {
       method: 'POST',
       headers: this.buildHeaders(),
       body,
+      ...(this.debugMode ? { verbose: true } : {}),
     });
 
     if (!response.ok) {
@@ -1028,13 +1087,13 @@ export class BuckeyeAPI {
           operation === 'getTransactionHistory'
             ? buildTransactionHistoryExtra(normalizedCustomerId, startIso, endIso)
             : {
-                customerID: normalizedCustomerId,
-                customerId: normalizedCustomerId,
-                login: normalizedCustomerId,
-                acc: normalizedCustomerId,
-                start,
-                end,
-              }
+              customerID: normalizedCustomerId,
+              customerId: normalizedCustomerId,
+              login: normalizedCustomerId,
+              acc: normalizedCustomerId,
+              start,
+              end,
+            }
         );
         const rows = extractBuckeyeRows(data)
           .filter(isDepositLikeRow)
@@ -1291,7 +1350,7 @@ export class BuckeyeAPI {
     const endpoint = `${this.baseUrl}/app/language/ui.json?${query.toString()}`;
     const headers = this.buildHeaders();
 
-    const response = await fetch(endpoint, { method: 'GET', headers });
+    const response = await fetch(endpoint, { method: 'GET', headers, ...(this.debugMode ? { verbose: true } : {}) });
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) {
         this.loggedIn = false;
@@ -1378,6 +1437,7 @@ export class BuckeyeAPI {
         method: 'POST',
         headers: this.buildHeaders({ referer: `${this.baseUrl}/manager.html?bet-ticker=active` }),
         body,
+        ...(this.debugMode ? { verbose: true } : {}),
       });
 
       if (!response.ok) {
@@ -1421,6 +1481,7 @@ export class BuckeyeAPI {
         method: 'POST',
         headers: this.buildHeaders(),
         body,
+        ...(this.debugMode ? { verbose: true } : {}),
       });
 
       const text = await response.text().catch(() => '');
@@ -1460,12 +1521,77 @@ export class BuckeyeAPI {
     return this.postForm(`${this.baseUrl}/cloud/api/Manager/${operation}`, body, operation);
   }
 
-  private async postForm(endpoint: string, body: URLSearchParams, label: string): Promise<unknown> {
+  /**
+   * Debug variant of postManagerOperation that returns raw response details
+   * including status, headers, and unparsed body text.
+   */
+  async postManagerOperationDebug(
+    operation: string,
+    extra: Record<string, string> = {}
+  ): Promise<{
+    status: number;
+    statusText: string;
+    headers: Record<string, string>;
+    bodyText: string;
+    parsed: unknown;
+    url: string;
+  }> {
+    if (!this.loggedIn) {
+      throw new Error('Not authenticated. Call login() first.');
+    }
+    const body = buildManagerOperationBody(this.agentId, operation as BuckeyeManagerOperation, extra);
+    const endpoint = `${this.baseUrl}/cloud/api/Manager/${operation}`;
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: this.buildHeaders(),
       body,
+      verbose: true,
     });
+
+    const headers: Record<string, string> = {};
+    response.headers.forEach((value, key) => { headers[key] = value; });
+
+    const text = await response.text().catch(() => '');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = text;
+    }
+
+    return {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+      bodyText: text,
+      parsed,
+      url: endpoint,
+    };
+  }
+
+  private async postForm(endpoint: string, body: URLSearchParams, label: string): Promise<unknown> {
+    const cacheKey = this.etagCacheKey(endpoint, body);
+    const cachedEtag = this.getCachedEtag(cacheKey);
+
+    const headers = this.buildHeaders();
+    if (cachedEtag) {
+      headers['If-None-Match'] = cachedEtag;
+    }
+
+    const fetchOptions: BunFetchOptions = {
+      method: 'POST',
+      headers,
+      body,
+      ...(this.debugMode ? { verbose: true } : {}),
+    };
+    const response = await fetch(endpoint, fetchOptions);
+
+    // ETag cache hit — return cached response without parsing body
+    if (response.status === 304 && cachedEtag) {
+      this.log('[ETag] 304 Not Modified for', label);
+      const cached = this.getCachedResponse(cacheKey);
+      if (cached !== undefined) return cached;
+    }
 
     const text = await response.text().catch(() => '');
     if (!response.ok) {
@@ -1475,12 +1601,181 @@ export class BuckeyeAPI {
       throw new Error(`${label} failed: ${response.status} ${response.statusText} - ${text.substring(0, 200)}`);
     }
 
+    // Store in ETag cache if server returns an ETag header
+    const etag = response.headers.get('etag') || response.headers.get('ETag');
+    if (etag && text.trim()) {
+      let parsed: unknown;
+      try { parsed = JSON.parse(text); } catch { parsed = text; }
+      this.setCachedResponse(cacheKey, etag, parsed);
+      return parsed;
+    }
+
     if (!text.trim()) return null;
     try {
       return JSON.parse(text);
     } catch {
       return text;
     }
+  }
+
+  // ============================================================
+  // WRITE API — updateByColumn (discovered from HTML forms)
+  // ============================================================
+
+  /**
+   * Universal column updater for player configuration.
+   * @param customerID — numeric customer ID (must be resolved first)
+   * @param column — data-column name: CreditLimit, WagerLimit, SettleFigure, TempCreditAdj, CreditAcctFlag, ZeroBalanceFlag, WeeklyLimitFlag, TempCreditAdjExpDate
+   * @param value — new value (string or number)
+   * @param type — 0 for numeric (multiplication operator), 1 for string/boolean
+   */
+  async updateByColumn(params: {
+    customerID: number;
+    column: string;
+    value: string | number;
+    type?: number;
+    title?: string;
+    info?: string;
+  }): Promise<unknown> {
+    if (!this.loggedIn) {
+      throw new Error('Not authenticated. Call login() first.');
+    }
+    const body = new URLSearchParams({
+      agentID: this.agentId,
+      agentOwner: this.agentId,
+      agentSite: '1',
+      operation: 'updateByColumn',
+      RRO: '1',
+      customerID: String(params.customerID),
+      column: params.column,
+      value: String(params.value),
+      type: String(params.type ?? 0),
+      title: params.title || 'Update Data Customer Admin',
+      info: params.info || `THE BASICS : ${params.column} | New : ${params.value} /`,
+    });
+    return this.postForm(`${this.baseUrl}/cloud/api/Manager/updateByColumn`, body, 'updateByColumn');
+  }
+
+  /** Credit Limit — max total exposure in cents */
+  async setCreditLimit(customerId: number, cents: number): Promise<unknown> {
+    return this.updateByColumn({
+      customerID: customerId, column: 'CreditLimit', value: cents, type: 0,
+      info: `THE BASICS : credit limit | New : ${cents} /`,
+    });
+  }
+
+  /** Wager Limit — max single bet in cents */
+  async setWagerLimit(customerId: number, cents: number): Promise<unknown> {
+    return this.updateByColumn({
+      customerID: customerId, column: 'WagerLimit', value: cents, type: 0,
+      info: `THE BASICS : wager limit | New : ${cents} /`,
+    });
+  }
+
+  /** Settle Figure — settlement threshold in cents */
+  async setSettleFigure(customerId: number, cents: number): Promise<unknown> {
+    return this.updateByColumn({
+      customerID: customerId, column: 'SettleFigure', value: cents, type: 0,
+      info: `THE BASICS : settle figure | New : ${cents} /`,
+    });
+  }
+
+  /** Temporary Credit Adjustment in cents */
+  async setTempCreditAdj(customerId: number, cents: number): Promise<unknown> {
+    return this.updateByColumn({
+      customerID: customerId, column: 'TempCreditAdj', value: cents, type: 0,
+      info: `THE BASICS : temp credit | New : ${cents} /`,
+    });
+  }
+
+  /** Account Type: "Y" = Credit, "N" = Post Up */
+  async setCreditAcctFlag(customerId: number, flag: 'Y' | 'N'): Promise<unknown> {
+    return this.updateByColumn({
+      customerID: customerId, column: 'CreditAcctFlag', value: flag, type: 1,
+      info: `THE BASICS : account type | New : ${flag} /`,
+    });
+  }
+
+  /** Zero Balance Flag: "true" | "false" */
+  async setZeroBalanceFlag(customerId: number, flag: boolean): Promise<unknown> {
+    return this.updateByColumn({
+      customerID: customerId, column: 'ZeroBalanceFlag', value: String(flag), type: 1,
+      info: `THE BASICS : zero balance | New : ${flag} /`,
+    });
+  }
+
+  /** Weekly Limit Flag: "true" | "false" */
+  async setWeeklyLimitFlag(customerId: number, flag: boolean): Promise<unknown> {
+    return this.updateByColumn({
+      customerID: customerId, column: 'WeeklyLimitFlag', value: String(flag), type: 1,
+      info: `THE BASICS : weekly limit | New : ${flag} /`,
+    });
+  }
+
+  /** Temp Credit Expiry Date: "YYYY-MM-DD" */
+  async setTempCreditExpDate(customerId: number, date: string): Promise<unknown> {
+    return this.updateByColumn({
+      customerID: customerId, column: 'TempCreditAdjExpDate', value: date, type: 1,
+      info: `THE BASICS : temp credit expiry | New : ${date} /`,
+    });
+  }
+
+  // ============================================================
+  // ID RESOLUTION
+  // ============================================================
+
+  async resolveCustomerId(identifier: string): Promise<number> {
+    const data = await this.postManagerOperation('getInfoPlayer', { customerID: identifier, customerId: identifier, login: identifier });
+    const row = extractBuckeyeRows(data)[0] || objectPayload(data);
+    const id = row?.PlayerID || row?.customerID || row?.ID || row?.id || row?.CustomerID;
+    if (!id) throw new Error(`Cannot resolve numeric ID for: ${identifier}`);
+    return Number.parseInt(String(id), 10);
+  }
+
+  // ============================================================
+  // COMPOSITE ENFORCEMENT ACTIONS
+  // ============================================================
+
+  /** Full block: zero all limits, suspend account */
+  async blockPlayer(customerId: number): Promise<{ action: string; customerId: number; results: Record<string, unknown> }> {
+    const results: Record<string, unknown> = {};
+    results.creditLimit = await this.setCreditLimit(customerId, 0);
+    results.wagerLimit = await this.setWagerLimit(customerId, 0);
+    results.settleFigure = await this.setSettleFigure(customerId, 0);
+    results.tempCredit = await this.setTempCreditAdj(customerId, 0);
+    results.creditAcct = await this.setCreditAcctFlag(customerId, 'N');
+    results.zeroBalance = await this.setZeroBalanceFlag(customerId, true);
+    return { action: 'BLOCK', customerId, results };
+  }
+
+  /** Reduce limits for RED tier */
+  async reducePlayerLimits(customerId: number, maxWagerCents: number, maxCreditCents: number): Promise<{ action: string; customerId: number; results: Record<string, unknown> }> {
+    const results: Record<string, unknown> = {};
+    results.creditLimit = await this.setCreditLimit(customerId, maxCreditCents);
+    results.wagerLimit = await this.setWagerLimit(customerId, maxWagerCents);
+    results.settleFigure = await this.setSettleFigure(customerId, maxCreditCents);
+    return { action: 'REDUCE', customerId, results };
+  }
+
+  // ============================================================
+  // TRANSACTION API
+  // ============================================================
+
+  async insertTransaction(params: {
+    customerID: string;
+    type: 'E' | 'I' | 'C' | 'D' | 'B' | 'N';
+    amount: number;
+    description: string;
+    dailyFigure?: string;
+  }): Promise<unknown> {
+    const body = buildManagerOperationBody(this.agentId, 'insertTransaction', {
+      customerID: params.customerID,
+      type: params.type,
+      amount: String(params.amount),
+      description: params.description,
+      dailyFigure: params.dailyFigure || new Date().toISOString().split('T')[0],
+    });
+    return this.postForm(`${this.baseUrl}/cloud/api/Manager/insertTransaction`, body, 'insertTransaction');
   }
 
   private normalizeWager(raw: BuckeyeWagerRaw): EnrichedWager {
@@ -1613,7 +1908,7 @@ function extractBetTypes(entries: BuckeyeUiString[]): BuckeyeBetTypeLabel[] {
     const value = entry.value.trim();
     const path = entry.path;
 
-if (KNOWN_BET_TYPE_LABELS[key] && value.length <= 40) {
+    if (KNOWN_BET_TYPE_LABELS[key] && value.length <= 40) {
       byLabel.set(`${key}:${value.toLowerCase()}`, { code: key, label: value, path });
       continue;
     }

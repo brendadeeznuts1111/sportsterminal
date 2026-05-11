@@ -657,7 +657,7 @@ Per-agent exposure breakdown with top customers and games.
 
 Trigger a hierarchy backfill from stored agent data.
 
-Parses ignored local seed files (`docs/agentobject.md` and `docs/agentslistharz.md`) and upserts Buckeye agents plus sanitized players/customers into the local database.
+Parses archived local seed files (`docs/archive/legacy/agentobject.md` and `docs/archive/legacy/agentslistharz.md`) and upserts Buckeye agents plus sanitized players/customers into the local database.
 
 **Response 200:**
 ```json

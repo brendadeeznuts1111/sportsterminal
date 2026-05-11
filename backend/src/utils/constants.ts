@@ -94,3 +94,9 @@ export const PERFORMANCE_CACHE = {
   CACHE_PREFIX: 'sportsterminal:perf:',
   PUBSUB_CHANNEL: 'sportsterminal:perf:updates',
 } as const;
+
+// ========== BUCKEYE API CLIENT ==========
+/** Override via BUCKEYE_USER_AGENT env var; defaults to current Bun version */
+export const BUCKEYE_USER_AGENT =
+  process.env.BUCKEYE_USER_AGENT ||
+  `Bun/${process.versions?.bun || '1.0'} SportsTerminal/5.41`;

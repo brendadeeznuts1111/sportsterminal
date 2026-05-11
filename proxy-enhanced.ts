@@ -448,6 +448,23 @@ const PROXY_ALIAS_MAP: Record<ProxyAliasName, ProxyAliasCandidate[]> = {
   updatePendingReportConfig: [
     { endpoint: "Manager/updateReportConfigPending", operation: "updateReportConfigPending", defaults: PENDING_REPORT_CONFIG_DEFAULTS },
   ],
+  playerDetails: [
+    { endpoint: "Manager/getPlayerDetails", operation: "getPlayerDetails", defaults: { agentSite: "1" } },
+    { endpoint: "Manager/getInfoPlayer", operation: "getInfoPlayer", defaults: { agentSite: "1" } },
+  ],
+  playerLimits: [
+    { endpoint: "Manager/getPlayerLimits", operation: "getPlayerLimits", defaults: { agentSite: "1" } },
+  ],
+  searchCustomer: [
+    { endpoint: "Manager/searchCustomerAdmin", operation: "searchCustomerAdmin", defaults: { agentSite: "1" } },
+  ],
+  notifySettings: [
+    { endpoint: "Manager/getAddedInfo", operation: "getAddedInfo" },
+    { endpoint: "Manager/saveNotifyAgent", operation: "saveNotifyAgent" },
+  ],
+  playerStatus: [
+    { endpoint: "Manager/updatePlayerStatus", operation: "updatePlayerStatus", defaults: { agentSite: "1" } },
+  ],
 };
 const PROXY_ALIAS_PARAMS: Record<ProxyAliasName, ProxyAliasParam> = {
   sportsLeagues: {
@@ -494,6 +511,31 @@ const PROXY_ALIAS_PARAMS: Record<ProxyAliasName, ProxyAliasParam> = {
     required: ["token", "cf_clearance", "agentID"],
     optional: ["agent", "customerID", "password", "name", "timeAccepted", "timeScheduled", "type", "print", "delete", "custTotal", "agentOwner", "agentSite", "__cf_bm"],
     example: { token: "...", cf_clearance: "...", agentID: "BILLY666", customerID: "on", password: "off" },
+  },
+  playerDetails: {
+    required: ["token", "cf_clearance", "playerID"],
+    optional: ["agentID", "agentOwner", "agentSite"],
+    example: { token: "...", cf_clearance: "...", playerID: "PLAYER123" },
+  },
+  playerLimits: {
+    required: ["token", "cf_clearance", "playerID"],
+    optional: ["agentID", "agentOwner", "agentSite"],
+    example: { token: "...", cf_clearance: "...", playerID: "PLAYER123" },
+  },
+  searchCustomer: {
+    required: ["token", "cf_clearance", "agentID", "filter"],
+    optional: ["agentOwner", "agentSite"],
+    example: { token: "...", cf_clearance: "...", agentID: "BILLY666", filter: "john" },
+  },
+  notifySettings: {
+    required: ["token", "cf_clearance", "customerID"],
+    optional: ["telegramID", "email", "minimum"],
+    example: { token: "...", cf_clearance: "...", customerID: "BILLY666" },
+  },
+  playerStatus: {
+    required: ["token", "cf_clearance", "playerID", "status"],
+    optional: ["agentID", "agentOwner", "agentSite"],
+    example: { token: "...", cf_clearance: "...", playerID: "PLAYER123", status: "active" },
   },
 };
 
@@ -585,6 +627,27 @@ const ENDPOINT_MAP: Record<string, { path: string; cacheTtl: number; category: s
   playerActivity: { path: "System/getPlayerActivity", cacheTtl: 120, category: "player" },
   bettorDetails: { path: "Manager/getBettorDetails", cacheTtl: 120, category: "player" },
   liveGame: { path: "Manager/getGames", cacheTtl: 15, category: "live" },
+
+  // === Discovered from manager.js reverse engineering (May 11, 2026) ===
+  getAddedInfo: { path: "Manager/getAddedInfo", cacheTtl: 60, category: "account" },
+  getCommunicationMessages: { path: "Manager/getCommunicationMessages", cacheTtl: 60, category: "account" },
+  getLineTypes: { path: "Manager/getLineTypes", cacheTtl: 3600, category: "config" },
+  searchCustomerAdmin: { path: "Manager/searchCustomerAdmin", cacheTtl: 30, category: "search" },
+  saveNotifyAgent: { path: "Manager/saveNotifyAgent", cacheTtl: 0, category: "account" },
+  updateBasicSettings: { path: "Manager/updateBasicSettings", cacheTtl: 0, category: "account" },
+  updateDistribution: { path: "Manager/updateDistribution", cacheTtl: 0, category: "accounting" },
+  changePassword: { path: "Manager/changePassword", cacheTtl: 0, category: "auth" },
+  mailAgentUpdate: { path: "Manager/mailAgentUpdate", cacheTtl: 0, category: "messages" },
+  sendFeedback: { path: "Manager/sendFeedback", cacheTtl: 0, category: "support" },
+  getMasterSheet: { path: "Manager/getMasterSheet", cacheTtl: 300, category: "accounting" },
+  getHeriarchy: { path: "Manager/getHeriarchy", cacheTtl: 300, category: "agent" },
+  getPlayers: { path: "Manager/getPlayers", cacheTtl: 300, category: "agent" },
+
+  // === Discovered from proxy deep scan (May 11, 2026) ===
+  getPlayerDetails: { path: "Manager/getPlayerDetails", cacheTtl: 120, category: "player" },
+  getPlayerLimits: { path: "Manager/getPlayerLimits", cacheTtl: 120, category: "player" },
+  setPlayerLimits: { path: "Manager/setPlayerLimits", cacheTtl: 0, category: "player" },
+  updatePlayerStatus: { path: "Manager/updatePlayerStatus", cacheTtl: 0, category: "player" },
 };
 
 function getEndpointMeta(endpointPath: string): { key: string; cacheTtl: number; category: string } | null {
@@ -648,6 +711,27 @@ function getEndpointDescription(key: string): string {
     getMessage: "Agent messages",
     playerActivity: "Player activity events",
     bettorDetails: "Detailed bettor information",
+
+    // Discovered from manager.js reverse engineering (May 11, 2026)
+    getAddedInfo: "Telegram ID and notification threshold settings",
+    getCommunicationMessages: "Pop-up messages, stamp messages, and communication preferences",
+    getLineTypes: "Available line types for sport dropdown",
+    searchCustomerAdmin: "Search customers by ID, name, or password",
+    saveNotifyAgent: "Save Telegram notification settings",
+    updateBasicSettings: "Update language, timezone, menu style, and VIP notify flag",
+    updateDistribution: "Update agent makeup/distribution",
+    changePassword: "Change account password",
+    mailAgentUpdate: "Mark agent message as read",
+    sendFeedback: "Send feedback message to support",
+    getMasterSheet: "Weekly accounting master sheet",
+    getHeriarchy: "Flat agent hierarchy list (classic skin)",
+    getPlayers: "Players under current agent",
+
+    // Discovered from proxy deep scan (May 11, 2026)
+    getPlayerDetails: "Detailed player account information",
+    getPlayerLimits: "Player wager and betting limits",
+    setPlayerLimits: "Update player wager and betting limits",
+    updatePlayerStatus: "Update player account status (active/suspended)",
   };
   return desc[key] || "Buckeye PPH API endpoint";
 }
@@ -1205,26 +1289,37 @@ if (CONFIG.features.riskEngine) {
 const tokenRenewalTimers = new Map<string, Timer>();
 
 async function renewTokenForCustomer(customerID: string, reqId = "token-renewal"): Promise<boolean> {
-  const stored = await getStoredCredentials(customerID);
-  if (!stored) return false;
+  try {
+    const stored = await getStoredCredentials(customerID);
+    if (!stored) return false;
 
-  const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/System/renewToken`, {
-    method: "POST",
-    headers: browserHeaders(stored.token, `cf_clearance=${stored.cf_clearance}`),
-    body: toForm({ operation: "renewToken", agentID: customerID, agentOwner: customerID, agentSite: "1" }),
-  }), { reqId, endpoint: "renewToken" });
+    const upstream = await buckeyeCall(() => buckeyeFetch(`${CONFIG.baseUrl}/cloud/api/System/renewToken`, {
+      method: "POST",
+      headers: browserHeaders(stored.token, `cf_clearance=${stored.cf_clearance}`),
+      body: toForm({ operation: "renewToken", agentID: customerID, agentOwner: customerID, agentSite: "1" }),
+    }), { reqId, endpoint: "renewToken" });
 
-  const text = await upstream.text();
-  const data = JSON.parse(text) as { token?: string; code?: string };
-  const token = data.token || data.code;
-  if (!upstream.ok || !token) return false;
+    const text = await upstream.text();
+    let data: { token?: string; code?: string };
+    try {
+      data = JSON.parse(text) as { token?: string; code?: string };
+    } catch {
+      logger.warn("Token renewal returned non-JSON", { customerID, preview: text.slice(0, 200) });
+      return false;
+    }
+    const token = data.token || data.code;
+    if (!upstream.ok || !token) return false;
 
-  const expiresAt = Math.floor(Date.now() / 1000) + 7200;
-  insertToken.run({ $customerID: customerID, $cf_clearance: null, $auth_code: null, $bearer_token: String(token), $expires_at: expiresAt });
-  invalidateTokenCache(customerID);
-  scheduleTokenRenewal(customerID, expiresAt);
-  logger.info("Token pre-renewed", { reqId, customerID, expiresAt });
-  return true;
+    const expiresAt = Math.floor(Date.now() / 1000) + 7200;
+    insertToken.run({ $customerID: customerID, $cf_clearance: null, $auth_code: null, $bearer_token: String(token), $expires_at: expiresAt });
+    invalidateTokenCache(customerID);
+    scheduleTokenRenewal(customerID, expiresAt);
+    logger.info("Token pre-renewed", { reqId, customerID, expiresAt });
+    return true;
+  } catch (err: unknown) {
+    logger.warn("Token renewal error", { customerID, error: err instanceof Error ? err.message : String(err) });
+    return false;
+  }
 }
 
 function scheduleTokenRenewal(customerID: string, expiresAtUnix: number) {
@@ -1243,9 +1338,13 @@ function scheduleTokenRenewal(customerID: string, expiresAtUnix: number) {
 }
 
 function scheduleExistingTokenRenewals() {
-  const rows = getReadDb().query("SELECT customerID, MAX(expires_at) AS expires_at FROM tokens WHERE bearer_token IS NOT NULL GROUP BY customerID").all() as Array<{ customerID: string; expires_at: number }>;
-  for (const row of rows) {
-    if (row.customerID && row.expires_at) scheduleTokenRenewal(row.customerID, row.expires_at);
+  try {
+    const rows = getReadDb().query("SELECT customerID, MAX(expires_at) AS expires_at FROM tokens WHERE bearer_token IS NOT NULL GROUP BY customerID").all() as Array<{ customerID: string; expires_at: number }>;
+    for (const row of rows) {
+      if (row.customerID && row.expires_at) scheduleTokenRenewal(row.customerID, row.expires_at);
+    }
+  } catch (err: unknown) {
+    logger.warn("scheduleExistingTokenRenewals failed", { error: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -5255,7 +5354,7 @@ const server = Bun.serve<WsData>({
       }
 
       // ---- /API/PROXY NAMED BUCKEYE ALIASES ----
-      if (path.startsWith("/api/proxy/") && req.method === "POST") {
+      if (path.startsWith("/api/proxy/") && path !== "/api/proxy/discover-endpoints" && req.method === "POST") {
         const alias = path.replace("/api/proxy/", "");
         if (isProxyAlias(alias)) {
           activeRequests++;
@@ -5623,7 +5722,7 @@ const server = Bun.serve<WsData>({
       }
 
       // ---- /API/PROXY/:ENDPOINT ----
-      if (path.startsWith("/api/proxy/") && path !== "/api/proxy/auth" && path !== "/api/proxy/tokens" && path !== "/api/proxy/logs" && path !== "/api/proxy/health" && path !== "/api/proxy/status" && path !== "/api/proxy/endpoints" && path !== "/api/proxy/renewToken" && !path.startsWith("/api/proxy/agent/") && !path.startsWith("/api/proxy/analytics/") && !path.startsWith("/api/proxy/integrity/") && !path.startsWith("/api/proxy/risk/") && !path.startsWith("/api/proxy/line-") && req.method === "POST") {
+      if (path.startsWith("/api/proxy/") && path !== "/api/proxy/auth" && path !== "/api/proxy/tokens" && path !== "/api/proxy/logs" && path !== "/api/proxy/health" && path !== "/api/proxy/status" && path !== "/api/proxy/endpoints" && path !== "/api/proxy/renewToken" && path !== "/api/proxy/discover-endpoints" && !path.startsWith("/api/proxy/agent/") && !path.startsWith("/api/proxy/analytics/") && !path.startsWith("/api/proxy/integrity/") && !path.startsWith("/api/proxy/risk/") && !path.startsWith("/api/proxy/line-") && req.method === "POST") {
         activeRequests++;
         const authErr = apiKeyAuth(req);
         if (authErr) { activeRequests--; return authErr; }
@@ -7128,6 +7227,15 @@ async function shutdown(signal: string) {
   process.exit(0);
 }
 
+// Global safety nets — log unhandled errors but keep proxy alive
+process.on("unhandledRejection", (reason) => {
+  logger.error("Unhandled rejection", { reason: reason instanceof Error ? reason.message : String(reason) });
+});
+process.on("uncaughtException", (err) => {
+  logger.error("Uncaught exception", { error: err.message, stack: err.stack });
+  // Do NOT exit — proxy should stay alive and serve requests
+});
+
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGUSR2", () => {
@@ -7143,30 +7251,20 @@ process.on("SIGUSR2", () => {
 // ==========================================
 // 13. CONFIG HOT-RELOAD (dev only)
 // ==========================================
-if (!CONFIG.production) {
-  configWatcher = watch('.env', { persistent: false }, async (event) => {
-    if (event !== 'change') return;
-    logger.info('.env changed, reloading config');
-    try {
-      reloadFromEnv();
-      logger.info('Config reloaded', { features: CONFIG.features });
-    } catch (err: unknown) {
-      logger.error('Config reload failed', { error: err instanceof Error ? err.message : String(err) });
-    }
-  });
-
-  // Also watch bunfig.toml for changes
-  watch('./bunfig.toml', { persistent: false }, async (event) => {
-    if (event !== 'change') return;
-    logger.info('bunfig.toml changed, reloading config');
-    try {
-      reloadFromEnv();
-      logger.info('Config reloaded from bunfig.toml', { features: CONFIG.features });
-    } catch (err: unknown) {
-      logger.error('Config reload from bunfig.toml failed', { error: err instanceof Error ? err.message : String(err) });
-    }
-  });
-}
+// NOTE: File watchers disabled to prevent Bun --watch restart loops.
+// Config changes require manual restart.
+// if (!CONFIG.production) {
+//   configWatcher = watch('.env', { persistent: false }, async (event) => {
+//     if (event !== 'change') return;
+//     logger.info('.env changed, reloading config');
+//     try {
+//       reloadFromEnv();
+//       logger.info('Config reloaded', { features: CONFIG.features });
+//     } catch (err: unknown) {
+//       logger.error('Config reload failed', { error: err instanceof Error ? err.message : String(err) });
+//     }
+//   });
+// }
 
 // Load rate limit overrides and start token renewal
 loadRateLimitOverrides();

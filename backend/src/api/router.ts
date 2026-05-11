@@ -62,6 +62,7 @@ import {
 import { registerSandboxRoutes } from './routes/sandbox';
 import { registerStaticRoutes } from './routes/static';
 import { registerKimiStreamRoutes, registerStreamRoutes } from './routes/stream';
+import { registerTelegramChannelsRoutes, registerTelegramTopicsRoutes } from './routes/telegram';
 import {
   registerWagerAlertRoutes,
   registerWagerListRoutes,
@@ -101,6 +102,15 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
 
   router.get('/api/health/system-status', async (url, request) => {
     return registerHealthRoutes(url, request, deps.scraperManager);
+  });
+
+  // Telegram topics & channels (no auth needed)
+  router.get('/api/telegram/topics', async (url, request) => {
+    return registerTelegramTopicsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.get('/api/telegram/channels', async (url, request) => {
+    return registerTelegramChannelsRoutes(url, request, deps.scraperManager);
   });
 
   // API routes

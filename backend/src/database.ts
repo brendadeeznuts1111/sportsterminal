@@ -471,6 +471,55 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
       ip_address TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS telegram_topics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_login TEXT NOT NULL,
+      topic_name TEXT NOT NULL,
+      purpose TEXT,
+      topic_icon TEXT,
+      topic_hex_color TEXT,
+      topic_icon_color INTEGER,
+      topic_thread_id INTEGER,
+      supergroup_chat_id TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS telegram_channels (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel_name TEXT NOT NULL,
+      channel_type TEXT DEFAULT 'broadcast',
+      purpose TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      telegram_chat_id TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Agent supergroups (one per agent, plus one system-internal group)
+    CREATE TABLE IF NOT EXISTS agent_supergroups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      supergroup_chat_id TEXT NOT NULL UNIQUE,
+      owner_agent_login TEXT,
+      purpose TEXT NOT NULL DEFAULT 'agent',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- All discovered topics (idempotent by supergroup+thread_id)
+    CREATE TABLE IF NOT EXISTS agent_supergroup_topics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      supergroup_id INTEGER NOT NULL,
+      topic_thread_id INTEGER NOT NULL,
+      topic_name TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      topic_icon TEXT,
+      topic_hex_color TEXT,
+      is_managed INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (supergroup_id) REFERENCES agent_supergroups(id),
+      UNIQUE(supergroup_id, topic_thread_id)
+    );
+
     CREATE TABLE IF NOT EXISTS agent_performance_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       provider TEXT NOT NULL DEFAULT 'buckeye',
@@ -1618,6 +1667,91 @@ export async function migrateDatabase(db: Database) {
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_violations_type ON wager_violations(violation_type, detected_at DESC)`);
     await db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wv_unique_violation ON wager_violations(wager_id, violation_type)`);
     console.log('📊 Migration: ensured wager_violations table');
+
+    // ─── Telegram Topic Management: agent supergroups & topics ────────────
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_supergroups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        supergroup_chat_id TEXT NOT NULL UNIQUE,
+        owner_agent_login TEXT,
+        purpose TEXT NOT NULL DEFAULT 'agent',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_supergroup_topics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        supergroup_id INTEGER NOT NULL,
+        topic_thread_id INTEGER NOT NULL,
+        topic_name TEXT NOT NULL,
+        purpose TEXT NOT NULL,
+        topic_icon TEXT,
+        topic_hex_color TEXT,
+        is_managed INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (supergroup_id) REFERENCES agent_supergroups(id),
+        UNIQUE(supergroup_id, topic_thread_id)
+      )
+    `);
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_supergroup_topics_purpose ON agent_supergroup_topics(supergroup_id, purpose)`);
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_supergroup_chat_id ON agent_supergroups(supergroup_chat_id)`);
+    console.log('📊 Migration: ensured agent_supergroups and agent_supergroup_topics tables');
+
+    // Migrate legacy telegram_topics into new schema (idempotent)
+    const legacyTopics = await db.all<{
+      id: number;
+      agent_login: string;
+      topic_name: string;
+      purpose: string | null;
+      topic_icon: string | null;
+      topic_hex_color: string | null;
+      topic_icon_color: number | null;
+      topic_thread_id: number | null;
+      supergroup_chat_id: string | null;
+    }>(`SELECT * FROM telegram_topics WHERE supergroup_chat_id IS NOT NULL AND topic_thread_id IS NOT NULL`);
+
+    for (const t of legacyTopics) {
+      if (!t.supergroup_chat_id || !t.topic_thread_id) continue;
+
+      const supergroup = await db.get<{ id: number }>(
+        `SELECT id FROM agent_supergroups WHERE supergroup_chat_id = ?`,
+        [t.supergroup_chat_id]
+      );
+
+      let supergroupId: number;
+      if (supergroup) {
+        supergroupId = supergroup.id;
+      } else {
+        await db.run(
+          `INSERT OR IGNORE INTO agent_supergroups (supergroup_chat_id, owner_agent_login, purpose)
+           VALUES (?, ?, ?)`,
+          [t.supergroup_chat_id, t.agent_login, 'agent']
+        );
+        const inserted = await db.get<{ id: number }>(
+          `SELECT id FROM agent_supergroups WHERE supergroup_chat_id = ?`,
+          [t.supergroup_chat_id]
+        );
+        supergroupId = inserted!.id;
+      }
+
+      await db.run(
+        `INSERT OR IGNORE INTO agent_supergroup_topics
+         (supergroup_id, topic_thread_id, topic_name, purpose, topic_icon, topic_hex_color, is_managed)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          supergroupId,
+          t.topic_thread_id,
+          t.topic_name,
+          t.purpose || t.topic_name.toLowerCase().replace(/[^a-z0-9]/g, '_'),
+          t.topic_icon,
+          t.topic_hex_color,
+          1,
+        ]
+      );
+    }
+    if (legacyTopics.length > 0) {
+      console.log(`📊 Migration: migrated ${legacyTopics.length} legacy telegram_topics into agent_supergroup_topics`);
+    }
 
     await seedBuckeyeSportTypes(db);
   } catch (err) {

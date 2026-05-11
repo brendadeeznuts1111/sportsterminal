@@ -1,4 +1,4 @@
-/**
+v/**
  * Sports Terminal — App Orchestrator
  * Thin entry point that imports feature modules, wires up event handlers,
  * and exports global symbols for inline HTML onclick handlers.
@@ -58,6 +58,7 @@ import './modules/agent-network.js';
 import './modules/api-status.js';
 import './modules/settings-auth.js';
 import './command-center.js';
+import { renderEnforcementQueue, startPolling, stopPolling } from './modules/enforcement-queue.js';
 
 // ==================== WEBSOCKET CLIENT ====================
 const wsClient = new TerminalWebSocketClient({
@@ -398,6 +399,12 @@ function switchSection(section, btn) {
   if (section === 'live') {
     if (typeof initLiveSection === 'function') initLiveSection();
   }
+  if (section === 'enforcement') {
+    renderEnforcementQueue('enforcementQueueContainer');
+    startPolling();
+  } else {
+    stopPolling();
+  }
 
   // Update URL hash for deep linking
   window.location.hash = section;
@@ -671,6 +678,11 @@ window.getExposurePct = getExposurePct;
 window.updateMasterAccountDisplay = updateMasterAccountDisplay;
 window.getDisabledFeatureReason = getDisabledFeatureReason;
 window.isLegitimateWager = isLegitimateWager;
+window.refreshEnforcementQueue = () => renderEnforcementQueue('enforcementQueueContainer');
+window.enforcementFilterChange = (value) => {
+  const evt = new CustomEvent('enforcement-filter-change', { detail: { filter: value } });
+  document.dispatchEvent(evt);
+};
 window.TABLE_RENDER_LIMIT = TABLE_RENDER_LIMIT;
 window.CACHE_TTL = CACHE_TTL;
 window.sectionCache = sectionCache;

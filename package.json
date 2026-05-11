@@ -21,7 +21,7 @@
     "backfill:hierarchy": "bun run --cwd backend scripts/backfill-hierarchy.ts",
     "integrity:check": "bun run --cwd . backend/scripts/integrity-check.ts",
     "artifacts:check": "bun run scripts/check-sensitive-artifacts.ts",
-    "proxy:dev": "bun --watch proxy-enhanced.ts",
+    "proxy:dev": "bun proxy-enhanced.ts",
     "proxy:start": "bun proxy-enhanced.ts",
     "proxy:build": "bun build proxy-enhanced.ts --compile --outfile dist/proxy-server",
     "agent:cli": "bun run scripts/agent-cli.ts",

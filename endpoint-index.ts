@@ -3,7 +3,6 @@
 // Response shapes extracted from real Buckeye API calls + network trace
 // Last verified: 2026-05-10
 
-import summary from "./api_output/summary.json" with { type: "json" };
 
 export interface EndpointInfo {
   name: string;
@@ -521,6 +520,130 @@ const BUCKEYE: EndpointMap = {
     response_shape: { source: "live", data: "{FIGURES: array[{...}]}" },
     description: "Weekly P&L figures by agent for date range",
   },
+
+  // === Discovered from manager.js reverse engineering (May 11, 2026) ===
+  "Manager/getAddedInfo": {
+    name: "Added Info / Notify Settings", path: "/cloud/api/Manager/getAddedInfo", method: "POST", status: 200, tested: false, test_ok: false,
+    auth: "api_key", autoLoad: true,
+    params: { operation: "getAddedInfo", customerID: "string", RRO: "1" },
+    response_shape: { source: "live", data: "{TelegramID: string|null, MaxAmountNotifyTelegram: number|null}" },
+    description: "Telegram ID and notification threshold for agent",
+    notes: "Found in manager.js getNotifyAgent(). Returns null fields when not set.",
+  },
+  "Manager/getCommunicationMessages": {
+    name: "Communication Messages", path: "/cloud/api/Manager/getCommunicationMessages", method: "POST", status: 200, tested: false, test_ok: false,
+    auth: "api_key", autoLoad: true,
+    params: { operation: "getCommunicationMessages", customerID: "string", pass: "string", RRO: "1" },
+    response_shape: { source: "live", data: "{INFO: {preference: array, popUps: array, CommentsForCustomer: string}}" },
+    description: "Pop-up messages, stamp messages, and customer communication preferences",
+    notes: "Found in manager.js getCommunicationMessages(). Controls modal pop-ups and stamp message display.",
+  },
+  "Manager/getLineTypes": {
+    name: "Line Types", path: "/cloud/api/Manager/getLineTypes", method: "POST", status: 200, tested: false, test_ok: false,
+    auth: "api_key", autoLoad: true,
+    params: { operation: "getLineTypes", agentID: "string", agentOwner: "string", agentSite: "1", sportType: "string", RRO: "1" },
+    response_shape: { source: "live", data: "{LIST: array[{lineType: string, DisplayLineType: string}]}" },
+    description: "Available line types for a sport (dropdown options)",
+    notes: "Found in manager.js getLineTypes(). Used for player analysis report line type filter.",
+  },
+  "Manager/searchCustomerAdmin": {
+    name: "Search Customer Admin", path: "/cloud/api/Manager/searchCustomerAdmin", method: "POST", status: 200, tested: false, test_ok: false,
+    auth: "api_key", autoLoad: true,
+    params: { operation: "searchCustomerAdmin", agentID: "string", filter: "string", RRO: "1" },
+    response_shape: { source: "live", data: "{LIST: array[{CustomerID: string, Login: string, Criterio: string, info: {Password: string, NameFirst: string}}]}" },
+    description: "Search customers by ID, name, or password",
+    notes: "Found in manager.js searchCustomer(). WARNING: Returns plaintext passwords in response. Used for header search dropdown.",
+  },
+  "Manager/saveNotifyAgent": {
+    name: "Save Notify Agent", path: "/cloud/api/Manager/saveNotifyAgent", method: "POST", status: 200, tested: false, test_ok: false,
+    auth: "api_key", autoLoad: true,
+    params: { operation: "saveNotifyAgent", telegramID: "string", email: "string", minimum: "number", customerID: "string" },
+    response_shape: { source: "live", data: "{LIST: string, Type: number}" },
+    description: "Save Telegram notification settings",
+    notes: "Found in manager.js saveNotifyAgent(). Type errors: 1=invalid format, 2=min length, 3=duplicates, 4=already used.",
+  },
+  "Manager/updateBasicSettings": {
+    name: "Update Basic Settings", path: "/cloud/api/Manager/updateBasicSettings", method: "POST", status: 200, tested: false, test_ok: false,
+    auth: "api_key", autoLoad: true,
+    params: { operation: "updateBasicSettings", language: "string", timezone: "number", menu: "string", notifyFlag: "Y|N", agentID: "string" },
+    response_shape: { source: "live", data: "object" },
+    description: "Update language, timezone, menu style, and VIP notify flag",
+    notes: "Found in manager.js updateBasicSettings().",
+  },
+  "Manager/updateDistribution": {
+    name: "Update Distribution", path: "/cloud/api/Manager/updateDistribution", method: "POST", status: 200, tested: false, test_ok: false,
+    auth: "api_key", autoLoad: true,
+    params: { operation: "updateDistribution", agentID: "string", distribution: "number", login: "string" },
+    response_shape: { source: "live", data: "object" },
+    description: "Update agent makeup/distribution (value is ×100, e.g. 5000 = 50.00)",
+    notes: "Found in manager.js updateDistribution(). Value stored as integer cents/percentage.",
+  },
+  "Manager/changePassword": {
+    name: "Change Password", path: "/cloud/api/Manager/changePassword", method: "POST", status: 200, tested: false, test_ok: false,
+    auth: "api_key", autoLoad: true,
+    params: { operation: "changePassword", customerID: "string", pass: "string" },
+    response_shape: { source: "live", data: "object" },
+    description: "Change account password",
+    notes: "Found in manager.js changePassword(). Current password available in accountInfo.Password (plaintext).",
+  },
+  "Manager/mailAgentUpdate": {
+    name: "Mail Agent Update", path: "/cloud/api/Manager/mailAgentUpdate", method: "POST", status: 200, tested: false, test_ok: false,
+    auth: "api_key", autoLoad: true,
+    params: { operation: "mailAgentUpdate", msgID: "number", from: "string" },
+    response_shape: { source: "live", data: "object" },
+    description: "Mark agent message as read",
+    notes: "Found in manager.js setReadMessage().",
+  },
+  "Manager/sendFeedback": {
+    name: "Send Feedback", path: "/cloud/api/Manager/sendFeedback", method: "POST", status: 200, tested: false, test_ok: false,
+    auth: "api_key", autoLoad: true,
+    params: { operation: "sendFeedback", acc: "string", message: "string", subject: "string" },
+    response_shape: { source: "live", data: "object" },
+    description: "Send feedback message to support",
+    notes: "Found in manager.js sendFeedback().",
+  },
+  "Manager/getMasterSheet": {
+    name: "Master Sheet", path: "/cloud/api/Manager/getMasterSheet", method: "POST", status: 200, tested: false, test_ok: false,
+    auth: "api_key", autoLoad: true,
+    params: { operation: "getMasterSheet", agentID: "string", date: "YYYY-MM-DD", RRO: "1" },
+    response_shape: { source: "live", data: "{LIST: array[{AgentID: string, ...}]}" },
+    description: "Weekly accounting master sheet for agent hierarchy",
+    notes: "Found in manager.js getHistory(). Used for accounting history modal. Returns 5 weeks recursively.",
+  },
+
+  // === Discovered from proxy deep scan (May 11, 2026) ===
+  "Manager/getPlayerDetails": {
+    name: "Player Details", path: "/cloud/api/Manager/getPlayerDetails", method: "POST", status: 200, tested: false, test_ok: false,
+    auth: "api_key", autoLoad: true,
+    params: { operation: "getPlayerDetails", agentID: "string", playerID: "string", agentOwner: "string", agentSite: "1" },
+    response_shape: { source: "live", data: "object" },
+    description: "Detailed player account information",
+    notes: "Discovered via proxy discover-endpoints. Not in manager.js shell — likely in a dynamically loaded module.",
+  },
+  "Manager/getPlayerLimits": {
+    name: "Player Limits", path: "/cloud/api/Manager/getPlayerLimits", method: "POST", status: 200, tested: false, test_ok: false,
+    auth: "api_key", autoLoad: true,
+    params: { operation: "getPlayerLimits", agentID: "string", playerID: "string", agentOwner: "string", agentSite: "1" },
+    response_shape: { source: "live", data: "object" },
+    description: "Player wager and betting limits",
+    notes: "Discovered via proxy discover-endpoints. Returns 401 without valid token.",
+  },
+  "Manager/setPlayerLimits": {
+    name: "Set Player Limits", path: "/cloud/api/Manager/setPlayerLimits", method: "POST", status: 200, tested: false, test_ok: false,
+    auth: "api_key", autoLoad: true,
+    params: { operation: "setPlayerLimits", agentID: "string", playerID: "string", limits: "object", agentOwner: "string", agentSite: "1" },
+    response_shape: { source: "live", data: "object" },
+    description: "Update player wager and betting limits",
+    notes: "Discovered via proxy discover-endpoints. Write operation — requires valid auth.",
+  },
+  "Manager/updatePlayerStatus": {
+    name: "Update Player Status", path: "/cloud/api/Manager/updatePlayerStatus", method: "POST", status: 200, tested: false, test_ok: false,
+    auth: "api_key", autoLoad: true,
+    params: { operation: "updatePlayerStatus", agentID: "string", playerID: "string", status: "string", agentOwner: "string", agentSite: "1" },
+    response_shape: { source: "live", data: "object" },
+    description: "Update player account status (active/suspended/etc)",
+    notes: "Discovered via proxy discover-endpoints. Write operation — requires valid auth. Likely used for player suspension/activation.",
+  },
 };
 
 // Generated from test run results
@@ -529,7 +652,7 @@ export const TEST_SUMMARY = {
   passed: 50,
   failed: 0,
   tested_at: "2026-05-10T08:00:00.000Z",
-  notes: "All endpoints verified against network trace. Analytics/risk/line-rules endpoints are local proxy additions. normalizeResponse handles 18+ Buckeye shapes. Auto-renewToken updates DB. ENDPOINT_MAP includes pending report config read/update entries with cacheTTL and categories.",
+  notes: "50 core endpoints verified against network trace (2026-05-10). 14 additional endpoints discovered via manager.js reverse engineering and proxy deep scan (2026-05-11) — pending live verification. Analytics/risk/line-rules endpoints are local proxy additions. normalizeResponse handles 18+ Buckeye shapes. Auto-renewToken updates DB. ENDPOINT_MAP includes pending report config read/update entries with cacheTTL and categories.",
 };
 
 export function getAllEndpoints(): { proxy: EndpointMap; buckeye: EndpointMap } {
@@ -552,5 +675,6 @@ export const ENDPOINT_COUNTS = {
   passed: TEST_SUMMARY.passed,
   failed: TEST_SUMMARY.failed,
   available: Object.values(BUCKEYE).filter(e => e.test_ok).length,
-  unavailable: Object.values(BUCKEYE).filter(e => !e.test_ok).length,
+  unavailable: Object.values(BUCKEYE).filter(e => e.tested && !e.test_ok).length,
+  pending_test: Object.values(BUCKEYE).filter(e => !e.tested).length,
 };

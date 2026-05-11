@@ -1,4 +1,4 @@
-import { fetchJson, fetchPost } from './api.js';
+import { fetchJson, fetchPost, fetchDelete } from './api.js';
 import { COMMAND_CENTER_MAP } from './command-center-map.js';
 import { escapeHtml, money, timeAgo } from './utils.js';
 
@@ -188,7 +188,7 @@ async function renderPositions() {
     const params = new URLSearchParams({ limit: '50' });
     if (status) params.set('status', status);
     if (level) params.set('risk_level', level);
-    const data = await fetchJson(`${endpoint('dashboardPositionsPending')}?${params}`);
+    const data = await fetchJson(`/api/risk/positions?${params}`);
     const rows = data.positions || [];
     if (!rows.length) {
       setHtml('ccPositionsTable', `<tr><td colspan="9" class="text-center py-4" style="color:var(--text-dim);">No positions match the current filters</td></tr>`);
@@ -206,11 +206,79 @@ async function renderPositions() {
         <td class="px-3 py-2 text-center" style="color:var(--text-dim);">${timeAgo(row.created_at)}</td>
         <td class="px-3 py-2 text-center">
           <button class="px-2 py-1 rounded" style="background:var(--bg);border:1px solid var(--border);" onclick="ccAnalyzeLive('${escapeJsString(row.customer_id)}')">Analyze</button>
+          ${row.status === 'pending' ? `
+            <button class="px-2 py-1 rounded ml-1" style="background:var(--green);color:#fff;" onclick="ccApplyPosition(${row.id}, '${escapeJsString(row.customer_id)}', ${Number(row.suggested_wager_limit || 0)}, ${Number(row.suggested_max_exposure || 0)})">Apply</button>
+            <button class="px-2 py-1 rounded ml-1" style="background:var(--yellow);color:#000;" onclick="ccOverridePosition(${row.id}, '${escapeJsString(row.customer_id)}')">Override</button>
+            ${String(row.risk_level).toUpperCase() === 'BLACK' ? `<button class="px-2 py-1 rounded ml-1" style="background:var(--red);color:#fff;" onclick="ccBlockPlayer(${row.id}, '${escapeJsString(row.customer_id)}')">Block</button>` : ''}
+          ` : ''}
         </td>
       </tr>
     `).join(''));
   } catch (error) {
     setHtml('ccPositionsTable', `<tr><td colspan="9" class="text-center py-4" style="color:var(--red);">${escapeHtml(error.message)}</td></tr>`);
+  }
+}
+
+async function renderViolations() {
+  try {
+    const data = await fetchJson('/api/risk/violations');
+    const types = Object.entries(data);
+    if (!types.length) return renderEmpty('ccViolations', 'No violations in the last 24h');
+    const max = Math.max(...types.map(([, count]) => Number(count || 0)), 1);
+    setHtml('ccViolations', types.map(([type, count]) => {
+      const pct = Math.min(100, Number(count || 0) / max * 100);
+      return `
+        <div class="flex items-center gap-2">
+          <div class="w-32 truncate font-mono">${escapeHtml(type)}</div>
+          <div class="flex-1 h-2 rounded overflow-hidden" style="background:var(--bg);">
+            <div style="width:${pct.toFixed(0)}%;height:100%;background:var(--red);"></div>
+          </div>
+          <div class="w-14 text-right font-mono">${count}</div>
+        </div>`;
+    }).join(''));
+  } catch (error) {
+    renderEmpty('ccViolations', `Violations unavailable: ${error.message}`);
+  }
+}
+
+async function renderTimeseries() {
+  try {
+    const days = document.getElementById('ccTimeseriesDays')?.value || '30';
+    const rows = await fetchJson(`/api/risk/timeseries?days=${encodeURIComponent(days)}`);
+    if (!rows.length) return renderEmpty('ccTimeseries', 'No timeseries data yet');
+    const max = Math.max(...rows.map((r) => Math.abs(Number(r.net || 0))), 1);
+    setHtml('ccTimeseries', rows.slice(-30).map((row) => {
+      const net = Number(row.net || 0);
+      const width = Math.min(100, Math.abs(net) / max * 100);
+      const color = net >= 0 ? 'var(--green)' : 'var(--red)';
+      return `
+        <div class="grid grid-cols-[80px_1fr_90px] items-center gap-2">
+          <span style="color:var(--text-dim);">${escapeHtml(row.date)}</span>
+          <div class="h-2 rounded overflow-hidden" style="background:var(--bg);"><div style="width:${width.toFixed(0)}%;height:100%;background:${color};"></div></div>
+          <span class="text-right font-mono">${money(net)}</span>
+        </div>`;
+    }).join(''));
+  } catch (error) {
+    renderEmpty('ccTimeseries', `Timeseries unavailable: ${error.message}`);
+  }
+}
+
+async function renderWebhookHealth() {
+  try {
+    const rows = await fetchJson('/api/risk/webhooks/health');
+    if (!rows.length) return renderEmpty('ccWebhookHealth', 'No webhook configs tracked');
+    setHtml('ccWebhookHealth', rows.map((row) => {
+      const state = String(row.state || 'unknown');
+      const color = state === 'closed' ? 'var(--green)' : state === 'degraded' ? 'var(--yellow)' : 'var(--red)';
+      return `
+        <div class="flex items-center gap-2 rounded p-2" style="background:var(--bg);border:1px solid var(--border);">
+          <span class="px-2 py-0.5 rounded font-mono" style="background:${color}22;color:${color};border:1px solid ${color}55;">${escapeHtml(state)}</span>
+          <span class="font-mono truncate" style="color:var(--text-dim);">${escapeHtml(row.url || '')}</span>
+          <span class="ml-auto" style="color:var(--text-dim);">failures ${row.consecutiveFailures || 0}</span>
+        </div>`;
+    }).join(''));
+  } catch (error) {
+    renderEmpty('ccWebhookHealth', `Webhook health unavailable: ${error.message}`);
   }
 }
 
@@ -292,7 +360,11 @@ export async function loadCommandCenter() {
     renderSharpAlerts(),
     renderExposureBuckets(),
     renderPnlChart(),
+    renderTimeseries(),
     renderPositions(),
+    renderViolations(),
+    renderWebhookHealth(),
+    renderWebhookChannels(),
     renderEnforcementQueue(),
     renderAlertLog(),
   ]);
@@ -335,6 +407,18 @@ export function ccRefreshPnlChart() {
   renderPnlChart();
 }
 
+export function ccRefreshTimeseries() {
+  renderTimeseries();
+}
+
+export function ccRefreshViolations() {
+  renderViolations();
+}
+
+export function ccRefreshWebhookHealth() {
+  renderWebhookHealth();
+}
+
 export function ccSetEnforcementFilter(filter) {
   ccState.queueFilter = filter || 'all';
   for (const id of ['ccQueueFilterAll', 'ccQueueFilterBlack', 'ccQueueFilterRed']) {
@@ -375,12 +459,107 @@ export async function ccAnalyzeLive(customerId) {
   await loadCommandCenter();
 }
 
+export async function ccApplyPosition(positionId, customerId, suggestedWagerLimit, suggestedMaxExposure) {
+  const trader = currentTraderName();
+  const actualWagerLimit = Number(window.prompt(`Apply position for ${customerId}? Wager limit (blank = AI suggestion):`, suggestedWagerLimit || '') || NaN);
+  const note = window.prompt('Execution note (optional):', '') || '';
+  const wagerCents = Number.isFinite(actualWagerLimit) ? Math.round(actualWagerLimit * 100) : Math.round((suggestedWagerLimit || 0) * 100);
+  const creditCents = Math.round((suggestedMaxExposure || 0) * 100);
+  if (wagerCents > 0 || creditCents > 0) {
+    await fetchPost('/api/enforcement/apply-limit', {
+      customer_id: customerId,
+      max_wager_cents: wagerCents,
+      max_credit_cents: creditCents,
+      trader_name: trader,
+      note: note || 'Applied from Command Center',
+    });
+  }
+  await fetchPost('/api/positions/execute', {
+    position_id: positionId,
+    action: 'apply',
+    trader_name: trader,
+    ...(Number.isFinite(actualWagerLimit) ? { wager_limit: actualWagerLimit } : {}),
+    ...(note ? { note } : {}),
+  });
+  await loadCommandCenter();
+}
+
+export async function ccOverridePosition(positionId, customerId) {
+  const trader = currentTraderName();
+  const reason = window.prompt(`Override position for ${customerId}. Reason required:`, 'Trader discretion') || 'Trader discretion';
+  await fetchPost('/api/positions/override', {
+    position_id: positionId,
+    reason,
+    trader_name: trader,
+  });
+  await loadCommandCenter();
+}
+
+export async function ccBlockPlayer(positionId, customerId) {
+  if (!window.confirm(`BLOCK player ${customerId}? This will zero all limits and suspend the account in Buckeye.`)) return;
+  const trader = currentTraderName();
+  await fetchPost('/api/enforcement/block-player', {
+    customer_id: customerId,
+    trader_name: trader,
+    note: 'Full block from Command Center',
+  });
+  await fetchPost('/api/positions/execute', {
+    position_id: positionId,
+    action: 'block',
+    trader_name: trader,
+    note: 'Full block executed via Buckeye updateByColumn',
+  });
+  await loadCommandCenter();
+}
+
 export function toggleCcWebhookForm() {
   document.getElementById('ccWebhookForm')?.classList.toggle('hidden');
 }
 
-export function addCcWebhook() {
-  window.alert('Use the Webhooks section to create full alert channels; this panel reads the same delivery log.');
+export async function addCcWebhook() {
+  const name = document.getElementById('ccHookName')?.value?.trim();
+  const platform = document.getElementById('ccHookPlatform')?.value;
+  const url = document.getElementById('ccHookUrl')?.value?.trim();
+  const triggersRaw = document.getElementById('ccHookTriggers')?.value || '[]';
+  if (!name || !url) {
+    window.alert('Name and URL are required');
+    return;
+  }
+  let triggers = [];
+  try {
+    triggers = JSON.parse(triggersRaw);
+    if (!Array.isArray(triggers)) throw new Error('triggers must be an array');
+  } catch {
+    window.alert('Triggers must be a valid JSON array');
+    return;
+  }
+  await fetchPost('/api/webhooks', { name, platform, url, triggers, enabled: true });
+  toggleCcWebhookForm();
+  await renderWebhookChannels();
+}
+
+export async function ccDeleteWebhook(id) {
+  if (!window.confirm('Delete this webhook channel?')) return;
+  await fetchDelete(`/api/webhooks/${id}`);
+  await renderWebhookChannels();
+}
+
+async function renderWebhookChannels() {
+  try {
+    const rows = await fetchJson('/api/webhooks');
+    if (!rows.length) return renderEmpty('ccWebhookList', 'No alert channels configured');
+    setHtml('ccWebhookList', rows.map((row) => `
+      <div class="flex items-center gap-2 rounded p-2" style="background:var(--bg);border:1px solid var(--border);">
+        <span class="px-2 py-0.5 rounded font-mono text-xs" style="background:var(--accent);color:#fff;">${escapeHtml(row.platform)}</span>
+        <span class="font-mono text-xs truncate" style="color:var(--text);">${escapeHtml(row.name)}</span>
+        <span class="text-xs" style="color:var(--text-dim);">${(row.triggers || []).join(', ')}</span>
+        <span class="ml-auto text-xs" style="color:${row.enabled ? 'var(--green)' : 'var(--text-dim)'};">${row.enabled ? 'ON' : 'OFF'}</span>
+        <button class="px-2 py-0.5 rounded text-xs" style="background:var(--red);color:#fff;" onclick="ccDeleteWebhook(${row.id})">Delete</button>
+      </div>
+    `).join(''));
+  } catch (error) {
+    renderEmpty('ccWebhookList', `Channels unavailable: ${error.message}`);
+  }
 }
 
 export function toggleCcAbTestForm() {
@@ -432,13 +611,20 @@ if (typeof window !== 'undefined') {
     loadCommandCenter,
     ccPlayerSuggest,
     ccRefreshPnlChart,
+    ccRefreshTimeseries,
+    ccRefreshViolations,
+    ccRefreshWebhookHealth,
     ccSetEnforcementFilter,
     ccOpenBuckeyeAdmin,
     ccMarkEnforcementApplied,
     ccEscalateEnforcement,
     ccAnalyzeLive,
+    ccApplyPosition,
+    ccOverridePosition,
+    ccBlockPlayer,
     toggleCcWebhookForm,
     addCcWebhook,
+    ccDeleteWebhook,
     toggleCcAbTestForm,
     ccRunAbTest,
     ccStartStreamAnalysis,

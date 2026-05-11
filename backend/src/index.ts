@@ -3,8 +3,8 @@ import { corsHeaders } from './api/helpers';
 import { RateLimiter, getRateLimiter } from './api/rateLimiter';
 import { routeRequest } from './api/router';
 import { createToken, isDevMode, verifyToken } from './auth/jwt';
-import { loadEnv } from './config/env';
 import { COMMAND_CENTER_MAP } from './config/commandCenterMap';
+import { loadEnv } from './config/env';
 import { initDatabase, type Database } from './database';
 import { OddsPoller } from './odds/OddsPoller';
 import { BuckeyeScraperManager } from './scrapers/ScraperManager';
@@ -15,6 +15,7 @@ import { PerformanceCache } from './services/PerformanceCache';
 import { startSandboxJanitor, startSandboxQueueProcessor } from './services/SandboxService';
 import { streamHub } from './services/StreamHub';
 import { WS_TIMEOUTS } from './utils/constants';
+import { logger } from './utils/logger';
 
 const env = loadEnv();
 const PORT = env.PORT;
@@ -117,13 +118,10 @@ export function getWsSubscriberCounts(): Record<string, number> {
 async function restoreBuckeyeFromVault(): Promise<void> {
   const result = await restoreBuckeyeAgentsFromVault(secretVault, scraperManager, env.BUCKEYE_BASE_URL);
   for (const agentId of result.restored) {
-    console.log(`[SecretVault] Restored Buckeye ingestion for ${agentId}`);
+    logger.success(`Restored Buckeye ingestion for ${agentId}`);
   }
   for (const failure of result.failed) {
-    console.warn(
-      `[SecretVault] Stored Buckeye credentials for ${failure.agentId} could not be used:`,
-      failure.error
-    );
+    logger.warn(`Stored Buckeye credentials for ${failure.agentId} could not be used`, failure.error);
   }
 }
 
@@ -166,10 +164,10 @@ async function isClientIpBlocked(clientIp: string): Promise<boolean> {
 async function startServer() {
   // Initialize database
   db = await initDatabase();
-  console.log('✅ Database initialized');
+  logger.success('Database initialized');
   startSandboxQueueProcessor(db);
   startSandboxJanitor(db);
-  console.log('✅ Sandbox queue processor initialized');
+  logger.success('Sandbox queue processor initialized');
 
   // Initialize performance cache (Redis-backed, graceful fallback)
   if (env.REDIS_URL) {
@@ -180,21 +178,21 @@ async function startServer() {
       },
       env.REDIS_URL
     );
-    console.log('✅ Performance cache initialized (Redis)');
+    logger.success('Performance cache initialized (Redis)');
   } else {
-    console.log('ℹ️  No REDIS_URL set — performance cache disabled');
+    logger.info('No REDIS_URL set — performance cache disabled');
   }
 
   // Initialize scraper manager with broadcast callback
   const debugMode = env.DEBUG;
   secretVault = new BunSecretVault();
   scraperManager = new BuckeyeScraperManager(db, broadcast, debugMode, secretVault, performanceCache);
-  console.log('✅ Scraper manager initialized');
+  logger.success('Scraper manager initialized');
 
   // Initialize odds poller
   oddsPoller = new OddsPoller(db, broadcast);
   await oddsPoller.start();
-  console.log('✅ Odds poller initialized');
+  logger.success('Odds poller initialized');
 
   await restoreBuckeyeFromVault();
 
@@ -210,7 +208,7 @@ async function startServer() {
       closeOnBackpressureLimit: true,
       perMessageDeflate: { compress: true, decompress: true }, // Built-in compression for WS messages
       open(ws) {
-        console.log('[WS] Client connected');
+        logger.info('WS client connected');
         ws.data.agentId = ws.data.agentId ?? null;
         ws.data.isAuthenticated = ws.data.isAuthenticated ?? false;
         ws.data.lastPing = Date.now();
@@ -222,13 +220,13 @@ async function startServer() {
         // Heartbeat: ping every interval, close if no response within stale timeout
         ws.data.pingInterval = setInterval(() => {
           if (Date.now() - ws.data.lastPing > WS_TIMEOUTS.STALE_TIMEOUT_MS) {
-            console.log('[WS] Stale connection detected, closing');
+            logger.warn('WS stale connection detected, closing');
             clearInterval(ws.data.pingInterval);
             ws.close();
           } else {
             try { ws.ping(); } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
-              console.warn(`[WS] Heartbeat ping failed: ${msg}`);
+              logger.warn(`WS heartbeat ping failed: ${msg}`);
             }
           }
         }, WS_TIMEOUTS.PING_INTERVAL_MS);
@@ -237,7 +235,7 @@ async function startServer() {
         handleWebSocketMessage(ws, message, scraperManager);
       },
       close(ws) {
-        console.log('[WS] Client disconnected');
+        logger.info('WS client disconnected');
         if (ws.data?.pingInterval) clearInterval(ws.data.pingInterval);
         ws.unsubscribe(WS_TOPIC_MESSAGES);
         ws.unsubscribe(WS_TOPIC_WAGERS_ALL);
@@ -289,7 +287,7 @@ async function startServer() {
             }
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            console.warn(`[WS] Token verification failed: ${msg}`);
+            logger.warn(`WS token verification failed: ${msg}`);
             return new Response(JSON.stringify({ error: 'Invalid or expired token' }), {
               status: 401,
               headers: corsHeaders,
@@ -324,7 +322,7 @@ async function startServer() {
       });
     },
     error(error) {
-      console.error('[HTTP] Unhandled server error:', error instanceof Error ? error.message : String(error));
+      logger.error('Unhandled server error', error instanceof Error ? error.message : String(error));
       return new Response(
         JSON.stringify({ error: 'Internal Server Error', code: 'INTERNAL_ERROR' }),
         { status: 500, headers: corsHeaders }
@@ -344,18 +342,18 @@ async function startServer() {
     heartbeatMs: 5_000,
   });
 
-  console.log(`🚀 Backend running at http://${HOST}:${PORT}`);
+  logger.success(`Backend running at http://${HOST}:${PORT}`);
 
   // Graceful shutdown
   const shutdown = async (signal: string) => {
-    console.log(`[Server] Received ${signal}, starting graceful shutdown...`);
+    logger.info(`Received ${signal}, starting graceful shutdown...`);
     try {
       commandCenterCron.stop();
       streamHub.closeAll();
       await server.stop();
-      console.log('[Server] HTTP server stopped');
+      logger.info('HTTP server stopped');
     } catch (e) {
-      console.error('[Server] Error during shutdown:', e);
+      logger.error('Error during shutdown', e);
     }
     process.exit(0);
   };
@@ -399,7 +397,7 @@ async function handleWebSocketMessage(
               try {
                 jwtToken = await createToken(agentId, JWT_SECRET);
               } catch (err) {
-                console.error('[WS] JWT creation error:', err);
+                logger.error('WS JWT creation error', err);
               }
               ws.send(
                 JSON.stringify({
@@ -412,7 +410,7 @@ async function handleWebSocketMessage(
               break;
             }
           } catch {
-            console.log('[WS] Token resume failed, falling back to password login');
+            logger.info('WS token resume failed, falling back to password login');
           }
         }
 
@@ -439,7 +437,7 @@ async function handleWebSocketMessage(
             cfCookie: msg.cfCookie,
           });
         } catch (err) {
-          console.error('[WS] Failed to start agent polling:', err);
+          logger.error('WS failed to start agent polling', err);
           ws.send(
             JSON.stringify({
               type: 'auth_response',
@@ -465,7 +463,7 @@ async function handleWebSocketMessage(
         try {
           jwtToken = await createToken(agentId, JWT_SECRET);
         } catch (err) {
-          console.error('[WS] JWT creation error:', err);
+          logger.error('WS JWT creation error', err);
         }
 
         ws.send(
@@ -491,7 +489,7 @@ async function handleWebSocketMessage(
             })
           );
         } catch (err) {
-          console.error('[WS] getAgentData error:', err);
+          logger.error('WS getAgentData error', err);
           ws.send(
             JSON.stringify({
               type: 'data_error',
@@ -529,7 +527,7 @@ async function handleWebSocketMessage(
         try {
           await scraperManager.forceRefresh(String(msg.agentId || '').trim());
         } catch (err) {
-          console.error('[WS] Force refresh error:', err);
+          logger.error('WS force refresh error', err);
         }
         ws.send(
           JSON.stringify({
@@ -597,10 +595,10 @@ async function handleWebSocketMessage(
       }
 
       default:
-        console.warn('Unknown message type:', msg.type);
+        logger.warn('Unknown WS message type', msg.type);
     }
   } catch (error) {
-    console.error('WS message error:', error);
+    logger.error('WS message error', error);
     ws.send(
       JSON.stringify({
         type: 'error',

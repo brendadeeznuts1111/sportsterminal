@@ -256,6 +256,53 @@ export function registerCommandCenterRoutes(
     }, corsHeaders);
   }
 
+  // ─── Buckeye Write Enforcement ────────────────────────────────────
+  if (url.pathname === '/api/enforcement/apply-limit' && request.method === 'POST') {
+    return handleAsync(async () => {
+      const body = await readJsonBody<{
+        customer_id?: string;
+        max_wager_cents?: number;
+        max_credit_cents?: number;
+        settle_figure_cents?: number;
+        trader_name?: string;
+        note?: string;
+      }>(request);
+      if (!body.customer_id) throw new ApiError(400, 'customer_id is required');
+      const agentRow = await db.get<{ agent_login: string }>(
+        `SELECT agent_login FROM wagers WHERE customer_id = ? ORDER BY insert_datetime DESC LIMIT 1`,
+        [body.customer_id]
+      );
+      const agentLogin = agentRow?.agent_login;
+      if (!agentLogin) throw new ApiError(404, 'Agent not found for customer');
+      const instance = scraperManager.getAgentInstance(agentLogin);
+      if (!instance) throw new ApiError(503, 'Agent not connected');
+      const numericId = await instance.api.resolveCustomerId(body.customer_id);
+      const results: Record<string, unknown> = {};
+      if (body.max_wager_cents !== undefined) results.wagerLimit = await instance.api.setWagerLimit(numericId, body.max_wager_cents);
+      if (body.max_credit_cents !== undefined) results.creditLimit = await instance.api.setCreditLimit(numericId, body.max_credit_cents);
+      if (body.settle_figure_cents !== undefined) results.settleFigure = await instance.api.setSettleFigure(numericId, body.settle_figure_cents);
+      return { ok: true, customer_id: body.customer_id, numeric_id: numericId, results };
+    }, corsHeaders);
+  }
+
+  if (url.pathname === '/api/enforcement/block-player' && request.method === 'POST') {
+    return handleAsync(async () => {
+      const body = await readJsonBody<{ customer_id?: string; trader_name?: string; note?: string }>(request);
+      if (!body.customer_id) throw new ApiError(400, 'customer_id is required');
+      const agentRow = await db.get<{ agent_login: string }>(
+        `SELECT agent_login FROM wagers WHERE customer_id = ? ORDER BY insert_datetime DESC LIMIT 1`,
+        [body.customer_id]
+      );
+      const agentLogin = agentRow?.agent_login;
+      if (!agentLogin) throw new ApiError(404, 'Agent not found for customer');
+      const instance = scraperManager.getAgentInstance(agentLogin);
+      if (!instance) throw new ApiError(503, 'Agent not connected');
+      const numericId = await instance.api.resolveCustomerId(body.customer_id);
+      const result = await instance.api.blockPlayer(numericId);
+      return { ok: true, customer_id: body.customer_id, numeric_id: numericId, result };
+    }, corsHeaders);
+  }
+
   // ─── AB test (Worker-based) ───────────────────────────────────────
   if (url.pathname === '/api/ab-test/run' && request.method === 'POST') {
     const adminResponse = requireAdminTokenIfConfigured(request);
@@ -379,6 +426,49 @@ export function registerCommandCenterRoutes(
 
   if (url.pathname === '/api/risk/webhooks/health' && request.method === 'GET') {
     return handleAsync(async () => rcc.getWebhookCircuitBreakerState(), corsHeaders);
+  }
+
+  // ─── Debug / Admin ────────────────────────────────────────────────
+  if (url.pathname === '/api/admin/buckeye-debug' && request.method === 'POST') {
+    const adminResponse = requireAdminTokenIfConfigured(request);
+    if (adminResponse) return adminResponse;
+    return handleAsync(async () => {
+      const body = await readJsonBody<{ agent_id?: string; enabled?: boolean }>(request);
+      if (!body.agent_id) throw new ApiError(400, 'agent_id is required');
+      const instance = scraperManager.getAgentInstance(body.agent_id.toUpperCase());
+      if (!instance) throw new ApiError(404, 'Agent not found');
+      instance.api.setDebugMode(Boolean(body.enabled));
+      return { agent_id: body.agent_id, debug_mode: instance.api.isDebugMode() };
+    }, corsHeaders);
+  }
+
+  if (url.pathname === '/api/debug/buckeye-proxy' && request.method === 'POST') {
+    const adminResponse = requireAdminTokenIfConfigured(request);
+    if (adminResponse) return adminResponse;
+    return handleAsync(async () => {
+      const body = await readJsonBody<{
+        agent_id?: string;
+        operation?: string;
+        params?: Record<string, string>;
+      }>(request);
+      if (!body.agent_id || !body.operation) throw new ApiError(400, 'agent_id and operation are required');
+      const instance = scraperManager.getAgentInstance(body.agent_id.toUpperCase());
+      if (!instance) throw new ApiError(503, 'Agent not connected');
+
+      const start = performance.now();
+      const result = await instance.api.postManagerOperationDebug(
+        body.operation,
+        body.params || {}
+      );
+      const elapsed = Math.round(performance.now() - start);
+
+      return {
+        agent_id: body.agent_id,
+        operation: body.operation,
+        elapsed_ms: elapsed,
+        result,
+      };
+    }, corsHeaders);
   }
 
   return null;

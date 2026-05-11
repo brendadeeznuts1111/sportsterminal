@@ -370,6 +370,102 @@ Bun.serve({
 - Use `server.timeout(req, 0)` to disable idle timeout for SSE streams
 - Default global idle timeout is 10s; raise it via `idleTimeout` in `Bun.serve` options
 
+### Bun.fetch Optimizations
+
+**Connection reuse** — Bun's `fetch()` automatically pools HTTP/HTTPS connections via keep-alive. No custom `agent` or `Agent` required. Repeated calls to `fantasy402.com` reuse the same TLS socket.
+
+**DNS caching** — Bun caches DNS lookups by default. No extra configuration needed.
+
+**Verbose debugging** — Add `verbose: true` to any `fetch()` call to print headers to the terminal:
+```ts
+const res = await fetch(url, { method: 'POST', body, verbose: true });
+// [fetch] > HTTP/1.1 POST https://fantasy402.com/...
+// [fetch] > Content-Type: application/x-www-form-urlencoded
+// [fetch] < 200 OK
+```
+- `BuckeyeAPI` automatically injects `verbose: true` when `debugMode = true`
+- `fetchWithTimeout` supports `BunFetchOptions` (extends `RequestInit` with `verbose`, `proxy`, `tls`)
+
+**File serving with ETags** — Returning `new Response(Bun.file(path))` lets Bun handle:
+- Automatic `Content-Type` detection from extension
+- ETag generation + `304 Not Modified` responses
+- HTTP Range requests for resumable downloads
+- Zero-copy streaming (no memory buffer for large files)
+
+```ts
+// backend/src/api/routes/static.ts
+const file = Bun.file(filePath);
+return new Response(file, {
+  headers: {
+    'Cache-Control': 'public, max-age=86400, immutable',
+  },
+});
+```
+
+**Request/response streaming** — Bun's `fetch` supports streaming bodies natively:
+```ts
+const response = await fetch(url);
+for await (const chunk of response.body!) {
+  // process chunk without loading entire response into memory
+}
+```
+
+### BuckeyeAPI Fetch Call Matrix
+
+All outbound calls from `backend/src/scrapers/BuckeyeAPI.ts`. Every call uses:
+- **User-Agent**: `BUCKEYE_USER_AGENT` env var or `Bun/X.Y SportsTerminal/5.41`
+- **ETag cache**: 60s TTL, keyed by `endpoint + body`, sends `If-None-Match` on repeats
+- **Verbose headers**: injected when `debugMode=true` or `BUCKEYE_DEBUG=true`
+
+| # | Method | Endpoint | BuckeyeAPI Method | Verbose | ETag Cache | Auth Required |
+|---|--------|----------|-------------------|---------|------------|---------------|
+| 1 | POST | `/cloud/api/System/authenticateCustomer` | `login()` | ✅ | ✅ | No |
+| 2 | POST | `/cloud/api/Manager/getBetTickerConfig` | `testAccess()` | ✅ | ✅ | Yes |
+| 3 | POST | `/cloud/api/Manager/getBetTicker` | `getBetTicker()` | ✅ | ✅ | Yes |
+| 4 | POST | `/cloud/api/System/renewToken` | `renewToken()` | ✅ | ✅ | Yes |
+| 5 | POST | `/cloud/api/Manager/getListAgenstByAgent` | `getAgentHierarchy()` | ✅ | ✅ | Yes |
+| 6 | POST | `/cloud/api/Manager/getPlayers` | `getPlayersList()` | ✅ | ✅ | Yes |
+| 7 | POST | `/cloud/api/Manager/getAccountInfoOwner` | `getAccountInfoOwner()` | ✅ | ✅ | Yes |
+| 8 | POST | `/cloud/api/Manager/getWeeklyFigureByAgentLite` | `getWeeklyFigureByAgentLite()` | ✅ | ✅ | Yes |
+| 9 | POST | `/cloud/api/Manager/getPerformancePlayer` | `getPerformancePlayer()` | ✅ | ✅ | Yes |
+| 10 | POST | `/cloud/api/Manager/getInfoPlayer` | `getCustomerSnapshot()` (via `postManagerOperation`) | ✅ | ✅ | Yes |
+| 11 | POST | `/cloud/api/Manager/getCustomerInfo` | `getCustomerSnapshot()` (fallback) | ✅ | ✅ | Yes |
+| 12 | POST | `/cloud/api/Manager/getTransactionList` | `getTransactionHistory()` | ✅ | ✅ | Yes |
+| 13 | POST | `/cloud/api/Manager/getReportDeletedTransactions` | `getReportDeletedTransactions()` | ✅ | ✅ | Yes |
+| 14 | POST | `/cloud/api/Manager/getTeaserProfile` | `getTeaserProfile()` | ✅ | ✅ | Yes |
+| 15 | POST | `/cloud/api/Manager/getPending` | `callManagerOperation('getPending')` | ✅ | ✅ | Yes |
+| 16 | POST | `/cloud/api/Manager/getConfigWebReports` | `getConfigWebReports()` | ✅ | ✅ | Yes |
+| 17 | POST | `/cloud/api/Manager/getConfigWebReportsPending` | `getConfigWebReportsPending()` | ✅ | ✅ | Yes |
+| 18 | POST | `/cloud/api/Manager/getSportsType` | `getSportsType()` | ✅ | ✅ | Yes |
+| 19 | POST | `/cloud/api/Manager/getAuthorizations` | `getAuthorizations()` | ✅ | ✅ | Yes |
+| 20 | POST | `/cloud/api/Manager/getMessage` | `getMessage()` | ✅ | ✅ | Yes |
+| 21 | POST | `/cloud/api/Manager/getNewEmailsCount` | `getNewEmailsCount()` | ✅ | ✅ | Yes |
+| 22 | POST | `/cloud/api/Manager/writeLog` | `writeLog()` | ✅ | ✅ | Yes |
+| 23 | GET | `/app/language/ui.json` | `getLanguageUiConfig()` | ✅ | ✅ | Yes |
+| 24 | POST | `/cloud/api/Manager/betTickerAction` | `betTickerAction()` | ✅ | ✅ | Yes |
+| 25 | POST | `/qubic/api/Manager/getWebLog` | `getWebLog()` (fallback) | ✅ | ✅ | Yes |
+| 26 | POST | `/cloud/api/Manager/getWebLog` | `getWebLog()` | ✅ | ✅ | Yes |
+| 27 | POST | `/cloud/api/Manager/updateByColumn` | `updateByColumn()` | ✅ | ✅ | Yes |
+| 28 | POST | `/cloud/api/Manager/insertTransaction` | `insertTransaction()` | ✅ | ✅ | Yes |
+| 29 | POST | `/cloud/api/Manager/:operation` | `postManagerOperationDebug()` | ✅ | ✅ | Yes |
+
+**Header summary for every call:**
+```
+Authorization: Bearer <jwt>
+Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+Origin: https://fantasy402.com
+Referer: https://fantasy402.com/manager.html
+User-Agent: <BUCKEYE_USER_AGENT>
+Cookie: <cf_clearance>
+If-None-Match: <cached-etag>   (if repeat call within 60s)
+```
+
+**Env vars:**
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BUCKEYE_USER_AGENT` | `Bun/1.3.13 SportsTerminal/5.41` | Override User-Agent for all Buckeye calls |
+| `BUCKEYE_DEBUG` | `false` | Enable `verbose: true` on all Buckeye fetches |
+
 ### Frontend Logger
 
 **`frontend/public/js/logger.js`** — centralized console wrapper:

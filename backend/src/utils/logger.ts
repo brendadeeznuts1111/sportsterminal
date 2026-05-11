@@ -1,8 +1,58 @@
 /**
  * Logger Utility
- * Small structured logger wrapper. Bun does not expose a stable logger object
- * across all supported versions, so keep this on top of console methods.
+ * Color-coded, timestamped structured logger.
+ * Keeps backward-compatible function signatures (logInfo, logWarn, etc.)
+ * while adding a new `logger` object with .info(), .success(), .warn(), .error(), .debug().
  */
+
+const colors = {
+  reset: '\x1b[0m',
+  bright: '\x1b[1m',
+  dim: '\x1b[2m',
+  red: '\x1b[31m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  magenta: '\x1b[35m',
+  cyan: '\x1b[36m',
+  white: '\x1b[37m',
+  gray: '\x1b[90m',
+};
+
+function timestamp(): string {
+  return new Date().toISOString().replace('T', ' ').split('.')[0];
+}
+
+function formatMessage(level: string, message: string, data?: unknown): string {
+  let out = `${colors.dim}[${timestamp()}]${colors.reset} ${level} ${message}`;
+  if (data !== undefined) {
+    if (typeof data === 'object' && data !== null) {
+      out += ' ' + Bun.inspect(data, { colors: true });
+    } else {
+      out += ' ' + String(data);
+    }
+  }
+  return out;
+}
+
+// ─── New color-coded logger object ────────────────────────────────────────
+
+export const logger = {
+  info: (msg: string, data?: unknown) =>
+    console.log(formatMessage(`${colors.cyan}INFO ${colors.reset} `, msg, data)),
+  success: (msg: string, data?: unknown) =>
+    console.log(formatMessage(`${colors.green}SUCCESS${colors.reset}`, msg, data)),
+  warn: (msg: string, data?: unknown) =>
+    console.warn(formatMessage(`${colors.yellow}WARN ${colors.reset} `, msg, data)),
+  error: (msg: string, data?: unknown) =>
+    console.error(formatMessage(`${colors.red}ERROR${colors.reset}`, msg, data)),
+  debug: (msg: string, data?: unknown) => {
+    if (process.env.DEBUG === 'true')
+      console.log(formatMessage(`${colors.gray}DEBUG${colors.reset}`, msg, data));
+  },
+};
+
+// ─── Backward-compatible function signatures ──────────────────────────────
 
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
 
@@ -12,57 +62,38 @@ export interface LogMeta {
 
 function writeLog(level: LogLevel, message: string, meta?: LogMeta): void {
   if (level === 'debug' && process.env.DEBUG !== 'true') return;
-  const payload = {
-    level,
-    message,
-    timestamp: new Date().toISOString(),
-    ...(meta || {}),
-  };
-  const line = JSON.stringify(payload);
-  if (level === 'error') {
-    console.error(line);
-  } else if (level === 'warn') {
-    console.warn(line);
-  } else {
-    console.log(line);
+  const data = meta && Object.keys(meta).length > 0 ? meta : undefined;
+  switch (level) {
+    case 'error':
+      logger.error(message, data);
+      break;
+    case 'warn':
+      logger.warn(message, data);
+      break;
+    case 'debug':
+      logger.debug(message, data);
+      break;
+    default:
+      logger.info(message, data);
   }
 }
 
-/**
- * Log an info message.
- */
 export function logInfo(message: string, meta?: LogMeta): void {
-  const logMeta: LogMeta = { ...meta };
-  writeLog('info', message, logMeta);
+  writeLog('info', message, meta);
 }
 
-/**
- * Log a warning message.
- */
 export function logWarn(message: string, meta?: LogMeta): void {
-  const logMeta: LogMeta = { ...meta };
-  writeLog('warn', message, logMeta);
+  writeLog('warn', message, meta);
 }
 
-/**
- * Log an error message.
- */
 export function logError(message: string, meta?: LogMeta): void {
-  const logMeta: LogMeta = { ...meta };
-  writeLog('error', message, logMeta);
+  writeLog('error', message, meta);
 }
 
-/**
- * Log a debug message (only if DEBUG=true).
- */
 export function logDebug(message: string, meta?: LogMeta): void {
-  const logMeta: LogMeta = { ...meta };
-  writeLog('debug', message, logMeta);
+  writeLog('debug', message, meta);
 }
 
-/**
- * Log an HTTP request.
- */
 export function logRequest(
   method: string,
   path: string,
@@ -71,33 +102,21 @@ export function logRequest(
   meta?: LogMeta
 ): void {
   const logMeta: LogMeta = {
-    operation: 'http_request',
     method,
     path,
-    status,
-    duration,
-    ...meta,
+    ...(status !== undefined ? { status } : {}),
+    ...(duration !== undefined ? { duration } : {}),
+    ...(meta || {}),
   };
   writeLog('info', 'HTTP request', logMeta);
 }
 
-/**
- * Log a database query.
- */
 export function logQuery(sql: string, params?: unknown[]): void {
   if (process.env.DEBUG === 'true') {
-    const logMeta: LogMeta = {
-      operation: 'database_query',
-      query: sql,
-      params,
-    };
-    writeLog('debug', 'Database query', logMeta);
+    writeLog('debug', 'Database query', { query: sql, params });
   }
 }
 
-/**
- * Log a webhook dispatch.
- */
 export function logWebhook(
   platform: string,
   url: string,
@@ -105,37 +124,23 @@ export function logWebhook(
   responseStatus?: number,
   meta?: LogMeta
 ): void {
-  const logMeta: LogMeta = {
-    operation: 'webhook_dispatch',
+  writeLog('info', 'Webhook dispatched', {
     platform,
     url,
     success,
-    responseStatus,
-    ...meta,
-  };
-  writeLog('info', 'Webhook dispatched', logMeta);
+    ...(responseStatus !== undefined ? { responseStatus } : {}),
+    ...(meta || {}),
+  });
 }
 
-/**
- * Log a pattern detection.
- */
 export function logPattern(
   type: string,
   severity: string,
   details?: LogMeta
 ): void {
-  const logMeta: LogMeta = {
-    operation: 'pattern_detected',
-    type,
-    severity,
-    ...details,
-  };
-  writeLog('info', 'Pattern detected', logMeta);
+  writeLog('info', 'Pattern detected', { type, severity, ...(details || {}) });
 }
 
-/**
- * Log a scraper operation.
- */
 export function logScraper(
   agentId: string,
   scraperOperation: string,
@@ -143,11 +148,10 @@ export function logScraper(
   meta?: LogMeta
 ): void {
   const logMeta: LogMeta = {
-    operation: 'scraper_operation',
     agentId,
     scraperOperation,
-    error,
-    ...meta,
+    ...(error ? { error } : {}),
+    ...(meta || {}),
   };
   if (error) {
     writeLog('error', 'Scraper error', logMeta);
@@ -156,19 +160,10 @@ export function logScraper(
   }
 }
 
-/**
- * Log a cache operation.
- */
 export function logCache(
   cacheOperation: string,
   key: string,
   meta?: LogMeta
 ): void {
-  const logMeta: LogMeta = {
-    operation: 'cache_operation',
-    cacheOperation,
-    key,
-    ...meta,
-  };
-  writeLog('debug', 'Cache operation', logMeta);
+  writeLog('debug', 'Cache operation', { cacheOperation, key, ...(meta || {}) });
 }

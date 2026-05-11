@@ -27,6 +27,7 @@ if (!get('playerProfileState')) {
   set('playerProfileState', {
     playerId: null,
     profile: null,
+    riskDetail: null,
     intelligenceMap: null,
     crossReference: null,
     crossReferenceLoading: false,
@@ -309,8 +310,15 @@ export async function openPlayerProfileModal(playerId) {
   }
 
   try {
-    const profile = await fetchPlayerProfile(playerId);
+    const [profile, riskDetail] = await Promise.all([
+      fetchPlayerProfile(playerId),
+      fetchJson(`/api/risk/players/${encodeURIComponent(playerId)}`).catch((err) => {
+        console.warn('[Players] Risk detail failed:', err?.message || err);
+        return null;
+      }),
+    ]);
     playerProfileState.profile = profile;
+    playerProfileState.riskDetail = riskDetail;
     set('playerProfileState', playerProfileState);
     configurePlayerProfileExports(playerId);
     renderPlayerProfile();
@@ -435,10 +443,17 @@ export async function fetchPlayerCrossReference(playerId) {
 
 export async function refreshOpenPlayerProfile(playerId) {
   try {
-    const profile = await fetchPlayerProfile(playerId);
+    const [profile, riskDetail] = await Promise.all([
+      fetchPlayerProfile(playerId),
+      fetchJson(`/api/risk/players/${encodeURIComponent(playerId)}`).catch((err) => {
+        console.warn('[Players] Risk detail refresh failed:', err?.message || err);
+        return null;
+      }),
+    ]);
     const playerProfileState = get('playerProfileState');
     if (playerProfileState.playerId !== playerId) return;
     playerProfileState.profile = profile;
+    playerProfileState.riskDetail = riskDetail;
     set('playerProfileState', playerProfileState);
     configurePlayerProfileExports(playerId);
     renderPlayerProfile();
@@ -721,11 +736,12 @@ export function renderPlayerProfileOverview(profile) {
           <div class="intel-card-title"><span>Advanced Metrics</span><small>derived</small></div>
           <div class="intel-advanced-grid">
             ${intelMiniMetric('Avg Stake', formatCompactDollars(stats.avgStake || stats.avgWager), '')}
-            ${intelMiniMetric('CLV %', `${Number(stats.clvPercent || 0).toFixed(2)}%`, 'estimated')}
+            ${intelMiniMetric('CLV %', `${Number((profile.riskDetail?.clv ?? stats.clvPercent) || 0).toFixed(2)}%`, profile.riskDetail?.clv != null ? 'from features' : 'estimated')}
             ${intelMiniMetric('Past Posting', `${Number(stats.pastPostingRate || 0).toFixed(1)}%`, `${Number(stats.patternHits || 0)} flags`)}
             ${intelMiniMetric('Stale Hits', Number(stats.staleLineHits || 0).toLocaleString(), 'last archive')}
           </div>
         </div>
+        ${renderRiskPositionsPanel(profile.riskDetail)}
 
         <div class="intel-glass-card">
           <div class="intel-section-header">
@@ -1332,6 +1348,7 @@ export function renderRiskFactors(profile) {
   const assignedAgent = agentContext.assigned || {};
   const live = profile.buckeye || {};
   const liveInfo = live.info?.snapshot?.raw || {};
+  const risk = profile.riskDetail || {};
   const factors = [];
   if (Number(stats.patternHits || 0) > 0) factors.push(['warn', `${Number(stats.patternHits || 0)} wager pattern flag${Number(stats.patternHits || 0) === 1 ? '' : 's'} detected`]);
   if (accessLogs.some(row => row.isNewIp)) factors.push(['danger', `${accessLogs.filter(row => row.isNewIp).length} new IP login${accessLogs.filter(row => row.isNewIp).length === 1 ? '' : 's'} in profile window`]);
@@ -1342,8 +1359,33 @@ export function renderRiskFactors(profile) {
   if (assignedAgent.playerCount >= 250) factors.push(['warn', `Assigned agent carries ${Number(assignedAgent.playerCount).toLocaleString()} seeded players`]);
   if ((agentContext.children || []).length >= 25) factors.push(['probe', `Agent has ${(agentContext.children || []).length} direct child agents; inspect cluster risk`]);
   if (!profile.accountSnapshots?.length && !live.info?.snapshot) factors.push(['probe', 'Customer profile/KYC endpoint still needs probe confirmation']);
+  if (risk.violations_24h > 0) factors.push(['danger', `${risk.violations_24h} violation${risk.violations_24h === 1 ? '' : 's'} in last 24h`]);
+  if (risk.latest_flag?.risk_level) {
+    const tier = String(risk.latest_flag.risk_level).toUpperCase();
+    factors.push([tier === 'BLACK' || tier === 'RED' ? 'danger' : 'warn', `Latest AI flag: ${tier}`]);
+  }
   if (!factors.length) factors.push(['good', 'No high-signal risk factors in captured data']);
   return factors.slice(0, 4).map(([level, text]) => `<div class="intel-risk-factor ${level}"><span></span>${escapeHtml(text)}</div>`).join('');
+}
+
+export function renderRiskPositionsPanel(riskDetail) {
+  if (!riskDetail || !Array.isArray(riskDetail.positions) || riskDetail.positions.length === 0) return '';
+  const positions = riskDetail.positions.slice(0, 3);
+  return `
+    <div class="intel-glass-card">
+      <div class="intel-card-title"><span>Risk Positions</span><small>${riskDetail.positions.length} total</small></div>
+      <div class="intel-stack">
+        ${positions.map((pos) => {
+          const status = String(pos.status || 'unknown');
+          const tier = String(pos.risk_level || 'UNKNOWN').toUpperCase();
+          const color = tier === 'BLACK' || tier === 'RED' ? 'var(--red)' : tier === 'YELLOW' ? 'var(--yellow)' : 'var(--green)';
+          return `<div class="intel-flag-card ${status === 'pending' ? 'warn' : status === 'expired' ? 'probe' : 'good'}">
+            <div><strong style="color:${color};">${escapeHtml(tier)}</strong><small>${escapeHtml(status)}</small></div>
+            <p>Max ${formatCompactDollars(Number(pos.suggested_max_exposure || 0))} · Limit ${formatCompactDollars(Number(pos.suggested_wager_limit || 0))}</p>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
 }
 
 export function renderCompactFlags(flags) {

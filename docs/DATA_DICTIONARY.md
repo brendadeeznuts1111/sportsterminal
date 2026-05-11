@@ -356,8 +356,8 @@ Seed/backfill behavior:
 
 | Source | Use |
 |--------|-----|
-| `docs/agentobject.md` | Ignored local agent-only capture |
-| `docs/agentslistharz.md` | Ignored local combined agent/customer capture |
+| `docs/archive/legacy/agentobject.md` | Archived raw agent-only capture (superseded by DB schema) |
+| `docs/archive/legacy/agentslistharz.md` | Archived raw combined agent/customer capture (corrupted) |
 | `POST /api/agents/backfill/hierarchy` | Parses ignored seed files, upserts `agents` and sanitized `players`, and writes `ingestion_checkpoints` |
 | `GET /api/agents/hierarchy` | Returns database hierarchy first, live Buckeye hierarchy second, local seed fallback last |
 
