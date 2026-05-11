@@ -27,6 +27,7 @@ import { PlayerSearchService } from '../../services/PlayerSearchService';
 import { PositionService } from '../../services/PositionService';
 import { ShadowAgentService } from '../../services/ShadowAgentService';
 import { RiskCommandCenter } from '../../services/RiskCommandCenter';
+import { BuckeyeWriteService } from '../../services/BuckeyeWriteService';
 import { ApiError, corsHeaders, handleAsync, readJsonBody, requireAdminTokenIfConfigured } from '../helpers';
 
 export function registerCommandCenterRoutes(
@@ -277,10 +278,35 @@ export function registerCommandCenterRoutes(
       const instance = scraperManager.getAgentInstance(agentLogin);
       if (!instance) throw new ApiError(503, 'Agent not connected');
       const numericId = await instance.api.resolveCustomerId(body.customer_id);
+      const writeService = new BuckeyeWriteService(instance.api, db, agentLogin);
       const results: Record<string, unknown> = {};
-      if (body.max_wager_cents !== undefined) results.wagerLimit = await instance.api.setWagerLimit(numericId, body.max_wager_cents);
-      if (body.max_credit_cents !== undefined) results.creditLimit = await instance.api.setCreditLimit(numericId, body.max_credit_cents);
-      if (body.settle_figure_cents !== undefined) results.settleFigure = await instance.api.setSettleFigure(numericId, body.settle_figure_cents);
+
+      if (body.max_wager_cents !== undefined) {
+        const res = await writeService.setWagerLimit(numericId, body.max_wager_cents, {
+          traderName: body.trader_name,
+          source: body.note,
+        });
+        results.wagerLimit = res.data;
+      }
+      if (body.max_credit_cents !== undefined) {
+        const res = await writeService.setCreditLimit(numericId, body.max_credit_cents, {
+          traderName: body.trader_name,
+          source: body.note,
+        });
+        results.creditLimit = res.data;
+      }
+      if (body.settle_figure_cents !== undefined) {
+        const res = await writeService.updateByColumn({
+          customerID: numericId,
+          column: 'SettleFigure',
+          value: body.settle_figure_cents,
+          type: 0,
+          info: `THE BASICS : settle figure | New : ${body.settle_figure_cents} /`,
+          traderName: body.trader_name,
+          source: body.note,
+        });
+        results.settleFigure = res.data;
+      }
       return { ok: true, customer_id: body.customer_id, numeric_id: numericId, results };
     }, corsHeaders);
   }
@@ -298,8 +324,33 @@ export function registerCommandCenterRoutes(
       const instance = scraperManager.getAgentInstance(agentLogin);
       if (!instance) throw new ApiError(503, 'Agent not connected');
       const numericId = await instance.api.resolveCustomerId(body.customer_id);
-      const result = await instance.api.blockPlayer(numericId);
-      return { ok: true, customer_id: body.customer_id, numeric_id: numericId, result };
+      const writeService = new BuckeyeWriteService(instance.api, db, agentLogin);
+      const result = await writeService.blockPlayer(numericId, {
+        traderName: body.trader_name,
+        source: body.note || 'Full block from Command Center',
+      });
+      return { ok: true, customer_id: body.customer_id, numeric_id: numericId, result: result.data };
+    }, corsHeaders);
+  }
+
+  // ─── Buckeye Write Log ────────────────────────────────────────────
+  if (url.pathname === '/api/enforcement/write-log' && request.method === 'GET') {
+    return handleAsync(async () => {
+      const customerId = url.searchParams.get('customer_id');
+      const agentId = url.searchParams.get('agent_id');
+      const limit = Math.min(100, Number(url.searchParams.get('limit') || '50'));
+      const service = new BuckeyeWriteService(null as any, db, agentId || '');
+      if (customerId) {
+        return { writes: await service.getRecentWrites(customerId, limit) };
+      }
+      if (agentId) {
+        return { writes: await service.getRecentWritesByAgent(agentId, limit) };
+      }
+      const rows = await db.all(
+        `SELECT * FROM buckeye_write_log ORDER BY timestamp DESC LIMIT ?`,
+        [limit]
+      );
+      return { writes: rows };
     }, corsHeaders);
   }
 

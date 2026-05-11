@@ -2524,6 +2524,36 @@
           <div id="ccWebhookHealth" class="text-xs"></div>
         </div>
 
+        <!-- Buckeye Write Log -->
+        <div class="rounded-lg border p-4 mb-4" style="background:var(--panel);border-color:var(--border);">
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <h3 class="text-sm font-semibold">📝 Buckeye Write Log</h3>
+              <p class="text-xs mt-0.5" style="color:var(--text-dim);">Audit trail of every player limit/status change with Telegram alerts.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <input id="ccWriteLogCustomer" type="text" placeholder="Customer ID" class="px-2 py-1 rounded text-xs" style="background:var(--bg);border:1px solid var(--border);color:var(--text);" onkeydown="if(event.key==='Enter')ccRefreshWriteLog()">
+              <button onclick="ccRefreshWriteLog()" class="px-2 py-1 rounded text-xs font-medium" style="background:var(--panel);border:1px solid var(--border);color:var(--text);">Refresh</button>
+            </div>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-xs">
+              <thead>
+                <tr style="background:var(--bg);">
+                  <th class="text-left px-2 py-1">Time</th>
+                  <th class="text-left px-2 py-1">Operation</th>
+                  <th class="text-left px-2 py-1">Customer</th>
+                  <th class="text-left px-2 py-1">Column</th>
+                  <th class="text-left px-2 py-1">Value</th>
+                  <th class="text-center px-2 py-1">Status</th>
+                  <th class="text-left px-2 py-1">Trader</th>
+                </tr>
+              </thead>
+              <tbody id="ccWriteLogTable"></tbody>
+            </table>
+          </div>
+        </div>
+
         <!-- Telegram Topics & Channels -->
         <div class="rounded-lg border p-4 mb-4" style="background:var(--panel);border-color:var(--border);">
           <div class="flex items-center justify-between mb-3">

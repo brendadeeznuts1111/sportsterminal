@@ -471,6 +471,28 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
       ip_address TEXT
     );
 
+    -- Buckeye write audit log: every updateByColumn + insertTransaction tracked
+    CREATE TABLE IF NOT EXISTS buckeye_write_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      operation TEXT NOT NULL,
+      customer_id TEXT NOT NULL,
+      column_name TEXT,
+      old_value TEXT,
+      new_value TEXT,
+      agent_id TEXT NOT NULL,
+      ip_address TEXT,
+      success INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      telegram_alert_id INTEGER,
+      ai_decision_id TEXT,
+      source TEXT DEFAULT 'manual',
+      trader_name TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_buckeye_write_customer ON buckeye_write_log(customer_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_buckeye_write_agent ON buckeye_write_log(agent_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_buckeye_write_success ON buckeye_write_log(success, timestamp);
+
     CREATE TABLE IF NOT EXISTS telegram_topics (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       agent_login TEXT NOT NULL,
@@ -533,6 +555,28 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
       FOREIGN KEY (topic_id) REFERENCES agent_supergroup_topics(id)
     );
     CREATE INDEX IF NOT EXISTS idx_telegram_messages_topic ON telegram_messages(topic_id, sent_at);
+
+    -- Buckeye write operations audit log
+    CREATE TABLE IF NOT EXISTS buckeye_write_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      operation TEXT NOT NULL,
+      customer_id TEXT NOT NULL,
+      column_name TEXT,
+      old_value TEXT,
+      new_value TEXT,
+      agent_id TEXT NOT NULL,
+      ip_address TEXT,
+      success INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      telegram_alert_id INTEGER,
+      ai_decision_id TEXT,
+      source TEXT,
+      trader_name TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_buckeye_write_customer ON buckeye_write_log(customer_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_buckeye_write_agent ON buckeye_write_log(agent_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_buckeye_write_success ON buckeye_write_log(success, timestamp);
 
     CREATE TABLE IF NOT EXISTS agent_performance_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1191,11 +1235,11 @@ export async function migrateDatabase(db: Database) {
 
       if (!hasSpreadHomePrice) {
         await db.exec(`ALTER TABLE odds_snapshots ADD COLUMN spread_home_price REAL`);
-        console.log('📊 Migration: added spread_home_price to odds_snapshots');
+        console.log('Migration: added spread_home_price to odds_snapshots');
       }
       if (!hasSpreadAwayPrice) {
         await db.exec(`ALTER TABLE odds_snapshots ADD COLUMN spread_away_price REAL`);
-        console.log('📊 Migration: added spread_away_price to odds_snapshots');
+        console.log('Migration: added spread_away_price to odds_snapshots');
       }
     }
 
@@ -1214,7 +1258,7 @@ export async function migrateDatabase(db: Database) {
     for (const [name, type] of wagerAdds) {
       if (!wagerColumnNames.has(name)) {
         await db.exec(`ALTER TABLE wagers ADD COLUMN ${name} ${type}`);
-        console.log(`📊 Migration: added ${name} to wagers`);
+        console.log(`Migration: added ${name} to wagers`);
       }
     }
     await removeLegacyWagerTypeConstraint(db);
@@ -1223,15 +1267,15 @@ export async function migrateDatabase(db: Database) {
     const patternColumnNames = new Set(patternColumns.map((c) => c.name));
     if (!patternColumnNames.has('category')) {
       await db.exec(`ALTER TABLE detected_patterns ADD COLUMN category TEXT NOT NULL DEFAULT 'odds'`);
-      console.log('📊 Migration: added category to detected_patterns');
+      console.log('Migration: added category to detected_patterns');
     }
     if (!patternColumnNames.has('wager_number')) {
       await db.exec(`ALTER TABLE detected_patterns ADD COLUMN wager_number INTEGER`);
-      console.log('📊 Migration: added wager_number to detected_patterns');
+      console.log('Migration: added wager_number to detected_patterns');
     }
     if (!patternColumnNames.has('agent_login')) {
       await db.exec(`ALTER TABLE detected_patterns ADD COLUMN agent_login TEXT`);
-      console.log('📊 Migration: added agent_login to detected_patterns');
+      console.log('Migration: added agent_login to detected_patterns');
     }
 
     await db.exec(`
@@ -1271,14 +1315,14 @@ export async function migrateDatabase(db: Database) {
     const rawLogColumnNames = new Set(rawLogColumns.map((c) => c.name));
     if (!rawLogColumnNames.has('status_code')) {
       await db.exec(`ALTER TABLE raw_api_logs ADD COLUMN status_code INTEGER`);
-      console.log('📊 Migration: added status_code to raw_api_logs');
+      console.log('Migration: added status_code to raw_api_logs');
     }
 
     const sandboxQueueColumns = await db.all<PragmaColumnRow>(`PRAGMA table_info(sandbox_summary_queue)`);
     const sandboxQueueColumnNames = new Set(sandboxQueueColumns.map((c) => c.name));
     if (sandboxQueueColumns.length > 0 && !sandboxQueueColumnNames.has('processing_started_at')) {
       await db.exec(`ALTER TABLE sandbox_summary_queue ADD COLUMN processing_started_at TEXT`);
-      console.log('📊 Migration: added processing_started_at to sandbox_summary_queue');
+      console.log('Migration: added processing_started_at to sandbox_summary_queue');
     }
 
     await db.exec(`
@@ -1328,43 +1372,43 @@ export async function migrateDatabase(db: Database) {
     const masterColumnNames = new Set(masterColumns.map((c) => c.name));
     if (!masterColumnNames.has('open_wager_count')) {
       await db.exec(`ALTER TABLE master_snapshots ADD COLUMN open_wager_count INTEGER DEFAULT 0`);
-      console.log('📊 Migration: added open_wager_count to master_snapshots');
+      console.log('Migration: added open_wager_count to master_snapshots');
     }
     if (!masterColumnNames.has('provider')) {
       await db.exec(`ALTER TABLE master_snapshots ADD COLUMN provider TEXT NOT NULL DEFAULT 'buckeye'`);
-      console.log('📊 Migration: added provider to master_snapshots');
+      console.log('Migration: added provider to master_snapshots');
     }
     if (!masterColumnNames.has('agent_id')) {
       await db.exec(`ALTER TABLE master_snapshots ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''`);
-      console.log('📊 Migration: added agent_id to master_snapshots');
+      console.log('Migration: added agent_id to master_snapshots');
     }
     if (!masterColumnNames.has('config_web_reports_json')) {
       await db.exec(`ALTER TABLE master_snapshots ADD COLUMN config_web_reports_json TEXT`);
-      console.log('📊 Migration: added config_web_reports_json to master_snapshots');
+      console.log('Migration: added config_web_reports_json to master_snapshots');
     }
     if (!masterColumnNames.has('config_web_reports_pending_json')) {
       await db.exec(`ALTER TABLE master_snapshots ADD COLUMN config_web_reports_pending_json TEXT`);
-      console.log('📊 Migration: added config_web_reports_pending_json to master_snapshots');
+      console.log('Migration: added config_web_reports_pending_json to master_snapshots');
     }
     if (!masterColumnNames.has('sports_type_json')) {
       await db.exec(`ALTER TABLE master_snapshots ADD COLUMN sports_type_json TEXT`);
-      console.log('📊 Migration: added sports_type_json to master_snapshots');
+      console.log('Migration: added sports_type_json to master_snapshots');
     }
     if (!masterColumnNames.has('authorizations_json')) {
       await db.exec(`ALTER TABLE master_snapshots ADD COLUMN authorizations_json TEXT`);
-      console.log('📊 Migration: added authorizations_json to master_snapshots');
+      console.log('Migration: added authorizations_json to master_snapshots');
     }
     if (!masterColumnNames.has('message_json')) {
       await db.exec(`ALTER TABLE master_snapshots ADD COLUMN message_json TEXT`);
-      console.log('📊 Migration: added message_json to master_snapshots');
+      console.log('Migration: added message_json to master_snapshots');
     }
     if (!masterColumnNames.has('new_emails_count_json')) {
       await db.exec(`ALTER TABLE master_snapshots ADD COLUMN new_emails_count_json TEXT`);
-      console.log('📊 Migration: added new_emails_count_json to master_snapshots');
+      console.log('Migration: added new_emails_count_json to master_snapshots');
     }
     if (!masterColumnNames.has('raw_json')) {
       await db.exec(`ALTER TABLE master_snapshots ADD COLUMN raw_json TEXT NOT NULL DEFAULT '{}'`);
-      console.log('📊 Migration: added raw_json to master_snapshots');
+      console.log('Migration: added raw_json to master_snapshots');
     }
 
     await db.exec(`
@@ -1556,7 +1600,7 @@ export async function migrateDatabase(db: Database) {
     for (const [name, type] of agentAdds) {
       if (!agentColumnNames.has(name)) {
         await db.exec(`ALTER TABLE agents ADD COLUMN ${name} ${type}`);
-        console.log(`📊 Migration: added ${name} to agents`);
+        console.log(`Migration: added ${name} to agents`);
       }
     }
 
@@ -1573,7 +1617,7 @@ export async function migrateDatabase(db: Database) {
     for (const [name, type] of playerAdds) {
       if (!playerColumnNames.has(name)) {
         await db.exec(`ALTER TABLE players ADD COLUMN ${name} ${type}`);
-        console.log(`📊 Migration: added ${name} to players`);
+        console.log(`Migration: added ${name} to players`);
       }
     }
 
@@ -1622,22 +1666,22 @@ export async function migrateDatabase(db: Database) {
     const riskFlagColumnNames = new Set(riskFlagColumns.map((c) => c.name));
     if (!riskFlagColumnNames.has('reviewer_id')) {
       await db.exec(`ALTER TABLE ai_risk_flags ADD COLUMN reviewer_id TEXT`);
-      console.log('📊 Migration: added reviewer_id to ai_risk_flags');
+      console.log('Migration: added reviewer_id to ai_risk_flags');
     }
     if (!riskFlagColumnNames.has('reviewed_at')) {
       await db.exec(`ALTER TABLE ai_risk_flags ADD COLUMN reviewed_at TEXT`);
-      console.log('📊 Migration: added reviewed_at to ai_risk_flags');
+      console.log('Migration: added reviewed_at to ai_risk_flags');
     }
 
     const featureColumns = await db.all<PragmaColumnRow>(`PRAGMA table_info(customer_features)`);
     const featureColumnNames = new Set(featureColumns.map((c) => c.name));
     if (!featureColumnNames.has('clv')) {
       await db.exec(`ALTER TABLE customer_features ADD COLUMN clv REAL NOT NULL DEFAULT 0`);
-      console.log('📊 Migration: added clv to customer_features');
+      console.log('Migration: added clv to customer_features');
     }
     if (!featureColumnNames.has('feature_json')) {
       await db.exec(`ALTER TABLE customer_features ADD COLUMN feature_json TEXT NOT NULL DEFAULT '{}'`);
-      console.log('📊 Migration: added feature_json to customer_features');
+      console.log('Migration: added feature_json to customer_features');
     }
 
     await db.exec(`
@@ -1680,7 +1724,7 @@ export async function migrateDatabase(db: Database) {
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_violations_customer ON wager_violations(customer_id, detected_at DESC)`);
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_violations_type ON wager_violations(violation_type, detected_at DESC)`);
     await db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wv_unique_violation ON wager_violations(wager_id, violation_type)`);
-    console.log('📊 Migration: ensured wager_violations table');
+    console.log('Migration: ensured wager_violations table');
 
     // ─── Telegram Topic Management: agent supergroups & topics ────────────
     await db.exec(`
@@ -1709,7 +1753,7 @@ export async function migrateDatabase(db: Database) {
     `);
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_supergroup_topics_purpose ON agent_supergroup_topics(supergroup_id, purpose)`);
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_supergroup_chat_id ON agent_supergroups(supergroup_chat_id)`);
-    console.log('📊 Migration: ensured agent_supergroups and agent_supergroup_topics tables');
+    console.log('Migration: ensured agent_supergroups and agent_supergroup_topics tables');
 
     // Migrate legacy telegram_topics into new schema (idempotent)
     const legacyTopics = await db.all<{
@@ -1764,7 +1808,7 @@ export async function migrateDatabase(db: Database) {
       );
     }
     if (legacyTopics.length > 0) {
-      console.log(`📊 Migration: migrated ${legacyTopics.length} legacy telegram_topics into agent_supergroup_topics`);
+      console.log(`Migration: migrated ${legacyTopics.length} legacy telegram_topics into agent_supergroup_topics`);
     }
 
     // ─── Telegram Messages (local audit/history) ──────────────────────────
@@ -1783,6 +1827,31 @@ export async function migrateDatabase(db: Database) {
     `);
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_telegram_messages_topic ON telegram_messages(topic_id, sent_at)`);
     console.log('📊 Migration: ensured telegram_messages table');
+
+    // ─── Buckeye Write Audit Log ───────────────────────────────────────────
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS buckeye_write_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        operation TEXT NOT NULL,
+        customer_id TEXT NOT NULL,
+        column_name TEXT,
+        old_value TEXT,
+        new_value TEXT,
+        agent_id TEXT NOT NULL,
+        ip_address TEXT,
+        success INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT,
+        telegram_alert_id INTEGER,
+        ai_decision_id TEXT,
+        source TEXT,
+        trader_name TEXT
+      )
+    `);
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_buckeye_write_customer ON buckeye_write_log(customer_id, timestamp)`);
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_buckeye_write_agent ON buckeye_write_log(agent_id, timestamp)`);
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_buckeye_write_success ON buckeye_write_log(success, timestamp)`);
+    console.log('📊 Migration: ensured buckeye_write_log table');
 
     await seedBuckeyeSportTypes(db);
   } catch (err) {
@@ -1859,7 +1928,7 @@ async function removeLegacyWagerTypeConstraint(db: Database): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_wagers_game_side_time ON wagers(parsed_game, parsed_market, parsed_side, insert_datetime DESC);
     `);
     await db.exec('COMMIT');
-    console.log('📊 Migration: rebuilt wagers without legacy wager_type CHECK constraint');
+    console.log('Migration: rebuilt wagers without legacy wager_type CHECK constraint');
   } catch (err) {
     await db.exec('ROLLBACK').catch(() => { });
     throw err;

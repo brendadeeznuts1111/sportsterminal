@@ -263,6 +263,37 @@ async function renderTimeseries() {
   }
 }
 
+async function renderWriteLog() {
+  try {
+    const customerId = document.getElementById('ccWriteLogCustomer')?.value?.trim();
+    const params = new URLSearchParams({ limit: '25' });
+    if (customerId) params.set('customer_id', customerId);
+    const data = await fetchJson(`/api/enforcement/write-log?${params}`);
+    const rows = data.writes || [];
+    if (!rows.length) {
+      setHtml('ccWriteLogTable', `<tr><td colspan="7" class="text-center py-4" style="color:var(--text-dim);">No write operations yet</td></tr>`);
+      return;
+    }
+    setHtml('ccWriteLogTable', rows.map((row) => {
+      const statusColor = row.success ? 'var(--green)' : 'var(--red)';
+      const statusLabel = row.success ? 'OK' : 'FAIL';
+      return `
+        <tr style="border-top:1px solid var(--border);">
+          <td class="px-2 py-1 font-mono" style="color:var(--text-dim);">${new Date(row.timestamp).toLocaleString()}</td>
+          <td class="px-2 py-1">${escapeHtml(row.operation)}</td>
+          <td class="px-2 py-1 font-mono">${escapeHtml(row.customer_id)}</td>
+          <td class="px-2 py-1">${escapeHtml(row.column_name || '-')}</td>
+          <td class="px-2 py-1 font-mono">${escapeHtml(row.new_value || row.amount_cents || '-')}</td>
+          <td class="px-2 py-1 text-center"><span class="px-1.5 py-0.5 rounded text-xs font-mono" style="background:${statusColor}22;color:${statusColor};border:1px solid ${statusColor}55;">${statusLabel}</span></td>
+          <td class="px-2 py-1">${escapeHtml(row.trader_name || '-')}</td>
+        </tr>
+      `;
+    }).join(''));
+  } catch (error) {
+    setHtml('ccWriteLogTable', `<tr><td colspan="7" class="text-center py-4" style="color:var(--red);">${escapeHtml(error.message)}</td></tr>`);
+  }
+}
+
 async function renderTelegram() {
   try {
     const purpose = document.getElementById('ccTelegramFilter')?.value || 'all';
@@ -494,6 +525,7 @@ export async function loadCommandCenter() {
     renderViolations(),
     renderWebhookHealth(),
     renderWebhookChannels(),
+    renderWriteLog(),
     renderTelegram(),
     renderEnforcementQueue(),
     renderAlertLog(),
@@ -745,6 +777,7 @@ if (typeof window !== 'undefined') {
     ccRefreshViolations,
     ccRefreshWebhookHealth,
     ccRefreshTelegram,
+    ccRefreshWriteLog,
     ccToggleTopicMessages,
     ccSendTopicMessage,
     ccSetEnforcementFilter,
