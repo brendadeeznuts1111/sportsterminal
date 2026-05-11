@@ -104,8 +104,8 @@ export class AppDatabase {
 
 export type Database = AppDatabase;
 
-export async function initDatabase(): Promise<AppDatabase> {
-  const db = new AppDatabase(dbUrl);
+export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
+  const db = new AppDatabase(url);
 
   if (db.getDialect() === 'sqlite') {
     // Enable foreign keys for SQLite
@@ -280,6 +280,7 @@ export async function initDatabase(): Promise<AppDatabase> {
 
     CREATE TABLE IF NOT EXISTS master_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL DEFAULT '',
       timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       balance REAL,
       available_balance REAL,

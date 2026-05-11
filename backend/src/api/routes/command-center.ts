@@ -16,10 +16,15 @@
  * - POST /api/ab-test/run             — run paired Kimi prompt test
  */
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
+import { COMMAND_CENTER_MAP, getPublicCommandCenterMap } from '../../config/commandCenterMap';
 import { getAbTestRunner } from '../../services/AbTestRunner';
 import { AutoEnforcementService } from '../../services/AutoEnforcementService';
 import { CommandCenterDashboard } from '../../services/CommandCenterDashboard';
+import { CommandCenterStatusService } from '../../services/CommandCenterStatusService';
+import { LiveFeatureService } from '../../services/LiveFeatureService';
 import { PlayerSearchService } from '../../services/PlayerSearchService';
+import { PositionService } from '../../services/PositionService';
+import { ShadowAgentService } from '../../services/ShadowAgentService';
 import { ApiError, corsHeaders, handleAsync, readJsonBody, requireAdminTokenIfConfigured } from '../helpers';
 
 export function registerCommandCenterRoutes(
@@ -31,6 +36,15 @@ export function registerCommandCenterRoutes(
   const dashboard = new CommandCenterDashboard(db);
 
   // ─── Dashboard ────────────────────────────────────────────────────
+  if (url.pathname === COMMAND_CENTER_MAP.endpoints.commandCenterMap.path && request.method === 'GET') {
+    return handleAsync(async () => getPublicCommandCenterMap(), corsHeaders);
+  }
+
+  if (url.pathname === COMMAND_CENTER_MAP.endpoints.commandCenterStatus.path && request.method === 'GET') {
+    const status = new CommandCenterStatusService(db, scraperManager);
+    return handleAsync(async () => status.getStatus(), corsHeaders);
+  }
+
   if (url.pathname === '/api/dashboard' && request.method === 'GET') {
     const hours = clampInt(url.searchParams.get('hours'), 24, 1, 720);
     return handleAsync(async () => dashboard.getFullDashboard(hours), corsHeaders);
@@ -38,19 +52,33 @@ export function registerCommandCenterRoutes(
   if (url.pathname === '/api/dashboard/summary' && request.method === 'GET') {
     return handleAsync(async () => dashboard.getSummary(), corsHeaders);
   }
-  if (url.pathname === '/api/dashboard/exposure' && request.method === 'GET') {
-    const hours = clampInt(url.searchParams.get('hours'), 24, 1, 720);
+  if (url.pathname === COMMAND_CENTER_MAP.endpoints.dashboardExposure.path && request.method === 'GET') {
+    const hours = windowToHours(url.searchParams.get('window'), clampInt(url.searchParams.get('hours'), 24, 1, 720));
     const limit = clampInt(url.searchParams.get('limit'), 50, 1, 200);
-    return handleAsync(async () => dashboard.getBookExposure(hours, limit), corsHeaders);
+    const agentId = url.searchParams.get('agentId') || url.searchParams.get('agent_id') || undefined;
+    const sport = url.searchParams.get('sport') || undefined;
+    return handleAsync(async () => dashboard.getBookExposure(hours, limit, { agentId, sport }), corsHeaders);
   }
-  if (url.pathname === '/api/dashboard/sharp-alerts' && request.method === 'GET') {
+  if (url.pathname === COMMAND_CENTER_MAP.endpoints.dashboardSharpAlerts.path && request.method === 'GET') {
     const hours = clampInt(url.searchParams.get('hours'), 24, 1, 720);
     const limit = clampInt(url.searchParams.get('limit'), 50, 1, 200);
-    return handleAsync(async () => dashboard.getSharpAlerts(hours, limit), corsHeaders);
+    const riskLevel = url.searchParams.get('riskLevel') || url.searchParams.get('risk_level') || undefined;
+    return handleAsync(async () => dashboard.getSharpAlerts(hours, limit, riskLevel), corsHeaders);
   }
   if (url.pathname === '/api/dashboard/pending' && request.method === 'GET') {
     const limit = clampInt(url.searchParams.get('limit'), 50, 1, 200);
     return handleAsync(async () => dashboard.getPendingActions(limit), corsHeaders);
+  }
+  if (url.pathname === COMMAND_CENTER_MAP.endpoints.dashboardPositionsPending.path && request.method === 'GET') {
+    const service = new PositionService(db);
+    const limit = clampInt(url.searchParams.get('limit'), 50, 1, 200);
+    const offset = clampInt(url.searchParams.get('offset'), 0, 0, 10_000);
+    return handleAsync(async () => service.listPositions({
+      status: url.searchParams.get('status') || undefined,
+      risk_level: url.searchParams.get('risk_level') || undefined,
+      limit,
+      offset,
+    }), corsHeaders);
   }
   if (url.pathname === '/api/dashboard/buckets' && request.method === 'GET') {
     const hours = clampInt(url.searchParams.get('hours'), 24, 1, 720);
@@ -125,6 +153,44 @@ export function registerCommandCenterRoutes(
     }, corsHeaders);
   }
 
+  // ─── Live AI analysis ─────────────────────────────────────────────
+  if (url.pathname === COMMAND_CENTER_MAP.endpoints.analyzeLive.path && request.method === 'POST') {
+    return handleAsync(async () => {
+      const body = await readJsonBody<{ customer_id?: string; forceRefresh?: boolean }>(request);
+      if (!body.customer_id) throw commandCenterError(400, COMMAND_CENTER_MAP.errors.customerIdRequired);
+      const service = new LiveFeatureService(db);
+      return service.analyzeLiveCustomer({
+        customer_id: body.customer_id,
+        forceRefresh: Boolean(body.forceRefresh),
+      });
+    }, corsHeaders);
+  }
+
+  // ─── Live shadow A/B (Worker-backed) ──────────────────────────────
+  if (url.pathname === COMMAND_CENTER_MAP.endpoints.shadowAb.path && request.method === 'POST') {
+    return handleAsync(async () => {
+      const body = await readJsonBody<{
+        customer_ids?: string[];
+        prompt_a?: string;
+        prompt_b?: string;
+        name?: string;
+      }>(request);
+      if (!Array.isArray(body.customer_ids) || body.customer_ids.length === 0) {
+        throw commandCenterError(400, COMMAND_CENTER_MAP.errors.customerIdsRequired);
+      }
+      if (!body.prompt_a || !body.prompt_b) {
+        throw commandCenterError(400, COMMAND_CENTER_MAP.errors.promptsRequired);
+      }
+      const service = new ShadowAgentService(db);
+      return service.start({
+        customer_ids: body.customer_ids,
+        prompt_a: body.prompt_a,
+        prompt_b: body.prompt_b,
+        name: body.name,
+      });
+    }, corsHeaders);
+  }
+
   return null;
 }
 
@@ -133,4 +199,15 @@ function clampInt(value: string | null, fallback: number, min: number, max: numb
   const n = Number.parseInt(value, 10);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(Math.max(n, min), max);
+}
+
+function windowToHours(value: string | null, fallback: number): number {
+  if (value === 'day') return COMMAND_CENTER_MAP.windows.day.hours;
+  if (value === 'week') return COMMAND_CENTER_MAP.windows.week.hours;
+  if (value === 'month') return COMMAND_CENTER_MAP.windows.month.hours;
+  return fallback;
+}
+
+function commandCenterError(status: number, error: { code: string; message: string }): ApiError {
+  return new ApiError(status, `${error.code}: ${error.message}`);
 }

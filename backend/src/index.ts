@@ -4,6 +4,7 @@ import { RateLimiter, getRateLimiter } from './api/rateLimiter';
 import { routeRequest } from './api/router';
 import { createToken, isDevMode, verifyToken } from './auth/jwt';
 import { loadEnv } from './config/env';
+import { COMMAND_CENTER_MAP } from './config/commandCenterMap';
 import { initDatabase, type Database } from './database';
 import { OddsPoller } from './odds/OddsPoller';
 import { BuckeyeScraperManager } from './scrapers/ScraperManager';
@@ -84,13 +85,13 @@ function broadcast(msg: object) {
   if (broadcastMsg.type === 'wager.new') {
     const wager = broadcastMsg.payload || {};
     const playerId = String(wager.CustomerID || wager.customer_id || wager.Login || wager.login || '');
-    streamHub.publish('wagers', { event: 'wager', data: wager });
+    streamHub.publish(COMMAND_CENTER_MAP.sse.topics.wagers, { event: COMMAND_CENTER_MAP.sse.events.wager, data: wager });
     if (playerId) {
-      streamHub.publish(`wagers:${playerId}`, { event: 'wager', data: wager });
+      streamHub.publish(`wagers:${playerId}`, { event: COMMAND_CENTER_MAP.sse.events.wager, data: wager });
     }
   } else if (broadcastMsg.type === 'wager.alert' || broadcastMsg.type === 'agent_rule.triggered') {
-    streamHub.publish('alerts', {
-      event: 'risk_alert',
+    streamHub.publish(COMMAND_CENTER_MAP.sse.topics.alerts, {
+      event: COMMAND_CENTER_MAP.sse.events.riskAlert,
       data: broadcastMsg.payload ?? msg,
     });
   } else if (broadcastMsg.type) {

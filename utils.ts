@@ -145,7 +145,7 @@ export function json(data: unknown, status = 200, headers: HeadersInit = {}) {
   const cors = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, X-Request-ID",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, X-Request-ID, X-API-Fingerprint",
   };
   return new Response(JSON.stringify(data, null, 2), {
     status,

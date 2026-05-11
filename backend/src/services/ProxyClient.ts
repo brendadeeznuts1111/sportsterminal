@@ -1,5 +1,6 @@
 import { CONFIG } from '../../../config';
 import { parseJsonOrText } from '../utils/parseJson';
+import { getApiFingerprintHeader } from '../../../utils/connection';
 
 export interface EnhancedProxyCredentials {
   agentID?: string;
@@ -87,7 +88,11 @@ function getProxyFetchProxy(apiKey: string): BunProxyOption | undefined {
 
 function withProxyFetchHeaders(options: RequestInit, apiKey: string): ProxyFetchInit {
   const proxy = getProxyFetchProxy(apiKey);
-  return proxy ? { ...options, proxy } : options;
+  const headers = {
+    ...options.headers,
+    'X-API-Fingerprint': getApiFingerprintHeader(),
+  } as Record<string, string>;
+  return proxy ? { ...options, proxy, headers } : { ...options, headers };
 }
 
 async function fetchWithRetry(

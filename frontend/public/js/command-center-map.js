@@ -7,6 +7,7 @@ export const COMMAND_CENTER_MAP = Object.freeze({
     analyzeLive: '/api/agent/analyze-live',
     shadowAb: '/api/agent/shadow-ab',
     backendMap: '/api/command-center/map',
+    backendStatus: '/api/command-center/status',
   }),
   auth: Object.freeze({
     queryTokenParam: 'token',

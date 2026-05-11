@@ -5,6 +5,7 @@
  * createManagedInterval runs tasks without overlap and keeps shutdown simple.
  */
 import type { Database } from '../database';
+import { COMMAND_CENTER_MAP } from '../config/commandCenterMap';
 import { createManagedInterval, type ManagedIntervalTask } from './Scheduler';
 import { AutoEnforcementService } from './AutoEnforcementService';
 import { LiveFeatureService } from './LiveFeatureService';
@@ -34,10 +35,10 @@ export class CommandCenterCron {
   start(): void {
     this.stop();
 
-    const featureCandidateMs = this.opts.featureCandidateMs ?? 5 * 60_000;
-    const featureExtractMs = this.opts.featureExtractMs ?? 10 * 60_000;
-    const portfolioRefreshMs = this.opts.portfolioRefreshMs ?? 15 * 60_000;
-    const heartbeatMs = this.opts.heartbeatMs ?? 5_000;
+    const featureCandidateMs = this.opts.featureCandidateMs ?? COMMAND_CENTER_MAP.schedules.featureCandidateMs;
+    const featureExtractMs = this.opts.featureExtractMs ?? COMMAND_CENTER_MAP.schedules.featureExtractMs;
+    const portfolioRefreshMs = this.opts.portfolioRefreshMs ?? COMMAND_CENTER_MAP.schedules.portfolioRefreshMs;
+    const heartbeatMs = this.opts.heartbeatMs ?? COMMAND_CENTER_MAP.schedules.heartbeatMs;
 
     this.tasks.push(createManagedInterval(
       'command-center.feature-candidates',
@@ -46,12 +47,12 @@ export class CommandCenterCron {
         const result = await this.liveFeatures.extractRecentFeatures(1);
         if (result.processed > 0) {
           streamHub.publish('ticker', {
-            event: 'feature_refresh',
+            event: COMMAND_CENTER_MAP.sse.events.featureRefresh,
             data: { type: 'recent', processed: result.processed, at: Date.now() },
           });
         }
       },
-      { initialDelayMs: 15_000, onError: logSchedulerError('feature-candidates') }
+      { initialDelayMs: featureCandidateMs, onError: logSchedulerError('feature-candidates') }
     ));
 
     this.tasks.push(createManagedInterval(
@@ -61,12 +62,12 @@ export class CommandCenterCron {
         const result = await this.liveFeatures.refreshStaleFeatures(6);
         if (result.processed > 0) {
           streamHub.publish('ticker', {
-            event: 'feature_refresh',
+            event: COMMAND_CENTER_MAP.sse.events.featureRefresh,
             data: { type: 'stale', processed: result.processed, at: Date.now() },
           });
         }
       },
-      { initialDelayMs: 45_000, onError: logSchedulerError('feature-extract') }
+      { initialDelayMs: featureExtractMs, onError: logSchedulerError('feature-extract') }
     ));
 
     this.tasks.push(createManagedInterval(
@@ -78,7 +79,7 @@ export class CommandCenterCron {
           this.enforcement.enforceAll(),
         ]);
         streamHub.publish('positions', {
-          event: 'position',
+          event: COMMAND_CENTER_MAP.sse.events.position,
           data: {
             type: 'portfolio_refresh',
             expired,
@@ -87,7 +88,7 @@ export class CommandCenterCron {
           },
         });
       },
-      { initialDelayMs: 60_000, onError: logSchedulerError('portfolio-refresh') }
+      { initialDelayMs: portfolioRefreshMs, onError: logSchedulerError('portfolio-refresh') }
     ));
 
     if (heartbeatMs > 0 && this.opts.emitTicker !== false) {
@@ -105,7 +106,7 @@ export class CommandCenterCron {
     }
 
     console.log(
-      `[CommandCenterCron] started (featureCandidates=${featureCandidateMs}ms, features=${featureExtractMs}ms, portfolio=${portfolioRefreshMs}ms, heartbeat=${heartbeatMs}ms)`
+      `[${COMMAND_CENTER_MAP.logEvents.cronStarted}] featureCandidates=${featureCandidateMs}ms features=${featureExtractMs}ms portfolio=${portfolioRefreshMs}ms heartbeat=${heartbeatMs}ms`
     );
   }
 

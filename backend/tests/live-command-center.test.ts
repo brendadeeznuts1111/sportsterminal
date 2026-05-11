@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { initDatabase, type Database } from '../src/database';
 import { COMMAND_CENTER_MAP } from '../src/config/commandCenterMap';
+import type { BuckeyeScraperManager } from '../src/scrapers/ScraperManager';
+import { CommandCenterStatusService } from '../src/services/CommandCenterStatusService';
 import { LiveFeatureService } from '../src/services/LiveFeatureService';
 import { riskLevelToLimits } from '../src/services/PositionService';
 import { StreamHub } from '../src/services/StreamHub';
@@ -79,9 +81,25 @@ describe('live command center', () => {
   test('defines readonly command-center endpoint and event matrix', () => {
     expect(COMMAND_CENTER_MAP.endpoints.liveWagersStream.path).toBe('/api/stream/live-wagers');
     expect(COMMAND_CENTER_MAP.endpoints.analyzeLive.method).toBe('POST');
+    expect(COMMAND_CENTER_MAP.endpoints.commandCenterStatus.path).toBe('/api/command-center/status');
     expect(COMMAND_CENTER_MAP.sse.events.riskAlert).toBe('risk_alert');
     expect(COMMAND_CENTER_MAP.params.exposure).toContain('window');
     expect(COMMAND_CENTER_MAP.database.tables).toContain('customer_features');
+  });
+
+  test('summarizes runtime command-center status from live tables', async () => {
+    db = await initDatabase(':memory:');
+    await seedLiveCustomer(db, 'STATUS1', 3, 100_00, -110);
+    const live = new LiveFeatureService(db);
+    await live.extractFeaturesForCustomer('STATUS1');
+
+    const status = await new CommandCenterStatusService(db, fakeScraperManager()).getStatus();
+    const liveData = status.live_data as { table_counts: Record<string, number>; flowing: boolean };
+
+    expect(status.ok).toBe(true);
+    expect(liveData.flowing).toBe(true);
+    expect(liveData.table_counts.wagers).toBe(3);
+    expect(liveData.table_counts.customer_features).toBe(1);
   });
 });
 
@@ -124,4 +142,28 @@ async function seedLiveCustomer(
       ]
     );
   }
+}
+
+function fakeScraperManager(): BuckeyeScraperManager {
+  return {
+    getMetrics() {
+      return {
+        activeAgents: 1,
+        agents: [{
+          agentId: 'TEST',
+          isPolling: true,
+          lastPoll: new Date().toISOString(),
+          errorCount: 0,
+          consecutiveErrors: 0,
+          lastError: null,
+          authenticated: true,
+          currentPollMs: 5000,
+          reloginAttempts: 0,
+          player360Active: false,
+        }],
+        actionQueue: { totalQueued: 0, queues: {} },
+        counters: { wagers_total: 3, alerts_triggered_total: 0, errors_total: 0 },
+      };
+    },
+  } as BuckeyeScraperManager;
 }

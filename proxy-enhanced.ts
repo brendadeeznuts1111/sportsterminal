@@ -11,6 +11,17 @@ import { CircuitBreaker, logger, hashPayload as utilsHashPayload, fetchWithRetry
 import { fetchWithTimeout } from "./utils/fetchWithTimeout";
 import { PROXY_SECRET_NAMES, deleteManagedSecret, extractCfClearanceValue, getManagedSecret, getManagedSecretNames, getScopedSecret, proxySecretEnvFallback, setManagedSecret, setScopedSecret, shouldUseKeychain } from "./utils/secrets";
 import { getAllEndpoints, ENDPOINT_COUNTS, TEST_SUMMARY } from "./endpoint-index";
+import {
+  buildBrowserHeaders,
+  buildServiceHeaders,
+  benchmarkNetworkTarget,
+  prewarmNetworkTargets as connectionPrewarmNetworkTargets,
+  getDnsCacheStats,
+  enrichDnsStats,
+  getConnectionFingerprint,
+  getApiFingerprintHeader,
+  type WarmupBenchmark,
+} from "./utils/connection";
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 import { z } from "zod";
 
@@ -54,25 +65,6 @@ const PROXY_CONSTANTS = {
 
 type JsonObject = Record<string, unknown>;
 
-type DnsCacheStats = {
-  cacheHitsCompleted?: number;
-  cacheHitsInflight?: number;
-  cacheMisses?: number;
-  size?: number;
-  errors?: number;
-  totalCount?: number;
-  [key: string]: unknown;
-};
-
-type NetworkWarmupResult = {
-  target: string;
-  host: string;
-  port: number;
-  dnsPrefetched: boolean;
-  preconnected: boolean;
-  error?: string;
-};
-
 interface TokenRow extends JsonObject {
   customerID: string;
   cf_clearance: string | null;
@@ -104,84 +96,15 @@ interface WsData {
   connectedAt?: number;
 }
 
-function getDnsCacheStats(): DnsCacheStats | null {
-  try {
-    return Bun.dns.getCacheStats() as DnsCacheStats;
-  } catch (error) {
-    logger.warn("DNS cache stats unavailable", { error: error instanceof Error ? error.message : String(error) });
-    return null;
-  }
-}
 
-function enrichDnsStats(stats: DnsCacheStats | null): JsonObject | null {
-  if (!stats) return null;
-  const hits = Number(stats.cacheHitsCompleted || 0);
-  const total = Number(stats.totalCount || 0);
-  const hitRatePercent = total > 0 ? Number(((hits / total) * 100).toFixed(1)) : null;
-  return {
-    ...stats,
-    hitRatePercent,
-    hitRate: hitRatePercent === null ? "N/A" : `${hitRatePercent.toFixed(1)}%`,
-  };
-}
 
-function networkTarget(origin: string): { origin: string; host: string; port: number } | null {
-  try {
-    const url = new URL(origin);
-    return {
-      origin: url.origin,
-      host: url.hostname,
-      port: Number(url.port || (url.protocol === "https:" ? 443 : 80)),
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function warmNetworkTarget(origin: string): Promise<NetworkWarmupResult | null> {
-  const target = networkTarget(origin);
-  if (!target) return null;
-
-  const result: NetworkWarmupResult = {
-    target: target.origin,
-    host: target.host,
-    port: target.port,
-    dnsPrefetched: false,
-    preconnected: false,
-  };
-
-  try {
-    await Promise.resolve(Bun.dns.prefetch(target.host, target.port));
-    result.dnsPrefetched = true;
-  } catch (error) {
-    result.error = `dns: ${error instanceof Error ? error.message : String(error)}`;
-  }
-
-  try {
-    await Promise.resolve((fetch as typeof fetch & { preconnect?: (url: string, options?: { dns?: boolean; tcp?: boolean }) => unknown }).preconnect?.(target.origin, { dns: true, tcp: true }));
-    result.preconnected = true;
-  } catch (error) {
-    const details = error instanceof Error ? error.message : String(error);
-    result.error = result.error ? `${result.error}; preconnect: ${details}` : `preconnect: ${details}`;
-  }
-
-  return result;
-}
-
-async function prewarmNetworkTargets(): Promise<NetworkWarmupResult[]> {
-  const targets = Array.from(new Set([
-    CONFIG.baseUrl,
-    PROXY_CONSTANTS.KIMI_API_ORIGIN,
-    CONFIG.backendUrl,
-    `http://localhost:${CONFIG.port}`,
-  ].filter(Boolean)));
-
-  const results = (await Promise.all(targets.map((target) => warmNetworkTarget(target)))).filter((entry): entry is NetworkWarmupResult => Boolean(entry));
-  logger.info("Network warmup complete", { targets: results });
-  return results;
-}
-
-const networkWarmups = await prewarmNetworkTargets();
+const networkWarmups: WarmupBenchmark[] = await connectionPrewarmNetworkTargets([
+  CONFIG.baseUrl,
+  PROXY_CONSTANTS.KIMI_API_ORIGIN,
+  CONFIG.backendUrl,
+  `http://localhost:${CONFIG.port}`,
+]);
+logger.info("Network warmup complete", { targets: networkWarmups });
 
 interface IdempotencyRow {
   status: number;
@@ -330,7 +253,7 @@ class TraceCollector {
       const body = JSON.stringify({ resourceSpans });
       const res = await fetch(CONFIG.otel.endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: buildServiceHeaders(),
         body,
       }).catch(() => undefined);
       if (res && res.ok) {
@@ -1222,7 +1145,7 @@ async function runRiskEngine(): Promise<void> {
         if (alerts.length > 0 && cfg.webhook) {
           await fetch(cfg.webhook, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: buildServiceHeaders(),
             body: JSON.stringify({ agentID: cfg.agentID, alerts, timestamp: Date.now() }),
           }).catch(() => {});
           logger.info("Risk alert sent", { agentID: cfg.agentID, alerts });
@@ -1319,11 +1242,7 @@ async function warmPopularCaches(): Promise<void> {
     for (const endpoint of CACHE_WARM_ENDPOINTS) {
       await fetch(`http://localhost:${CONFIG.port}/api/proxy/${endpoint}`, {
         method: "POST",
-        headers: {
-          "Accept": "application/json",
-          "Content-Type": "application/json",
-          "X-API-Key": CONFIG.apiKey,
-        },
+        headers: buildServiceHeaders({ apiKey: CONFIG.apiKey }),
         body: JSON.stringify({ customerID: row.customerID, agentID: row.customerID }),
       }).catch((error: unknown) => {
         logger.warn("Cache warm failed", { endpoint, customerID: row.customerID, error: error instanceof Error ? error.message : String(error) });
@@ -1410,29 +1329,13 @@ const cors = {
 };
 
 const corsMethods = ["POST", "GET", "PATCH", "DELETE", "OPTIONS"];
-const corsHeaders = ["Content-Type", "Authorization", "X-API-Key", "X-Request-ID", "X-Stream", "Idempotency-Key"];
+const corsHeaders = ["Content-Type", "Authorization", "X-API-Key", "X-Request-ID", "X-Stream", "Idempotency-Key", "X-API-Fingerprint"];
 
 function browserHeaders(token = "undefined", cookie = "") {
-  const h: Record<string, string> = {
-    "Accept": "*/*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Authorization": `Bearer ${token}`,
-    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-    "Origin": "https://fantasy402.com",
-    "Priority": "u=1, i",
-    "Referer": "https://fantasy402.com/",
-    "Sec-Ch-Ua": `"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"`,
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": `"Windows"`,
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-origin",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
-    "X-Requested-With": "XMLHttpRequest",
-  };
-  const resolvedCookie = cookie || (CONFIG.cfClearance ? `cf_clearance=${CONFIG.cfClearance}` : "");
-  if (resolvedCookie) h["Cookie"] = resolvedCookie;
-  return h;
+  return buildBrowserHeaders({
+    token,
+    cookie: cookie || (CONFIG.cfClearance ? `cf_clearance=${CONFIG.cfClearance}` : undefined),
+  });
 }
 
 function toForm(data: JsonObject): string {
@@ -4681,7 +4584,7 @@ async function findAvailablePort(startPort: number): Promise<number> {
 }
 const actualPort = await findAvailablePort(CONFIG.port);
 if (actualPort !== CONFIG.port) {
-  logger.log("warn", "startup", `Port ${CONFIG.port} busy, using ${actualPort}`);
+  logger.warn("Port busy, using alternative", { port: CONFIG.port, actualPort });
   CONFIG.port = actualPort;
 }
 
@@ -5954,6 +5857,7 @@ const server = Bun.serve<WsData>({
         uptime: process.uptime(),
         memory: { rss: Math.round(process.memoryUsage().rss / 1024 / 1024) + "MB" },
         timestamp: new Date().toISOString(),
+        fingerprint: getApiFingerprintHeader(),
         stats: { total_requests: row?.count ?? 0, errors: errRow?.count ?? 0 },
         circuitBreaker: circuitBreaker.getStatus(),
         endpoints: ENDPOINT_COUNTS,

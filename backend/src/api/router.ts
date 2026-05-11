@@ -787,6 +787,12 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
   });
 
   // ─── Risk Command Center: Dashboard ─────────────────────────────
+  router.get('/api/command-center/map', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
+  router.get('/api/command-center/status', async (url, request) => {
+    return registerCommandCenterRoutes(url, request, deps.scraperManager);
+  });
   router.get('/api/dashboard', async (url, request) => {
     return registerCommandCenterRoutes(url, request, deps.scraperManager);
   });

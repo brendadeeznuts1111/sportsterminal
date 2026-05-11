@@ -5,6 +5,7 @@
  */
 
 import type { Database } from '../database';
+import { COMMAND_CENTER_MAP } from '../config/commandCenterMap';
 import { streamHub } from './StreamHub';
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -57,7 +58,7 @@ export class RiskAlertService {
 
     // Fan out to live SSE subscribers regardless of webhook config
     streamHub.publish('alerts', {
-      event: 'risk_alert',
+      event: COMMAND_CENTER_MAP.sse.events.riskAlert,
       data: input,
     });
 

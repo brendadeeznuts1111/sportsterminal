@@ -9,7 +9,7 @@ const TEST_SECRET = 'test-secret-key-for-jwt-unit-tests-32-chars';
 const TEST_AGENT = 'TEST_AGENT';
 const JWT_ALG = 'HS256';
 
-function createExpiredToken(agentId: string, secret: string): string {
+function createExpiredToken(agentId: string, secret: string): Promise<string> {
   const secretKey = new TextEncoder().encode(secret);
   return new jose.SignJWT({ agentId })
     .setProtectedHeader({ alg: JWT_ALG })
@@ -47,7 +47,7 @@ describe('JWT auth', () => {
   });
 
 test('rejects expired token', async () => {
-    const expired = createExpiredToken(TEST_AGENT, TEST_SECRET);
+    const expired = await createExpiredToken(TEST_AGENT, TEST_SECRET);
     await expect(verifyToken(expired, TEST_SECRET)).rejects.toThrow();
   });
 

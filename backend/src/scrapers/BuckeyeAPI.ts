@@ -12,6 +12,7 @@
 import type { EnrichedWager } from '../risk/AlertEngine';
 import { decodeEntities } from '../utils/decodeEntities';
 import { fetchWithTimeout } from '../utils/fetchWithTimeout';
+import { buildBrowserHeaders } from '../../../utils/connection';
 
 export interface BuckeyeCredentials {
   agentId: string;
@@ -481,6 +482,17 @@ export class BuckeyeAPI {
     return parts.join('; ');
   }
 
+  private buildHeaders(options: { contentType?: string; accept?: string; referer?: string } = {}): Record<string, string> {
+    return buildBrowserHeaders({
+      token: this.token,
+      cookie: this.getCookieHeader() || undefined,
+      origin: this.baseUrl,
+      referer: options.referer || `${this.baseUrl}/manager.html`,
+      contentType: options.contentType,
+      accept: options.accept ?? "application/json, text/javascript, */*; q=0.01",
+    });
+  }
+
   /**
    * Authenticate with the Qubic login endpoint.
    * Returns a Bearer token in the response JSON.
@@ -507,15 +519,7 @@ export class BuckeyeAPI {
 
       const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/System/authenticateCustomer`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json, text/javascript, */*; q=0.01',
-          'X-Requested-With': 'XMLHttpRequest',
-          'Origin': this.baseUrl,
-          'Referer': `${this.baseUrl}/index.php`,
-          ...(this.cfCookie ? { 'Cookie': this.cfCookie } : {}),
-        },
+        headers: this.buildHeaders({ contentType: 'application/x-www-form-urlencoded', referer: `${this.baseUrl}/index.php` }),
         body,
       });
 
@@ -567,16 +571,7 @@ export class BuckeyeAPI {
 
       const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/Manager/getBetTickerConfig`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-          'Authorization': `Bearer ${this.token}`,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json, text/javascript, */*; q=0.01',
-          'X-Requested-With': 'XMLHttpRequest',
-          'Origin': this.baseUrl,
-          'Referer': `${this.baseUrl}/manager.html`,
-          ...(this.cfCookie ? { 'Cookie': this.cfCookie } : {}),
-        },
+        headers: this.buildHeaders(),
         body,
       });
 
@@ -606,16 +601,7 @@ export class BuckeyeAPI {
 
     const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/Manager/getBetTicker`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'Authorization': `Bearer ${this.token}`,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Origin': this.baseUrl,
-        'Referer': `${this.baseUrl}/manager.html?bet-ticker=active`,
-        ...(this.cfCookie ? { 'Cookie': this.cfCookie } : {}),
-      },
+      headers: this.buildHeaders({ referer: `${this.baseUrl}/manager.html?bet-ticker=active` }),
       body,
     });
 
@@ -658,14 +644,7 @@ export class BuckeyeAPI {
 
       const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/System/renewToken`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Authorization': `Bearer ${this.token}`,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json',
-          'X-Requested-With': 'XMLHttpRequest',
-          ...(this.cfCookie ? { 'Cookie': this.cfCookie } : {}),
-        },
+        headers: this.buildHeaders({ contentType: 'application/x-www-form-urlencoded', accept: 'application/json' }),
         body,
       });
 
@@ -705,16 +684,7 @@ export class BuckeyeAPI {
 
     const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/Manager/getListAgenstByAgent`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'Authorization': `Bearer ${this.token}`,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Origin': this.baseUrl,
-        'Referer': `${this.baseUrl}/manager.html`,
-        ...(this.cfCookie ? { 'Cookie': this.cfCookie } : {}),
-      },
+      headers: this.buildHeaders(),
       body,
     });
 
@@ -751,16 +721,7 @@ export class BuckeyeAPI {
 
     const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/Manager/getPlayers`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'Authorization': `Bearer ${this.token}`,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Origin': this.baseUrl,
-        'Referer': `${this.baseUrl}/manager.html`,
-        ...(this.cfCookie ? { 'Cookie': this.cfCookie } : {}),
-      },
+      headers: this.buildHeaders(),
       body,
     });
 
@@ -795,16 +756,7 @@ export class BuckeyeAPI {
 
     const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/Manager/getAccountInfoOwner`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'Authorization': `Bearer ${this.token}`,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Origin': this.baseUrl,
-        'Referer': `${this.baseUrl}/manager.html`,
-        ...(this.cfCookie ? { 'Cookie': this.cfCookie } : {}),
-      },
+      headers: this.buildHeaders(),
       body,
     });
 
@@ -847,16 +799,7 @@ export class BuckeyeAPI {
 
     const response = await fetchWithTimeout(`${this.baseUrl}/cloud/api/Manager/getWeeklyFigureByAgentLite`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'Authorization': `Bearer ${this.token}`,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Origin': this.baseUrl,
-        'Referer': `${this.baseUrl}/manager.html`,
-        ...(this.cfCookie ? { 'Cookie': this.cfCookie } : {}),
-      },
+      headers: this.buildHeaders(),
       body,
     });
 
@@ -1337,19 +1280,7 @@ export class BuckeyeAPI {
       query.set('agentSite', '1');
     }
     const endpoint = `${this.baseUrl}/app/language/ui.json?${query.toString()}`;
-    const headers: Record<string, string> = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': 'application/json, text/javascript, */*; q=0.01',
-      'X-Requested-With': 'XMLHttpRequest',
-      'Referer': `${this.baseUrl}/manager.html`,
-    };
-    if (this.token) {
-      headers.Authorization = `Bearer ${this.token}`;
-    }
-    const cookieHeader = this.getCookieHeader();
-    if (cookieHeader) {
-      headers.Cookie = cookieHeader;
-    }
+    const headers = this.buildHeaders();
 
     const response = await fetch(endpoint, { method: 'GET', headers });
     if (!response.ok) {
@@ -1436,16 +1367,7 @@ export class BuckeyeAPI {
     try {
       const response = await fetch(`${this.baseUrl}/cloud/api/Manager/betTickerAction`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-          'Authorization': `Bearer ${this.token}`,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json, text/javascript, */*; q=0.01',
-          'X-Requested-With': 'XMLHttpRequest',
-          'Origin': this.baseUrl,
-          'Referer': `${this.baseUrl}/manager.html?bet-ticker=active`,
-          ...(this.cfCookie ? { 'Cookie': this.cfCookie } : {}),
-        },
+        headers: this.buildHeaders({ referer: `${this.baseUrl}/manager.html?bet-ticker=active` }),
         body,
       });
 
@@ -1488,16 +1410,7 @@ export class BuckeyeAPI {
     for (const endpoint of endpoints) {
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-          'Authorization': `Bearer ${this.token}`,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json, text/javascript, */*; q=0.01',
-          'X-Requested-With': 'XMLHttpRequest',
-          'Origin': this.baseUrl,
-          'Referer': `${this.baseUrl}/manager.html`,
-          ...(this.cfCookie ? { 'Cookie': this.cfCookie } : {}),
-        },
+        headers: this.buildHeaders(),
         body,
       });
 
@@ -1541,16 +1454,7 @@ export class BuckeyeAPI {
   private async postForm(endpoint: string, body: URLSearchParams, label: string): Promise<unknown> {
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'Authorization': `Bearer ${this.token}`,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Origin': this.baseUrl,
-        'Referer': `${this.baseUrl}/manager.html`,
-        ...(this.cfCookie ? { 'Cookie': this.cfCookie } : {}),
-      },
+      headers: this.buildHeaders(),
       body,
     });
 

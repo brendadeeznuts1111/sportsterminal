@@ -1,4 +1,5 @@
 import type { Database } from '../database';
+import { COMMAND_CENTER_MAP } from '../config/commandCenterMap';
 import { PositionService, type RiskPosition } from './PositionService';
 import { RiskAlertService } from './RiskAlertService';
 import { streamHub } from './StreamHub';
@@ -238,7 +239,7 @@ export class LiveFeatureService {
     recent_wagers_count: number;
   }> {
     const customerId = input.customer_id.trim();
-    if (!customerId) throw new Error('customer_id is required');
+    if (!customerId) throw new Error(COMMAND_CENTER_MAP.errors.customerIdRequired.message);
 
     const features = input.forceRefresh
       ? await this.extractFeaturesForCustomer(customerId)
@@ -269,7 +270,7 @@ export class LiveFeatureService {
     );
 
     streamHub.publish('alerts', {
-      event: 'risk_alert',
+      event: COMMAND_CENTER_MAP.sse.events.riskAlert,
       data: {
         customer_id: customerId,
         risk_level: analysis.risk_level,

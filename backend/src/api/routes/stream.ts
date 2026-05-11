@@ -6,14 +6,15 @@
  * because we call `server.timeout(req, 0)` from index.ts before dispatch.
  */
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
+import { COMMAND_CENTER_MAP } from '../../config/commandCenterMap';
 import { streamHub } from '../../services/StreamHub';
 import { ApiError, corsHeaders, handleAsync, readJsonBody } from '../helpers';
 
 const SSE_HEADERS: Record<string, string> = {
-  'Content-Type': 'text/event-stream',
-  'Cache-Control': 'no-cache, no-transform',
+  'Content-Type': COMMAND_CENTER_MAP.headers.sseContentType,
+  'Cache-Control': COMMAND_CENTER_MAP.headers.sseCacheControl,
   Connection: 'keep-alive',
-  'X-Accel-Buffering': 'no', // disable nginx buffering
+  [COMMAND_CENTER_MAP.headers.sseAccelBuffering]: 'no',
   'Access-Control-Allow-Origin': '*',
 };
 
@@ -49,14 +50,14 @@ export function registerStreamRoutes(
 ): Response | Promise<Response> | null {
   // GET /api/stream/live-wagers — dashboard-friendly one-way ticker.
   // Events: connected, wager, risk_alert, position, heartbeat.
-  if (url.pathname === '/api/stream/live-wagers' && request.method === 'GET') {
+  if (url.pathname === COMMAND_CENTER_MAP.endpoints.liveWagersStream.path && request.method === 'GET') {
     const { stream } = streamHub.subscribe([
-      'wagers',
-      'alerts',
-      'positions',
-      'ticker',
-      'ws:wager.alert',
-      'ws:agent_rule.triggered',
+      COMMAND_CENTER_MAP.sse.topics.wagers,
+      COMMAND_CENTER_MAP.sse.topics.alerts,
+      COMMAND_CENTER_MAP.sse.topics.positions,
+      COMMAND_CENTER_MAP.sse.topics.ticker,
+      COMMAND_CENTER_MAP.sse.topics.wagerAlertBridge,
+      COMMAND_CENTER_MAP.sse.topics.agentRuleBridge,
     ]);
     return sseResponse(stream);
   }

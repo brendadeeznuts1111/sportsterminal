@@ -15,6 +15,7 @@ export const COMMAND_CENTER_MAP = {
   },
   endpoints: {
     commandCenterMap: { method: 'GET', path: '/api/command-center/map', auth: 'jwt' },
+    commandCenterStatus: { method: 'GET', path: '/api/command-center/status', auth: 'jwt' },
     liveWagersStream: { method: 'GET', path: '/api/stream/live-wagers', auth: 'bearer-or-token-query' },
     dashboardExposure: { method: 'GET', path: '/api/dashboard/exposure', auth: 'jwt' },
     dashboardSharpAlerts: { method: 'GET', path: '/api/dashboard/sharp-alerts', auth: 'jwt' },
@@ -69,6 +70,7 @@ export const COMMAND_CENTER_MAP = {
   },
   logEvents: {
     cronStarted: 'command_center.cron.started',
+    statusChecked: 'command_center.status.checked',
     featureRefresh: 'command_center.features.refreshed',
     portfolioRefresh: 'command_center.portfolio.refreshed',
     analyzeLive: 'command_center.analyze_live',
@@ -81,6 +83,7 @@ export const COMMAND_CENTER_MAP = {
     customerIdsRequired: { code: 'CUSTOMER_IDS_REQUIRED', message: 'customer_ids must be a non-empty array' },
     promptsRequired: { code: 'PROMPTS_REQUIRED', message: 'prompt_a and prompt_b are required' },
     shadowAbWorkerFailed: { code: 'SHADOW_AB_WORKER_FAILED', message: 'Shadow A/B worker failed' },
+    statusUnavailable: { code: 'COMMAND_CENTER_STATUS_UNAVAILABLE', message: 'Command center status is unavailable' },
   },
   database: {
     tables: [
