@@ -1071,6 +1071,7 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
     -- Mirrors the schema used by kimiremote so positions can read latest analyses.
     CREATE TABLE IF NOT EXISTS ai_risk_flags (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trace_id TEXT,
       wager_number INTEGER,
       agent_id TEXT,
       customer_id TEXT,
@@ -1792,6 +1793,10 @@ export async function migrateDatabase(db: Database) {
     if (!riskFlagColumnNames.has('agent_prop_builder_rate')) {
       await db.exec(`ALTER TABLE ai_risk_flags ADD COLUMN agent_prop_builder_rate REAL`);
       console.log('Migration: added agent_prop_builder_rate to ai_risk_flags');
+    }
+    if (!riskFlagColumnNames.has('trace_id')) {
+      await db.exec(`ALTER TABLE ai_risk_flags ADD COLUMN trace_id TEXT`);
+      console.log('Migration: added trace_id to ai_risk_flags');
     }
 
     const featureColumns = await db.all<PragmaColumnRow>(`PRAGMA table_info(customer_features)`);
