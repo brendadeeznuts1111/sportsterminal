@@ -81,6 +81,7 @@ export const COMMAND_CENTER_MAP = {
     portfolioRefreshMs: 15 * 60_000,
     alertCleanupMs: 24 * 60 * 60_000,
     heartbeatMs: 5_000,
+    telegramTopicSyncMs: 60 * 60_000,
     dataFreshnessMaxAgeSeconds: 15 * 60,
     alertRetentionDays: 90,
   },

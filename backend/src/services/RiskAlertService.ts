@@ -8,6 +8,8 @@ import type { Database } from '../database';
 import { COMMAND_CENTER_MAP } from '../config/commandCenterMap';
 import { streamHub } from './StreamHub';
 import { webhookCircuitBreaker } from './WebhookCircuitBreaker';
+import { TelegramTopicService } from './TelegramTopicService';
+import { TelegramBotClient } from './TelegramBotClient';
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -135,7 +137,48 @@ export class RiskAlertService {
       }
     }
 
+    // ─── Route to Telegram supergroup topics (best-effort) ────────────────
+    try {
+      await this.routeToTelegramTopic(input);
+    } catch (err) {
+      console.warn('[RiskAlert] Telegram routing failed:', err instanceof Error ? err.message : err);
+    }
+
     return { sent, failed };
+  }
+
+  /**
+   * Send a system-internal alert to the #risk-alerts topic.
+   * Used for infra events (DNS failures, token expiry, etc.).
+   */
+  async sendSystemAlert(summary: string, detail?: string): Promise<void> {
+    const topicService = new TelegramTopicService(this.db);
+    const client = new TelegramBotClient();
+    if (!client.isConfigured) return;
+
+    const systemSg = await this.db.get<{ supergroup_chat_id: string }>(
+      `SELECT supergroup_chat_id FROM agent_supergroups WHERE purpose = 'system_internal' LIMIT 1`
+    );
+    if (!systemSg) return;
+
+    const topic = await topicService.findTopicByPurpose(systemSg.supergroup_chat_id, 'risk_alerts');
+    if (!topic) return;
+
+    const text = [
+      `⚙️ *SYSTEM ALERT*`,
+      '',
+      summary,
+      detail || '',
+      '',
+      `_${new Date().toISOString()}_`,
+    ].join('\n');
+
+    await client.sendMessage({
+      chat_id: systemSg.supergroup_chat_id,
+      message_thread_id: topic.topic_thread_id,
+      text,
+      parse_mode: 'Markdown',
+    });
   }
 
   /**
@@ -407,6 +450,58 @@ export class RiskAlertService {
           source: 'sports-terminal-risk-command-center',
         };
     }
+  }
+
+  private async routeToTelegramTopic(input: RiskAlertInput): Promise<void> {
+    const client = new TelegramBotClient();
+    if (!client.isConfigured) return;
+
+    const topicService = new TelegramTopicService(this.db);
+
+    // Find agent_login for this customer
+    const agentRow = await this.db.get<{ agent_login: string }>(
+      `SELECT agent_login FROM wagers WHERE customer_id = ? ORDER BY insert_datetime DESC LIMIT 1`,
+      [input.customer_id]
+    );
+    const agentLogin = agentRow?.agent_login;
+    if (!agentLogin) return;
+
+    // Find agent supergroup
+    const supergroup = await this.db.get<{ id: number; supergroup_chat_id: string }>(
+      `SELECT id, supergroup_chat_id FROM agent_supergroups WHERE owner_agent_login = ? AND purpose = 'agent' LIMIT 1`,
+      [agentLogin]
+    );
+    if (!supergroup) return;
+
+    // Find #alerts topic
+    const topic = await topicService.findTopicByPurpose(supergroup.supergroup_chat_id, 'alerts');
+    if (!topic) return;
+
+    const playerUrl = this.getPlayerUrl(input.customer_id);
+    const actionLabel = input.suggested_action
+      ? input.suggested_action.toUpperCase()
+      : input.risk_level === 'BLACK'
+        ? 'AUTO-BLOCKED'
+        : 'REVIEW REQUIRED';
+
+    const text = [
+      `🚨 *${input.risk_level} RISK ALERT*`,
+      '',
+      `Customer: \`${input.customer_id}\``,
+      `Agent: ${agentLogin}`,
+      `Confidence: ${(input.confidence * 100).toFixed(0)}%`,
+      `Action: ${actionLabel}`,
+      ...(playerUrl ? [`Player: ${playerUrl}`] : []),
+      '',
+      input.summary || 'No summary available',
+    ].join('\n');
+
+    await client.sendMessage({
+      chat_id: supergroup.supergroup_chat_id,
+      message_thread_id: topic.topic_thread_id,
+      text,
+      parse_mode: 'Markdown',
+    });
   }
 
   private getPlayerUrl(customerId: string): string | null {

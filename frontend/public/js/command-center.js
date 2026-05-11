@@ -263,6 +263,56 @@ async function renderTimeseries() {
   }
 }
 
+async function renderTelegram() {
+  try {
+    const purpose = document.getElementById('ccTelegramFilter')?.value || 'all';
+    const [topicsData, channelsData] = await Promise.all([
+      fetchJson(`/api/telegram/topics?purpose=${encodeURIComponent(purpose)}`),
+      fetchJson('/api/telegram/channels'),
+    ]);
+    const topics = topicsData.topics || [];
+    const channels = channelsData.channels || [];
+
+    if (!topics.length) {
+      renderEmpty('ccTelegramTopics', 'No Telegram topics found');
+    } else {
+      setHtml('ccTelegramTopics', topics.map((t) => {
+        const deeplink = t.supergroup_chat_id && t.topic_thread_id
+          ? `https://t.me/c/${String(t.supergroup_chat_id).replace('-100', '')}/${t.topic_thread_id}`
+          : null;
+        const purposeColor = t.supergroup_purpose === 'system_internal' ? 'var(--blue)' : 'var(--cyan)';
+        return `
+        <div class="flex items-center gap-2 rounded p-2 mb-1" style="background:var(--bg);border:1px solid var(--border);">
+          <span class="px-1.5 py-0.5 rounded font-mono text-xs" style="background:${purposeColor}22;color:${purposeColor};border:1px solid ${purposeColor}55;">${escapeHtml(t.supergroup_purpose === 'system_internal' ? 'SYS' : 'AGT')}</span>
+          <span class="font-mono text-xs" style="color:var(--text);">${escapeHtml(t.agent_login || t.topic_name)}</span>
+          <span class="text-xs truncate" style="color:var(--text-dim);max-width:200px;">${escapeHtml(t.topic_name)}</span>
+          ${t.topic_icon ? `<span class="text-xs" style="color:var(--text-dim);">${escapeHtml(t.topic_icon)}</span>` : ''}
+          ${t.topic_hex_color ? `<span class="px-1 py-0.5 rounded text-xs font-mono" style="background:#${escapeHtml(t.topic_hex_color)}22;color:#${escapeHtml(t.topic_hex_color)};">#${escapeHtml(t.topic_hex_color)}</span>` : ''}
+          <span class="ml-auto text-xs font-mono" style="color:var(--text-dim);">thread ${t.topic_thread_id}</span>
+          ${deeplink ? `<a href="${escapeHtml(deeplink)}" target="_blank" rel="noopener" class="px-2 py-0.5 rounded text-xs font-medium" style="background:var(--accent);color:#fff;">Open</a>` : ''}
+        </div>`;
+      }).join(''));
+    }
+
+    if (!channels.length) {
+      renderEmpty('ccTelegramChannels', 'No broadcast channels registered');
+    } else {
+      setHtml('ccTelegramChannels', channels.map((c) => `
+        <div class="flex items-center gap-2 rounded p-2 mb-1" style="background:var(--bg);border:1px solid var(--border);">
+          <span class="px-1.5 py-0.5 rounded font-mono text-xs" style="background:var(--purple)22;color:var(--purple);border:1px solid var(--purple)55;">${escapeHtml(c.channel_type || 'broadcast')}</span>
+          <span class="font-mono text-xs" style="color:var(--text);">${escapeHtml(c.channel_name)}</span>
+          <span class="text-xs" style="color:var(--text-dim);">${escapeHtml(c.purpose || '')}</span>
+          <span class="ml-auto text-xs" style="color:${c.is_active ? 'var(--green)' : 'var(--text-dim)'};">${c.is_active ? 'Active' : 'Inactive'}</span>
+          ${c.telegram_chat_id ? `<span class="text-xs font-mono" style="color:var(--text-dim);">${escapeHtml(c.telegram_chat_id)}</span>` : ''}
+        </div>
+      `).join(''));
+    }
+  } catch (error) {
+    renderEmpty('ccTelegramTopics', `Telegram unavailable: ${error.message}`);
+    renderEmpty('ccTelegramChannels', `Channels unavailable: ${error.message}`);
+  }
+}
+
 async function renderWebhookHealth() {
   try {
     const rows = await fetchJson('/api/risk/webhooks/health');
@@ -365,6 +415,7 @@ export async function loadCommandCenter() {
     renderViolations(),
     renderWebhookHealth(),
     renderWebhookChannels(),
+    renderTelegram(),
     renderEnforcementQueue(),
     renderAlertLog(),
   ]);
@@ -614,6 +665,7 @@ if (typeof window !== 'undefined') {
     ccRefreshTimeseries,
     ccRefreshViolations,
     ccRefreshWebhookHealth,
+    ccRefreshTelegram,
     ccSetEnforcementFilter,
     ccOpenBuckeyeAdmin,
     ccMarkEnforcementApplied,
