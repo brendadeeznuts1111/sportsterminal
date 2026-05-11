@@ -282,17 +282,96 @@ async function renderTelegram() {
           : null;
         const purposeColor = t.supergroup_purpose === 'system_internal' ? 'var(--blue)' : 'var(--cyan)';
         return `
-        <div class="flex items-center gap-2 rounded p-2 mb-1" style="background:var(--bg);border:1px solid var(--border);">
-          <span class="px-1.5 py-0.5 rounded font-mono text-xs" style="background:${purposeColor}22;color:${purposeColor};border:1px solid ${purposeColor}55;">${escapeHtml(t.supergroup_purpose === 'system_internal' ? 'SYS' : 'AGT')}</span>
-          <span class="font-mono text-xs" style="color:var(--text);">${escapeHtml(t.agent_login || t.topic_name)}</span>
-          <span class="text-xs truncate" style="color:var(--text-dim);max-width:200px;">${escapeHtml(t.topic_name)}</span>
-          ${t.topic_icon ? `<span class="text-xs" style="color:var(--text-dim);">${escapeHtml(t.topic_icon)}</span>` : ''}
-          ${t.topic_hex_color ? `<span class="px-1 py-0.5 rounded text-xs font-mono" style="background:#${escapeHtml(t.topic_hex_color)}22;color:#${escapeHtml(t.topic_hex_color)};">#${escapeHtml(t.topic_hex_color)}</span>` : ''}
-          <span class="ml-auto text-xs font-mono" style="color:var(--text-dim);">thread ${t.topic_thread_id}</span>
-          ${deeplink ? `<a href="${escapeHtml(deeplink)}" target="_blank" rel="noopener" class="px-2 py-0.5 rounded text-xs font-medium" style="background:var(--accent);color:#fff;">Open</a>` : ''}
+        <div class="rounded mb-1" style="background:var(--bg);border:1px solid var(--border);">
+          <div class="flex items-center gap-2 p-2">
+            <span class="px-1.5 py-0.5 rounded font-mono text-xs" style="background:${purposeColor}22;color:${purposeColor};border:1px solid ${purposeColor}55;">${escapeHtml(t.supergroup_purpose === 'system_internal' ? 'SYS' : 'AGT')}</span>
+            <span class="font-mono text-xs" style="color:var(--text);">${escapeHtml(t.agent_login || t.topic_name)}</span>
+            <span class="text-xs truncate" style="color:var(--text-dim);max-width:200px;">${escapeHtml(t.topic_name)}</span>
+            ${t.topic_icon ? `<span class="text-xs" style="color:var(--text-dim);">${escapeHtml(t.topic_icon)}</span>` : ''}
+            ${t.topic_hex_color ? `<span class="px-1 py-0.5 rounded text-xs font-mono" style="background:#${escapeHtml(t.topic_hex_color)}22;color:#${escapeHtml(t.topic_hex_color)};">#${escapeHtml(t.topic_hex_color)}</span>` : ''}
+            <span class="ml-auto text-xs font-mono" style="color:var(--text-dim);">thread ${t.topic_thread_id}</span>
+            ${deeplink ? `<a href="${escapeHtml(deeplink)}" target="_blank" rel="noopener" class="px-2 py-0.5 rounded text-xs font-medium" style="background:var(--accent);color:#fff;">Open</a>` : ''}
+            <button class="px-2 py-0.5 rounded text-xs font-medium" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onclick="ccToggleTopicMessages(${t.id})">Messages</button>
+          </div>
+          <div id="ccTopicMsgs_${t.id}" class="hidden px-2 pb-2">
+            <div id="ccTopicMsgsList_${t.id}" class="space-y-1 mb-2 max-h-40 overflow-y-auto"></div>
+            <div class="flex items-center gap-2">
+              <input id="ccTopicMsgInput_${t.id}" type="text" placeholder="Type a message…" class="flex-1 px-2 py-1 rounded text-xs" style="background:var(--panel);border:1px solid var(--border);color:var(--text);" onkeydown="if(event.key==='Enter')ccSendTopicMessage(${t.id})">
+              <button class="px-2 py-1 rounded text-xs font-medium" style="background:var(--green);color:#fff;" onclick="ccSendTopicMessage(${t.id})">Send</button>
+            </div>
+          </div>
         </div>`;
       }).join(''));
     }
+
+    if (!channels.length) {
+      renderEmpty('ccTelegramChannels', 'No broadcast channels registered');
+    } else {
+      setHtml('ccTelegramChannels', channels.map((c) => `
+        <div class="flex items-center gap-2 rounded p-2 mb-1" style="background:var(--bg);border:1px solid var(--border);">
+          <span class="px-1.5 py-0.5 rounded font-mono text-xs" style="background:var(--purple)22;color:var(--purple);border:1px solid var(--purple)55;">${escapeHtml(c.channel_type || 'broadcast')}</span>
+          <span class="font-mono text-xs" style="color:var(--text);">${escapeHtml(c.channel_name)}</span>
+          <span class="text-xs" style="color:var(--text-dim);">${escapeHtml(c.purpose || '')}</span>
+          <span class="ml-auto text-xs" style="color:${c.is_active ? 'var(--green)' : 'var(--text-dim)'}">${c.is_active ? 'Active' : 'Inactive'}</span>
+          ${c.telegram_chat_id ? `<span class="text-xs font-mono" style="color:var(--text-dim);">${escapeHtml(c.telegram_chat_id)}</span>` : ''}
+        </div>
+      `).join(''));
+    }
+  } catch (error) {
+    renderEmpty('ccTelegramTopics', `Telegram unavailable: ${error.message}`);
+    renderEmpty('ccTelegramChannels', `Channels unavailable: ${error.message}`);
+  }
+}
+
+export async function ccToggleTopicMessages(topicId) {
+  const el = document.getElementById(`ccTopicMsgs_${topicId}`);
+  if (!el) return;
+  const isHidden = el.classList.contains('hidden');
+  if (isHidden) {
+    el.classList.remove('hidden');
+    await ccLoadTopicMessages(topicId);
+  } else {
+    el.classList.add('hidden');
+  }
+}
+
+async function ccLoadTopicMessages(topicId) {
+  const target = document.getElementById(`ccTopicMsgsList_${topicId}`);
+  if (!target) return;
+  target.innerHTML = '<span class="text-xs" style="color:var(--text-dim);">Loading…</span>';
+  try {
+    const data = await fetchJson(`/api/telegram/topics/${topicId}/messages?limit=20`);
+    const messages = data.messages || [];
+    if (!messages.length) {
+      target.innerHTML = '<span class="text-xs" style="color:var(--text-dim);">No messages yet</span>';
+      return;
+    }
+    target.innerHTML = messages.map((m) => `
+      <div class="flex items-start gap-2 rounded p-1.5 ${m.is_pinned ? 'border-l-2' : ''}" style="background:var(--panel);${m.is_pinned ? 'border-color:var(--yellow);' : ''}">
+        <span class="text-xs font-mono shrink-0" style="color:var(--text-dim);">${escapeHtml(m.sender)}</span>
+        <span class="text-xs" style="color:var(--text);">${escapeHtml(m.text)}</span>
+        ${m.is_pinned ? '<span class="text-xs" style="color:var(--yellow);">📌</span>' : ''}
+        <span class="ml-auto text-xs shrink-0" style="color:var(--text-dim);">${new Date(m.sent_at).toLocaleString()}</span>
+      </div>
+    `).join('');
+  } catch (error) {
+    target.innerHTML = `<span class="text-xs" style="color:var(--red);">${escapeHtml(error.message)}</span>`;
+  }
+}
+
+export async function ccSendTopicMessage(topicId) {
+  const input = document.getElementById(`ccTopicMsgInput_${topicId}`);
+  if (!input) return;
+  const text = input.value.trim();
+  if (!text) return;
+  try {
+    await fetchPost(`/api/telegram/topics/${topicId}/messages`, { text, pin: false });
+    input.value = '';
+    await ccLoadTopicMessages(topicId);
+  } catch (error) {
+    window.alert(`Failed to send: ${error.message}`);
+  }
+}
 
     if (!channels.length) {
       renderEmpty('ccTelegramChannels', 'No broadcast channels registered');
@@ -666,6 +745,8 @@ if (typeof window !== 'undefined') {
     ccRefreshViolations,
     ccRefreshWebhookHealth,
     ccRefreshTelegram,
+    ccToggleTopicMessages,
+    ccSendTopicMessage,
     ccSetEnforcementFilter,
     ccOpenBuckeyeAdmin,
     ccMarkEnforcementApplied,

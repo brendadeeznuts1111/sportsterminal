@@ -520,6 +520,20 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
       UNIQUE(supergroup_id, topic_thread_id)
     );
 
+    -- Messages sent to topics (stored locally for history / audit)
+    CREATE TABLE IF NOT EXISTS telegram_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      topic_id INTEGER NOT NULL,
+      telegram_message_id INTEGER,
+      text TEXT NOT NULL,
+      sender TEXT NOT NULL DEFAULT 'bot',
+      parse_mode TEXT,
+      is_pinned INTEGER NOT NULL DEFAULT 0,
+      sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (topic_id) REFERENCES agent_supergroup_topics(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_telegram_messages_topic ON telegram_messages(topic_id, sent_at);
+
     CREATE TABLE IF NOT EXISTS agent_performance_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       provider TEXT NOT NULL DEFAULT 'buckeye',
@@ -1752,6 +1766,23 @@ export async function migrateDatabase(db: Database) {
     if (legacyTopics.length > 0) {
       console.log(`📊 Migration: migrated ${legacyTopics.length} legacy telegram_topics into agent_supergroup_topics`);
     }
+
+    // ─── Telegram Messages (local audit/history) ──────────────────────────
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS telegram_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        topic_id INTEGER NOT NULL,
+        telegram_message_id INTEGER,
+        text TEXT NOT NULL,
+        sender TEXT NOT NULL DEFAULT 'bot',
+        parse_mode TEXT,
+        is_pinned INTEGER NOT NULL DEFAULT 0,
+        sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (topic_id) REFERENCES agent_supergroup_topics(id)
+      )
+    `);
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_telegram_messages_topic ON telegram_messages(topic_id, sent_at)`);
+    console.log('📊 Migration: ensured telegram_messages table');
 
     await seedBuckeyeSportTypes(db);
   } catch (err) {

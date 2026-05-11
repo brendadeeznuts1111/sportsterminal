@@ -5,6 +5,7 @@
  */
 
 import type { Database } from '../database';
+import { getCredential, setCredential, type CredentialName } from './secrets';
 
 export interface TelegramTopic {
   id: number;
@@ -260,6 +261,49 @@ export class TelegramTopicService {
     return inserted;
   }
 
+  // ─── System topic helpers (read from bun:secrets) ─────────────────────
+
+  /**
+   * Get the system supergroup chat ID from secrets.
+   */
+  async getSystemChatId(): Promise<string | null> {
+    return getCredential('telegram-chat-id');
+  }
+
+  /**
+   * Get a system topic thread ID from secrets.
+   * Maps purpose → secret credential name.
+   */
+  async getSystemTopicThreadId(purpose: string): Promise<number | null> {
+    const secretName = this.purposeToSecretName(purpose);
+    if (!secretName) return null;
+    const raw = await getCredential(secretName);
+    if (!raw) return null;
+    const parsed = parseInt(raw, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  /**
+   * Save a system topic thread ID to secrets.
+   */
+  async saveSystemTopicThreadId(purpose: string, threadId: number): Promise<void> {
+    const secretName = this.purposeToSecretName(purpose);
+    if (!secretName) return;
+    await setCredential(secretName, String(threadId));
+  }
+
+  private purposeToSecretName(purpose: string): CredentialName | null {
+    const map: Record<string, CredentialName> = {
+      risk_alerts: 'telegram-topic-risk-alerts',
+      webhook_events: 'telegram-topic-webhook-events',
+      service_health: 'telegram-topic-service-health',
+      domain_dns: 'telegram-topic-domain-dns',
+      analytics: 'telegram-topic-analytics',
+      bot_miniapp: 'telegram-topic-bot-miniapp',
+    };
+    return map[purpose] || null;
+  }
+
   // ─── Private helpers ───────────────────────────────────────────────────
 
   private inferPurposeFromName(name: string): string {
@@ -277,6 +321,55 @@ export class TelegramTopicService {
       cloudflare: 'cloudflare',
     };
     return purposeMap[lower] || lower.replace(/[^a-z0-9]/g, '_');
+  }
+
+  // ─── Messages ──────────────────────────────────────────────────────────
+
+  /**
+   * Store a sent message locally for history/audit.
+   */
+  async storeMessage(
+    topicId: number,
+    telegramMessageId: number | null,
+    text: string,
+    sender: string = 'bot',
+    parseMode?: string,
+    isPinned: boolean = false
+  ): Promise<number> {
+    const result = await this.db.run(
+      `INSERT INTO telegram_messages (topic_id, telegram_message_id, text, sender, parse_mode, is_pinned)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [topicId, telegramMessageId ?? null, text, sender, parseMode ?? null, isPinned ? 1 : 0]
+    );
+    return result.lastID as number;
+  }
+
+  /**
+   * Get messages for a topic, newest first.
+   */
+  async getMessages(topicId: number, limit: number = 50): Promise<Array<{
+    id: number;
+    telegram_message_id: number | null;
+    text: string;
+    sender: string;
+    parse_mode: string | null;
+    is_pinned: number;
+    sent_at: string;
+  }>> {
+    return this.db.all(
+      `SELECT * FROM telegram_messages WHERE topic_id = ? ORDER BY sent_at DESC LIMIT ?`,
+      [topicId, limit]
+    );
+  }
+
+  /**
+   * Mark a message as pinned locally.
+   */
+  async markPinned(messageId: number, pinned: boolean = true): Promise<void> {
+    await this.db.run(
+      `UPDATE telegram_messages SET is_pinned = ? WHERE id = ?`,
+      [pinned ? 1 : 0, messageId]
+    );
   }
 
   private colorToHex(color: number): string {

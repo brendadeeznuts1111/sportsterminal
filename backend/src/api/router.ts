@@ -62,7 +62,7 @@ import {
 import { registerSandboxRoutes } from './routes/sandbox';
 import { registerStaticRoutes } from './routes/static';
 import { registerKimiStreamRoutes, registerStreamRoutes } from './routes/stream';
-import { registerTelegramChannelsRoutes, registerTelegramTopicsRoutes } from './routes/telegram';
+import { registerTelegramChannelsRoutes, registerTelegramTopicMessagesRoutes, registerTelegramTopicsRoutes } from './routes/telegram';
 import {
   registerWagerAlertRoutes,
   registerWagerListRoutes,
@@ -111,6 +111,14 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
 
   router.get('/api/telegram/channels', async (url, request) => {
     return registerTelegramChannelsRoutes(url, request, deps.scraperManager);
+  });
+
+  router.all('/api/telegram/topics/:topicId/messages/:messageId/pin', async (url, request) => {
+    return registerTelegramTopicMessagesRoutes(url, request, deps.scraperManager);
+  });
+
+  router.all('/api/telegram/topics/:topicId/messages', async (url, request) => {
+    return registerTelegramTopicMessagesRoutes(url, request, deps.scraperManager);
   });
 
   // API routes

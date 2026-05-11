@@ -11,6 +11,7 @@
  *   ?purpose=all      → both (default)
  */
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
+import { TelegramBotClient } from '../../services/TelegramBotClient';
 import { TelegramTopicService } from '../../services/TelegramTopicService';
 import { logger } from '../../utils/logger';
 import { corsHeaders, handleAsync } from '../helpers';
@@ -153,4 +154,108 @@ export function registerTelegramChannelsRoutes(
       count: channels.length,
     };
   }, corsHeaders);
+}
+
+// ─── Topic Messages ────────────────────────────────────────────────────────
+
+export function registerTelegramTopicMessagesRoutes(
+  url: URL,
+  request: Request,
+  scraperManager: BuckeyeScraperManager
+): Response | Promise<Response> | null {
+  const getMatch = url.pathname.match(/^\/api\/telegram\/topics\/(\d+)\/messages$/);
+  const postMatch = url.pathname.match(/^\/api\/telegram\/topics\/(\d+)\/messages$/);
+  const pinMatch = url.pathname.match(/^\/api\/telegram\/topics\/(\d+)\/messages\/(\d+)\/pin$/);
+
+  if (request.method === 'GET' && getMatch) {
+    const topicId = Number(getMatch[1]);
+    logger.info(`GET /api/telegram/topics/${topicId}/messages`);
+    return handleAsync(async () => {
+      const db = scraperManager.getDatabase();
+      const service = new TelegramTopicService(db);
+      const limit = Math.min(100, Number(url.searchParams.get('limit') || '50'));
+      const messages = await service.getMessages(topicId, limit);
+      return { messages, count: messages.length };
+    }, corsHeaders);
+  }
+
+  if (request.method === 'POST' && postMatch) {
+    const topicId = Number(postMatch[1]);
+    logger.info(`POST /api/telegram/topics/${topicId}/messages`);
+    return handleAsync(async () => {
+      const db = scraperManager.getDatabase();
+      const service = new TelegramTopicService(db);
+      const body = (await request.json()) as Record<string, unknown>;
+      const text = String(body.text || '');
+      const parseMode = body.parse_mode ? String(body.parse_mode) : 'Markdown';
+      const pin = Boolean(body.pin);
+      if (!text) throw new Error('text is required');
+
+      const topic = await db.get<{ supergroup_chat_id: string; topic_thread_id: number }>(
+        `SELECT sg.supergroup_chat_id, t.topic_thread_id
+         FROM agent_supergroup_topics t
+         JOIN agent_supergroups sg ON sg.id = t.supergroup_id
+         WHERE t.id = ?`,
+        [topicId]
+      );
+      if (!topic) throw new Error('Topic not found');
+
+      const client = new TelegramBotClient();
+      let telegramMessageId: number | null = null;
+      if (client.isConfigured) {
+        const res = await client.sendMessage({
+          chat_id: topic.supergroup_chat_id,
+          message_thread_id: topic.topic_thread_id,
+          text,
+          parse_mode: parseMode as 'Markdown' | 'HTML' | 'MarkdownV2',
+        });
+        if (res.ok && res.result && typeof res.result === 'object' && 'message_id' in res.result) {
+          telegramMessageId = Number((res.result as Record<string, unknown>).message_id);
+        }
+        if (pin && telegramMessageId) {
+          await client.pinChatMessage(topic.supergroup_chat_id, telegramMessageId, topic.topic_thread_id);
+        }
+      }
+
+      const localId = await service.storeMessage(topicId, telegramMessageId, text, 'operator', parseMode, pin);
+      return { id: localId, telegram_message_id: telegramMessageId, pinned: pin };
+    }, corsHeaders);
+  }
+
+  if (request.method === 'POST' && pinMatch) {
+    const topicId = Number(pinMatch[1]);
+    const localMessageId = Number(pinMatch[2]);
+    logger.info(`POST /api/telegram/topics/${topicId}/messages/${localMessageId}/pin`);
+    return handleAsync(async () => {
+      const db = scraperManager.getDatabase();
+      const service = new TelegramTopicService(db);
+
+      const msg = await db.get<{ telegram_message_id: number | null; topic_id: number }>(
+        `SELECT telegram_message_id, topic_id FROM telegram_messages WHERE id = ?`,
+        [localMessageId]
+      );
+      if (!msg || msg.topic_id !== topicId) throw new Error('Message not found');
+
+      const topic = await db.get<{ supergroup_chat_id: string; topic_thread_id: number }>(
+        `SELECT sg.supergroup_chat_id, t.topic_thread_id
+         FROM agent_supergroup_topics t
+         JOIN agent_supergroups sg ON sg.id = t.supergroup_id
+         WHERE t.id = ?`,
+        [topicId]
+      );
+      if (!topic) throw new Error('Topic not found');
+
+      if (msg.telegram_message_id) {
+        const client = new TelegramBotClient();
+        if (client.isConfigured) {
+          await client.pinChatMessage(topic.supergroup_chat_id, msg.telegram_message_id, topic.topic_thread_id);
+        }
+      }
+
+      await service.markPinned(localMessageId, true);
+      return { pinned: true };
+    }, corsHeaders);
+  }
+
+  return null;
 }
