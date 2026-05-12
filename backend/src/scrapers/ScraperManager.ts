@@ -2027,7 +2027,7 @@ export class BuckeyeScraperManager {
             payload: change.wager,
           });
 
-          // 🔌 Feed new wager into plugin pipeline via TickerBuffer
+          // Feed new wager into plugin pipeline via TickerBuffer.
           await this.feedWagerToPlugins(change.wager);
         }
       }
