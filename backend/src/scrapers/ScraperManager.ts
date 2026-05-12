@@ -15,6 +15,8 @@ import {
 } from '../player360/policies';
 import { Alert, evaluateWager, type EnrichedWager } from '../risk/AlertEngine';
 import type { BunSecretVault } from '../services/BunSecretVault';
+import { getGlobalTickerBuffer } from '../services/TickerBuffer';
+import type { PluginContext } from '../services/PluginLoader';
 import { computeCLV, refreshRecentClosingLines } from '../services/CLV';
 import { enrichIpGeo } from '../services/GeoIpService';
 import { backfillAgentsAndPlayers, upsertLiveAgentHierarchy } from '../services/HierarchyBackfillService';
@@ -2024,6 +2026,9 @@ export class BuckeyeScraperManager {
             timestamp: new Date().toISOString(),
             payload: change.wager,
           });
+
+          // 🔌 Feed new wager into plugin pipeline via TickerBuffer
+          await this.feedWagerToPlugins(change.wager);
         }
       }
 
@@ -3447,6 +3452,91 @@ export class BuckeyeScraperManager {
       VALUES (?, ?, ?, ?, ?)`,
       [alert.wagerNumber, alert.ruleName, alert.severity, alert.message, new Date().toISOString()]
     );
+  }
+
+  /**
+   * Feed a raw Buckeye wager into the plugin pipeline via TickerBuffer.
+   * Queries enriched context (customer_features, ai_risk_flags, agent_actions)
+   * and builds a PluginContext for the risk-sharp-detector and other plugins.
+   */
+  private async feedWagerToPlugins(wager: EnrichedWager): Promise<void> {
+    const tickerBuffer = getGlobalTickerBuffer();
+    if (!tickerBuffer) return;
+
+    try {
+      // Fetch enriched context for this customer
+      const enriched = await this.db.get<{
+        archetype: string;
+        risk_tier: string;
+        sharp_score: number;
+        lifetime_wagers: number;
+        avg_wager_size: number;
+        win_rate: number;
+        violation_count: number;
+        flag_count: number;
+        ai_risk_level: string | null;
+        ai_suggested_action: string | null;
+        rule_action: string | null;
+      }>(
+        `SELECT
+           cf.archetype,
+           cf.risk_tier,
+           cf.sharp_score,
+           cf.lifetime_wagers,
+           cf.avg_wager_size,
+           cf.win_rate,
+           COALESCE(v.violation_count, 0) as violation_count,
+           COALESCE(f.flag_count, 0) as flag_count,
+           ai.risk_level as ai_risk_level,
+           ai.suggested_action as ai_suggested_action,
+           aa.action as rule_action
+         FROM (SELECT ? AS customer_id) AS src
+         LEFT JOIN customer_features cf ON cf.customer_id = src.customer_id
+         LEFT JOIN (SELECT customer_id, COUNT(*) as violation_count FROM wager_violations GROUP BY customer_id) v ON v.customer_id = src.customer_id
+         LEFT JOIN (SELECT customer_id, COUNT(*) as flag_count FROM player_flags GROUP BY customer_id) f ON f.customer_id = src.customer_id
+         LEFT JOIN (
+           SELECT customer_id, risk_level, suggested_action
+           FROM ai_risk_flags
+           WHERE id IN (SELECT MAX(id) FROM ai_risk_flags GROUP BY customer_id)
+         ) ai ON ai.customer_id = src.customer_id
+         LEFT JOIN (
+           SELECT player_id, action
+           FROM agent_actions
+           WHERE id IN (SELECT MAX(id) FROM agent_actions GROUP BY player_id)
+         ) aa ON aa.player_id = src.customer_id`,
+        [wager.CustomerID]
+      );
+
+      const ctx: PluginContext = {
+        wager_number: wager.WagerNumber,
+        customer_id: wager.CustomerID,
+        login: wager.Login,
+        agent_login: wager.AgentLogin,
+        amount_wagered: wager.AmountWagered,
+        to_win_amount: wager.ToWinAmount,
+        sport: this.parseSport(wager.ShortDesc),
+        wager_type: wager.WagerType,
+        insert_datetime: wager.InsertDateTime,
+        parsed_price: null,
+        parsed_side: null,
+        parsed_market: null,
+        archetype: enriched?.archetype ?? 'UNKNOWN',
+        risk_tier: enriched?.risk_tier ?? 'GREEN',
+        sharp_score: enriched?.sharp_score ?? 0,
+        lifetime_wagers: enriched?.lifetime_wagers ?? 0,
+        avg_wager_size: enriched?.avg_wager_size ?? 0,
+        win_rate: enriched?.win_rate ?? 0,
+        violation_count: enriched?.violation_count ?? 0,
+        flag_count: enriched?.flag_count ?? 0,
+        ai_risk_level: enriched?.ai_risk_level ?? null,
+        ai_suggested_action: enriched?.ai_suggested_action ?? null,
+        rule_action: enriched?.rule_action ?? null,
+      };
+
+      tickerBuffer.feed(ctx);
+    } catch (err) {
+      logger.warn(`[ScraperManager] feedWagerToPlugins failed for wager #${wager.WagerNumber}:`, err instanceof Error ? err.message : String(err));
+    }
   }
 
   private async evaluateAgentRules(wager: EnrichedWager): Promise<void> {

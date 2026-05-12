@@ -21,7 +21,7 @@ export const riskSharpDetectorPlugin: Plugin = {
   name: 'risk-sharp-detector',
   version: '1.0.0',
   hooks: {
-    async on_wager(ctx: PluginContext, db: AppDatabase): Promise<PluginResult | void> {
+    async on_wager(ctx: PluginContext, _db: AppDatabase): Promise<PluginResult | void> {
       let action: string | undefined;
       let severity: string | undefined;
       let message: string | undefined;

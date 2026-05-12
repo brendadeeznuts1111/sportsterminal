@@ -35,7 +35,8 @@
     "clean-start": "bun run stop && bun run dev",
     "dev:port": "bun run scripts/dev-port.js",
     "plugin:cli": "bun --config=bunfig.plugin.toml run plugins/cli.ts",
-    "plugin:install-builtin": "bun --config=bunfig.plugin.toml run plugins/cli.ts plugin install ./plugins/built-in/risk-sharp-detector && bun --config=bunfig.plugin.toml run plugins/cli.ts plugin install ./plugins/built-in/alert-telegram-enhanced"
+    "plugin:install-builtin": "bun --config=bunfig.plugin.toml run plugins/cli.ts plugin install ./plugins/built-in/risk-sharp-detector && bun --config=bunfig.plugin.toml run plugins/cli.ts plugin install ./plugins/built-in/alert-telegram-enhanced",
+    "telegram:setup": "bun run --cwd backend scripts/setup-telegram.ts"
   },
   "engines": {
     "bun": ">=1.3.0"

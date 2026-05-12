@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "probe:player360": "bun run scripts/probe-player360.ts",
     "backfill:hierarchy": "bun run scripts/backfill-hierarchy.ts",
-    "ingest:seed": "bun run scripts/ingest-seed-data.ts"
+    "ingest:seed": "bun run scripts/ingest-seed-data.ts",
+    "telegram:setup": "bun run scripts/setup-telegram.ts"
   },
   "dependencies": {
     "fast-geoip": "^1.1.88",
