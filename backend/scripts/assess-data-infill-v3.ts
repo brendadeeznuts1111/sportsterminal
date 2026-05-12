@@ -4,7 +4,7 @@
  * Uses ScriptLogger and TableFormatter for structured, readable output.
  */
 
-import { AppDatabase, normalizeDatabasePath } from '../src/database';
+import { initDatabase } from '../src/database';
 import { ScriptLogger } from '../src/utils/scriptLogger';
 import { formatMemoryUsage, measureAsync } from '../src/utils/bunUtils';
 
@@ -26,9 +26,7 @@ async function main() {
   const log = new ScriptLogger();
   log.time('total');
 
-  const dbPath = normalizeDatabasePath(process.env.DATABASE_URL || 'backend/data/terminal.db');
-  const db = new AppDatabase(dbPath);
-  await db.exec('PRAGMA foreign_keys = ON');
+  const db = await initDatabase(process.env.DATABASE_URL || './data/terminal.db');
 
   log.section('DATA INFILL ASSESSMENT (v3)');
 

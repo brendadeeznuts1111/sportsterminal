@@ -11,6 +11,7 @@
     "lint": "eslint src/ --max-warnings 500",
     "lint:strict": "eslint src/ --max-warnings 50",
     "typecheck": "tsc --noEmit",
+    "assess:data-infill": "bun run scripts/assess-data-infill-v3.ts",
     "probe:player360": "bun run scripts/probe-player360.ts",
     "backfill:hierarchy": "bun run scripts/backfill-hierarchy.ts",
     "ingest:seed": "bun run scripts/ingest-seed-data.ts",

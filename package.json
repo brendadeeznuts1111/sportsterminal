@@ -22,6 +22,7 @@
     "backfill:hierarchy": "bun run --cwd backend scripts/backfill-hierarchy.ts",
     "integrity:check": "bun run --cwd . backend/scripts/integrity-check.ts",
     "artifacts:check": "bun run scripts/check-sensitive-artifacts.ts",
+    "assess:data-infill": "bun run --cwd backend scripts/assess-data-infill-v3.ts",
     "proxy:dev": "bun --watch --no-clear --config=bunfig.proxy.toml proxy-enhanced.ts",
     "proxy:start": "bun --config=bunfig.proxy.toml --no-install proxy-enhanced.ts",
     "proxy:prod": "bun --config=bunfig.proxy.toml --env-file .env.production --no-install proxy-enhanced.ts",
