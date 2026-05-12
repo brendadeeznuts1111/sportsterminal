@@ -134,7 +134,7 @@ async function main() {
     { key: 'With player_links', value: `${coverage.with_links} (${pct(coverage.with_links, coverage.total_customers)})` },
     { key: 'With wager_violations', value: `${coverage.with_violations} (${pct(coverage.with_violations, coverage.total_customers)})` },
     { key: 'With risk_positions', value: `${coverage.with_positions} (${pct(coverage.with_positions, coverage.total_customers)})` },
-    { key: 'Overall coverage', value: `${coverage.coverage_pct}%`, color: '\x1b[1m\x1b[36m' },
+    { key: 'Overall coverage', value: `${coverage.coverage_pct}%` },
   ]);
   log.timeEnd('coverage');
 

@@ -1,11 +1,11 @@
 /**
  * ScriptLogger — structured, sectioned logger for CLI scripts and backfills.
  *
- * Provides clean output with sections, tables, progress bars, and timing.
- * Built on top of the existing logger but adds script-specific formatting.
+ * Provides clean, universal output (no ANSI codes).
+ * Emoji + alignment for visual hierarchy.
+ * Works on all terminals including Windows.
  */
 
-import { color } from 'bun';
 import {
   formatSection,
   formatTable,
@@ -16,10 +16,6 @@ import {
   type TableOptions,
 } from './tableFormatter';
 
-const RESET = '\x1b[0m';
-const BOLD = '\x1b[1m';
-const DIM = '\x1b[2m';
-
 interface Timer {
   label: string;
   start: number;
@@ -27,7 +23,6 @@ interface Timer {
 
 export class ScriptLogger {
   private timers = new Map<string, Timer>();
-  private sectionLevel = 0;
   private quiet: boolean;
 
   constructor(options: { quiet?: boolean } = {}) {
@@ -38,7 +33,7 @@ export class ScriptLogger {
 
   section(title: string): void {
     if (this.quiet) return;
-    this.sectionLevel = 0;
+    this.timers.set('_batch_start', { label: '_batch_start', start: performance.now() });
     console.log('');
     console.log(formatSection(title));
     console.log('');
@@ -47,11 +42,11 @@ export class ScriptLogger {
   subSection(title: string): void {
     if (this.quiet) return;
     console.log('');
-    console.log(`  ${BOLD}${title}${RESET}`);
-    console.log(`  ${'─'.repeat(title.length)}`);
+    console.log(`  ${title}`);
+    console.log(`  ${'-'.repeat(title.length)}`);
   }
 
-  step(label: string, icon: string = '→'): void {
+  step(label: string, icon: string = '>'): void {
     if (this.quiet) return;
     console.log(`  ${icon} ${label}`);
   }
@@ -61,22 +56,22 @@ export class ScriptLogger {
   result(label: string, value: string | number, unit?: string): void {
     if (this.quiet) return;
     const valStr = unit ? `${value} ${unit}` : String(value);
-    console.log(`  ✅ ${label}: ${BOLD}${valStr}${RESET}`);
+    console.log(`  [OK] ${label}: ${valStr}`);
   }
 
   warning(label: string, message: string): void {
     if (this.quiet) return;
-    console.log(`  ⚠️  ${label}: ${color('yellow', 'ansi')}${message}${RESET}`);
+    console.log(`  [!] ${label}: ${message}`);
   }
 
   error(label: string, message: string): void {
     if (this.quiet) return;
-    console.log(`  ❌ ${label}: ${color('red', 'ansi')}${message}${RESET}`);
+    console.log(`  [X] ${label}: ${message}`);
   }
 
   info(label: string, message: string): void {
     if (this.quiet) return;
-    console.log(`  ℹ️  ${label}: ${DIM}${message}${RESET}`);
+    console.log(`  [i] ${label}: ${message}`);
   }
 
   // ─── Tables ──────────────────────────────────────────────────────────────
@@ -86,15 +81,12 @@ export class ScriptLogger {
     console.log(formatTable(rows, columns, { indent: 2, ...options }));
   }
 
-  statusTable(
-    items: Array<{ name: string; count: number; threshold?: { low: number; ok: number } }>,
-    options?: TableOptions
-  ): void {
+  statusTable(items: Array<{ name: string; count: number; threshold?: { low: number; ok: number } }>, options?: TableOptions): void {
     if (this.quiet || items.length === 0) return;
     console.log(formatStatusTable(items, { indent: 2, ...options }));
   }
 
-  keyValue(entries: Array<{ key: string; value: string | number; color?: string }>): void {
+  keyValue(entries: Array<{ key: string; value: string | number }>): void {
     if (this.quiet || entries.length === 0) return;
     console.log(formatKeyValue(entries, { indent: 2 }));
   }
@@ -106,22 +98,18 @@ export class ScriptLogger {
     const bar = formatProgressBar(current, total);
     const prefix = label ? `${label} ` : '';
     process.stdout.write(`\r  ${prefix}${bar}`);
-    if (current >= total) {
-      process.stdout.write('\n');
-    }
+    if (current >= total) process.stdout.write('\n');
   }
 
   progressBatch(done: number, total: number, ok: number, fail: number, label?: string): void {
     if (this.quiet) return;
-    const rate = done > 0 ? (done / ((performance.now() - (this.timers.get('_batch_start')?.start ?? performance.now())) / 1000)).toFixed(1) : '0.0';
+    const elapsed = (performance.now() - (this.timers.get('_batch_start')?.start ?? performance.now())) / 1000;
+    const rate = done > 0 && elapsed > 0 ? (done / elapsed).toFixed(1) : '0.0';
     const bar = formatProgressBar(done, total, 20);
     const prefix = label ? `${label} ` : '';
-    const failColor = color('red', 'ansi') ?? '';
-    const status = `${ok} ok ${fail > 0 ? failColor + fail + ' fail' + RESET : '0 fail'}`;
+    const status = `${ok} ok | ${fail} fail`;
     process.stdout.write(`\r  ${prefix}${bar} | ${status} | ${rate}/s`);
-    if (done >= total) {
-      process.stdout.write('\n');
-    }
+    if (done >= total) process.stdout.write('\n');
   }
 
   // ─── Timing ──────────────────────────────────────────────────────────────
@@ -130,16 +118,11 @@ export class ScriptLogger {
     this.timers.set(label, { label, start: performance.now() });
   }
 
-  timeEnd(label: string): number {
+  timeEnd(label: string): number | undefined {
     const timer = this.timers.get(label);
-    if (!timer) {
-      console.warn(`Timer "${label}" does not exist`);
-      return 0;
-    }
+    if (!timer) return undefined;
     const elapsed = Math.round(performance.now() - timer.start);
-    if (!this.quiet) {
-      console.log(`  ⏱️  ${label}: ${elapsed}ms`);
-    }
+    if (!this.quiet) console.log(`  [time] ${label}: ${elapsed}ms`);
     this.timers.delete(label);
     return elapsed;
   }
@@ -151,31 +134,22 @@ export class ScriptLogger {
     console.log('');
     console.log(formatSection('SUMMARY', 55));
     for (const e of entries) {
-      const statusIcon = e.status === 'ok' ? '✅' : e.status === 'warn' ? '⚠️' : e.status === 'error' ? '❌' : '•';
-      const colored = e.status === 'error'
-        ? `${color('red', 'ansi')}${e.value}${RESET}`
-        : e.status === 'warn'
-          ? `${color('yellow', 'ansi')}${e.value}${RESET}`
-          : `${BOLD}${e.value}${RESET}`;
-      console.log(`  ${statusIcon} ${e.label.padEnd(30)} ${colored}`);
+      const statusIcon = e.status === 'ok' ? '[OK]' : e.status === 'warn' ? '[!]' : e.status === 'error' ? '[X]' : '[*]';
+      console.log(`  ${statusIcon} ${e.label.padEnd(30)} ${String(e.value)}`);
     }
-    console.log('═'.repeat(55));
+    console.log('='.repeat(55));
     console.log('');
   }
 
   done(): void {
     if (this.quiet) return;
     console.log('');
-    console.log(`  ${color('green', 'ansi')}✅ Complete${RESET}`);
+    console.log('  [OK] Complete');
     console.log('');
   }
 }
 
-// ─── Singleton for convenience ─────────────────────────────────────────────
-
 export const scriptLog = new ScriptLogger();
-
-// ─── Standalone helpers ────────────────────────────────────────────────────
 
 export function printHeader(title: string): void {
   console.log('');
