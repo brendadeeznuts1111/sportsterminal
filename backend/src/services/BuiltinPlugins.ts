@@ -53,17 +53,6 @@ export const riskSharpDetectorPlugin: Plugin = {
       }
 
       if (action) {
-        // Write to risk_alert_log for downstream consumers
-        try {
-          await db.run(
-            `INSERT INTO risk_alert_log (customer_id, risk_level, alert_type, message, source)
-             VALUES (?, ?, ?, ?, ?)`,
-            [ctx.customer_id, ctx.risk_tier, action, message, 'risk-sharp-detector']
-          );
-        } catch {
-          // Best-effort
-        }
-
         return { action, severity, message, metadata: { sharp_score: ctx.sharp_score, win_rate: ctx.win_rate, archetype: ctx.archetype } };
       }
     },
