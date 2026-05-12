@@ -1,0 +1,48 @@
+{
+  "name": "alert-telegram-enhanced",
+  "version": "1.0.0",
+  "description": "Rich Telegram alerts with inline keyboards for risk actions",
+  "author": "sportsterminal",
+  "category": "alert-channels",
+  "inject": {
+    "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
+    "telegram_chat_id": "TELEGRAM_CHAT_ID"
+  },
+  "allow_network": ["api.telegram.org"],
+  "tools": [
+    {
+      "name": "send-alert",
+      "description": "Send a rich Telegram alert with inline action buttons",
+      "command": ["bun", "scripts/send-alert.ts"],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "description": "The agent ID"
+          },
+          "alerts": {
+            "type": "array",
+            "description": "Alert messages"
+          },
+          "risk_score": {
+            "type": "number",
+            "description": "Risk score 0-100"
+          },
+          "timestamp": {
+            "type": "number",
+            "description": "Unix timestamp"
+          }
+        },
+        "required": ["agent_id", "alerts"]
+      },
+      "output": {
+        "type": "json",
+        "schema": {
+          "delivered": "boolean",
+          "message_id": "number"
+        }
+      }
+    }
+  ]
+}

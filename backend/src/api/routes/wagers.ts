@@ -5,6 +5,7 @@ import { createRouteHandler } from './base';
 import { clampInt } from '../helpers';
 import { logRequest } from '../../utils/logger';
 import { getEnrichedLiveWagers, getEnrichedRecentWagers } from '../../services/EnrichedWagerService';
+import { getGlobalTickerBuffer } from '../../services/TickerBuffer';
 
 export const registerWagerStatsRoutes = createRouteHandler('/api/stats', async (_url, _req, scraperManager) => {
   logRequest('GET', '/api/stats');
@@ -37,6 +38,14 @@ export const registerWagerLiveRoutes = createRouteHandler('/api/wagers/live', as
   let wagers = await getEnrichedLiveWagers(db, limit);
   if (wagers.length < 10) {
     wagers = await getEnrichedRecentWagers(db, limit);
+  }
+
+  // Feed enriched wagers into plugin pipeline
+  const tickerBuffer = getGlobalTickerBuffer();
+  if (tickerBuffer) {
+    for (const w of wagers) {
+      tickerBuffer.feed(w);
+    }
   }
 
   return {

@@ -1509,7 +1509,7 @@ export class BuckeyeAPI {
     throw new Error(`getWebLog failed: ${lastError || 'all endpoints failed'}`);
   }
 
-  private async postManagerOperation(
+  async postManagerOperation(
     operation: BuckeyeManagerOperation,
     extra: Record<string, string> = {}
   ): Promise<unknown> {

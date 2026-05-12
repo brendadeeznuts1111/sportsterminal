@@ -1,7 +1,7 @@
 # Sports Terminal — API Endpoint Reference
 
 > **Live server:** `http://localhost:3000`
-> **Captured:** May 9, 2026 — All examples are real responses from the running server.
+> **Captured:** May 11, 2026 — Route inventory reconciled against `backend/src/api/router.ts`, `endpoint-index.ts`, and `proxy-enhanced.ts`.
 
 ---
 
@@ -57,14 +57,17 @@ These are the frontend-facing route families. Detailed request and response exam
 | Area | Routes |
 |------|--------|
 | Auth/session | `POST /api/connect`, `GET /api/buckeye/vault-status`, `DELETE /api/buckeye/vault-status` |
-| Health/observability | `GET /health`, `GET /api/health/system-status`, `GET /api/stats`, `GET /api/analytics/raw-logs`, `GET /api/betting/velocity`, `GET /api/betting/live-vs-pre`, `GET /api/logs/access`, `GET /api/master/history` |
+| Health/observability | `GET /health`, `GET /metrics`, `GET /api/health/system-status`, `GET /api/stats`, `GET /api/analytics/raw-logs`, `GET /api/betting/velocity`, `GET /api/betting/live-vs-pre`, `GET /api/logs/access`, `GET /api/master/history`, `GET /api/health/data-pipeline` |
 | Wagers | `GET /api/wagers`, `GET /api/wagers/alerts`, `GET /api/wagers/live` |
-| Agents/downline | `GET /api/agents`, `GET /api/agents/downline`, `GET /api/agents/downline?live=true`, `GET /api/agents/hierarchy`, `GET /api/agents/hierarchy/tree`, `GET /api/agents/access-logs`, `GET /api/agents/:agentId/performance`, `GET /api/agents/:agentId/exposure`, `GET /api/agents/:agentId/players`, `POST /api/agents/backfill/hierarchy` |
-| Players | `GET /api/players/search`, `GET /api/players/:playerId/details`, `GET /api/players/:playerId/wagers`, `GET /api/players/:playerId/pnl`, `GET /api/players/:playerId/profile`, `GET /api/players/:playerId/transactions`, `GET /api/freeplay/analysis`, `GET /api/cross-reference` |
-| Risk/exposure | `GET /api/risk/alerts`, `GET /api/exposure/sports`, `GET /api/exposure/agents` |
+| Agents/downline | `GET /api/agents`, `GET /api/agents/downline`, `GET /api/agents/downline?live=true`, `GET /api/agents/hierarchy`, `GET /api/agents/hierarchy/tree`, `GET /api/hierarchy/stats`, `GET /api/hierarchy/search`, `GET /api/hierarchy/hubs`, `GET /api/hierarchy/hub`, `GET /api/hierarchy/risk`, `GET /api/hierarchy/tests`, `GET /api/hierarchy/zero-commission`, `GET /api/hierarchy/sync-status`, `PUT /api/hierarchy/sync-config`, `POST /api/hierarchy/import`, `POST /api/proxy/downline`, `GET /api/agents/access-logs`, `GET /api/agents/risk-summary`, `GET /api/agents/:agentId`, `GET /api/agents/:agentId/performance`, `GET /api/agents/:agentId/exposure`, `GET /api/agents/:agentId/players`, `POST /api/agents/refresh`, `POST /api/agents/backfill/hierarchy` |
+| Players | `GET /api/players/search`, `GET /api/players/suggest`, `GET /api/players/intel-search`, `GET /api/players/:playerId/details`, `GET /api/players/:playerId/wagers`, `GET /api/players/:playerId/pnl`, `GET /api/players/:playerId/profile`, `GET /api/players/:playerId/agent-context`, `GET /api/players/:playerId/intelligence-map`, `GET /api/players/:playerId/features`, `GET /api/players/:playerId/clv-history`, `GET /api/players/:playerId/deposits`, `GET /api/players/:playerId/transactions`, `GET /api/players/:playerId/account-snapshots`, `GET /api/players/:playerId/links`, `POST /api/players/:playerId/links/check`, `GET/POST /api/players/:playerId/flags`, `POST /api/players/:playerId/flags/:flagId/resolve`, `GET/POST /api/players/:playerId/notes`, `POST /api/players/:playerId/reclassify`, `GET /api/freeplay/analysis`, `GET /api/cross-reference` |
+| Risk/exposure | `GET /api/risk/alerts`, `GET /api/risk/summary`, `GET/POST /api/risk/positions`, `GET /api/risk/violations`, `GET /api/risk/timeseries`, `GET /api/risk/players/:id`, `GET /api/risk/webhooks/health`, `GET /api/exposure/sports`, `GET /api/exposure/agents` |
 | Odds/patterns | `GET /api/odds/live`, `GET /api/odds/events`, `GET /api/odds/events/:eventId`, `GET /api/odds/snapshots`, `GET /api/odds/movements`, `GET /api/books`, `GET /api/books/status`, `GET /api/patterns/catalog`, `GET /api/patterns/history`, `GET /api/patterns/summary`, `GET /api/patterns/agents` |
 | Performance/audit | `GET /api/performance/summary`, `GET /api/performance/details`, `GET /api/analytics/weekly-figures`, `GET /api/analytics/master-snapshots`, `GET /api/analytics/performance-trends`, `GET /api/analytics/wager-velocity`, `GET /api/health/data-pipeline` |
-| Webhooks | `GET /api/webhooks`, `POST /api/webhooks`, `GET /api/webhooks/:webhookId`, `PUT /api/webhooks/:webhookId`, `DELETE /api/webhooks/:webhookId`, `GET /api/webhooks/:webhookId/deliveries` |
+| Webhooks and Telegram | `GET/POST/PUT/DELETE /api/webhooks*`, `POST /api/risk-alerts/dispatch`, `POST /api/risk-alerts/test`, `GET /api/risk-alerts/log`, `GET /api/telegram/topics`, `GET /api/telegram/channels`, `GET/POST /api/telegram/topics/:topicId/messages`, `POST /api/telegram/topics/:topicId/messages/:messageId/pin` |
+| Command Center and streams | `GET /api/command-center/map`, `GET /api/command-center/status`, `GET /api/dashboard*`, `GET /api/positions*`, `POST /api/positions/generate`, `POST /api/positions/execute`, `POST /api/positions/override`, `GET /api/stream/*`, `POST /api/analysis/stream`, `POST /api/ab-test/run`, `POST /api/agent/analyze-live`, `POST /api/agent/debug/player-snapshot`, `POST /api/agent/shadow-ab` |
+| Enforcement, IP, sandbox | `GET/POST /api/enforcement/*`, `GET /api/agent/ip-suspicious`, `GET /api/agent/ip-lookup`, `POST /api/agent/ip-block`, `GET /api/agent/ip-export`, `GET/POST/DELETE /api/agent/rules*`, `GET/POST/DELETE /api/sandbox/*` |
+| Buckeye live aliases on backend | `GET /api/live/ticker`, `POST /api/live/agentDownline`, `POST /api/live/agentBilling`, `POST /api/live/playerInfo`, `POST /api/live/dynamicLive`, `POST /api/live/leagueLines`, `POST /api/live/sportsLeagues`, `POST /api/live/gameVolume`, `POST /api/live/pending`, `POST /api/live/betTicker`, `POST /api/live/scoresLive`, `POST /api/live/Manager/:operation`, `POST /api/live/props`, `POST /api/live/extendedProps`, `POST /api/live/propBuilderURL` |
 | CSV exports | `GET /api/export/wagers`, `GET /api/export/access-logs`, `GET /api/export/performance` |
 | Internal proxy bridge | `POST /api/proxy/:alias`, `POST /api/proxy/taxonomy/:level`, `POST /api/proxy/Manager/:operation`, `POST /api/proxy/System/:operation`, `POST /api/proxy/Log/:operation` |
 
@@ -76,7 +79,7 @@ These routes are not for frontend use. They are documented for backend developer
 |------|--------|
 | Health/config | `GET /`, `GET /features`, `GET /metrics`, `GET /ready`, `GET /health`, `POST /config` |
 | Auth/tokens | `POST /api/proxy/auth`, `POST /api/proxy/renewToken`, `GET /api/proxy/tokens?customerID=` |
-| Buckeye aliases | `POST /api/proxy/sportsLeagues`, `POST /api/proxy/leagueLines`, `POST /api/proxy/agentDownline`, `POST /api/proxy/agentBilling`, `POST /api/proxy/playerInfo`, `POST /api/proxy/dynamicLive`, `POST /api/proxy/gameVolume`, `POST /api/proxy/pending`, `POST /api/proxy/pendingReportConfig`, `POST /api/proxy/updatePendingReportConfig` |
+| Buckeye aliases | `POST /api/proxy/sportsLeagues`, `POST /api/proxy/leagueLines`, `POST /api/proxy/agentDownline`, `POST /api/proxy/agentBilling`, `POST /api/proxy/playerInfo`, `POST /api/proxy/dynamicLive`, `POST /api/proxy/gameVolume`, `POST /api/proxy/pending`, `POST /api/proxy/pendingReportConfig`, `POST /api/proxy/updatePendingReportConfig`, `POST /api/proxy/playerDetails`, `POST /api/proxy/playerLimits`, `POST /api/proxy/searchCustomer`, `POST /api/proxy/notifySettings`, `POST /api/proxy/playerStatus` |
 | Analytics | `POST /api/proxy/analytics/syndicates`, `GET /api/proxy/analytics/syndicates/stats`, `POST /api/proxy/analytics/sharp-money`, `POST /api/proxy/analytics/ev`, `POST /api/proxy/analytics/predictive-sharpness`, `POST /api/proxy/analytics/backtest` |
 | Risk/integrity | `GET/POST /api/proxy/risk/config`, `GET /api/proxy/risk/alerts`, `GET /api/proxy/risk/syndicates`, `GET/POST /api/proxy/line-rules`, `GET /api/proxy/line-adjustments/log`, `GET/POST /api/proxy/integrity/cases`, `PATCH /api/proxy/integrity/cases/:id` |
 | Logs | `GET /api/proxy/logs`, `GET /api/proxy/health`, `GET /api/proxy/endpoints` |
@@ -118,10 +121,11 @@ bun run generate:openapi
 7. [Buckeye Routes & Internal Proxy](#7-buckeye-routes--internal-proxy)
 8. [Performance Cache](#8-performance-cache)
 9. [Webhooks](#9-webhooks)
-10. [Audit & Analytics](#10-audit--analytics)
-11. [CSV Exports](#11-csv-exports)
-12. [WebSocket Events](#websocket-events)
-13. [Error Handling & Recovery](#error-handling--recovery)
+10. [Telegram Topics & Notification Mapping](#10-telegram-topics--notification-mapping)
+11. [Audit & Analytics](#11-audit--analytics)
+12. [CSV Exports](#12-csv-exports)
+13. [WebSocket Events](#websocket-events)
+14. [Error Handling & Recovery](#error-handling--recovery)
 
 ---
 
@@ -131,9 +135,9 @@ This document should be checked against the router, Buckeye route metadata, and 
 
 | Surface | Source File | Route Count | Coverage Note |
 |---------|-------------|-------------|---------------|
-| Main backend router | `backend/src/api/router.ts` | 104 API-visible route patterns, 106 total registrations including CORS/static catch-all | Most routes have detailed sections below; compatibility/wildcard routes are summarized here to avoid repeating every Buckeye operation twice. |
+| Main backend router | `backend/src/api/router.ts` | 201 API-visible registrations excluding preflight/static catch-all; 203 total registrations including CORS and static fallback | Most routes have detailed sections below; compatibility/wildcard routes are summarized here to avoid repeating every Buckeye operation twice. |
 | Buckeye backend route handler | `backend/src/api/routes/buckeye.ts` | 20+ direct Buckeye helper routes plus limited `/api/proxy/*` compatibility routes on `3000` | Includes player probe routes, manager bootstrap, vault status, and compatibility manager/system/log operations. Alias routes such as `/api/proxy/agentDownline` belong to the standalone proxy, not the public backend. |
-| Standalone enhanced proxy | `proxy-enhanced.ts` + `endpoint-index.ts` | 68 catalog endpoints: 19 proxy/local + 49 Buckeye upstream | Internal/debug surface on `3001`. `TEST_SUMMARY.total` is 50 tested probes, not the catalog endpoint count. |
+| Standalone enhanced proxy | `proxy-enhanced.ts` + `endpoint-index.ts` | 83 catalog endpoints: 19 proxy/local + 64 Buckeye upstream | Internal/debug surface on `3001`. `TEST_SUMMARY.total` is 50 tested probes, not the catalog endpoint count. |
 
 Quick local audit command:
 
@@ -142,8 +146,9 @@ Quick local audit command:
 const fs = require('fs');
 const router = fs.readFileSync('backend/src/api/router.ts', 'utf8');
 const docs = fs.readFileSync('docs/API_ENDPOINTS.md', 'utf8');
-const routes = [...router.matchAll(/router\.(get|post|put|patch|delete|options)\('([^']+)'/g)]
-  .map((m) => `${m[1].toUpperCase()} ${m[2]}`);
+const routes = [...router.matchAll(/router\.(get|post|put|patch|delete|options|all)\('([^']+)'/g)]
+  .map((m) => `${m[1].toUpperCase()} ${m[2]}`)
+  .filter((route) => !route.includes('OPTIONS') && !route.endsWith('/*'));
 console.log(routes.filter((route) => !docs.includes(route.split(' ')[1])).join('\n'));
 '@ | node
 ```
@@ -154,11 +159,11 @@ Generated from `endpoint-index.ts`, `proxy-enhanced.ts`, and `backend/src/api/ro
 
 | Surface | Source | Endpoint Count | Param Count | Notes |
 |---------|--------|----------------|-------------|-------|
-| Backend router | `backend/src/api/router.ts` | 104 API-visible, 106 total registrations | 33 path-param occurrences | Query/body params are route-handler specific and not fully centralized in the router. |
+| Backend router | `backend/src/api/router.ts` | 201 API-visible excluding preflight/static, 203 total registrations | 48 path-param occurrences | Query/body params are route-handler specific and not fully centralized in the router. |
 | Proxy catalog | `endpoint-index.ts` `PROXY` | 19 | 46 explicit params | Local proxy, analytics, risk, line-rule, and report-config routes. |
-| Buckeye catalog | `endpoint-index.ts` `BUCKEYE` | 49 | 209 explicit params | Source of truth for upstream Buckeye form params. |
-| Catalog total | `endpoint-index.ts` | 68 | 255 explicit params | This is the main documented endpoint inventory. |
-| Enhanced aliases | `proxy-enhanced.ts` `PROXY_ALIAS_PARAMS` | 9 aliases | 73 alias params | Convenience wrappers that add `token`, `cf_clearance`, and operator-friendly request bodies. |
+| Buckeye catalog | `endpoint-index.ts` `BUCKEYE` | 64 | 277 explicit params | Source of truth for upstream Buckeye form params; includes May 11 manager.js discoveries and proxy deep-scan additions. |
+| Catalog total | `endpoint-index.ts` | 83 | 323 explicit params | This is the main documented endpoint inventory. |
+| Enhanced aliases | `proxy-enhanced.ts` `PROXY_ALIAS_PARAMS` | 14 aliases | 104 alias params | Convenience wrappers that add `token`, `cf_clearance`, and operator-friendly request bodies. |
 
 #### Common Buckeye 4-Param Shape
 
@@ -202,6 +207,21 @@ These are the Buckeye endpoints that do not use the exact common 4-param body.
 | `Manager/updateReportConfigPending` | 14 | `operation`, `agentID`, `agent`, `customerID`, `password`, `name`, `timeAccepted`, `timeScheduled`, `type`, `print`, `delete`, `custTotal`, `agentOwner`, `agentSite` |
 | `Manager/getWebLog` | 8 | `operation`, `agentID`, `customerID`, `start`, `end`, `type`, `actions`, `RRO` |
 | `Manager/getWeeklyFigureByAgentLite` | 6 | `operation`, `agentID`, `agentOwner`, `agentSite`, `startDate`, `endDate` |
+| `Manager/getAddedInfo` | 3 | `operation`, `customerID`, `RRO` |
+| `Manager/getCommunicationMessages` | 4 | `operation`, `customerID`, `pass`, `RRO` |
+| `Manager/getLineTypes` | 6 | `operation`, `agentID`, `agentOwner`, `agentSite`, `sportType`, `RRO` |
+| `Manager/searchCustomerAdmin` | 4 | `operation`, `agentID`, `filter`, `RRO` |
+| `Manager/saveNotifyAgent` | 5 | `operation`, `telegramID`, `email`, `minimum`, `customerID` |
+| `Manager/updateBasicSettings` | 6 | `operation`, `language`, `timezone`, `menu`, `notifyFlag`, `agentID` |
+| `Manager/updateDistribution` | 4 | `operation`, `agentID`, `distribution`, `login` |
+| `Manager/changePassword` | 3 | `operation`, `customerID`, `pass` |
+| `Manager/mailAgentUpdate` | 3 | `operation`, `msgID`, `from` |
+| `Manager/sendFeedback` | 4 | `operation`, `acc`, `message`, `subject` |
+| `Manager/getMasterSheet` | 4 | `operation`, `agentID`, `date`, `RRO` |
+| `Manager/getPlayerDetails` | 5 | `operation`, `agentID`, `playerID`, `agentOwner`, `agentSite` |
+| `Manager/getPlayerLimits` | 5 | `operation`, `agentID`, `playerID`, `agentOwner`, `agentSite` |
+| `Manager/setPlayerLimits` | 6 | `operation`, `agentID`, `playerID`, `limits`, `agentOwner`, `agentSite` |
+| `Manager/updatePlayerStatus` | 6 | `operation`, `agentID`, `playerID`, `status`, `agentOwner`, `agentSite` |
 
 #### Pending Report Select Mappings
 
@@ -271,6 +291,11 @@ Aliases are curl-friendly wrappers implemented by `proxy-enhanced.ts` on `3001`.
 | `gameVolume` | `token`, `cf_clearance`, `gameId` | `agentID`, `customerID`, `sport`, `league`, `GameID` | 8 |
 | `pendingReportConfig` | `token`, `cf_clearance`, `agentID` | `agentOwner`, `agentSite`, `__cf_bm` | 6 |
 | `updatePendingReportConfig` | `token`, `cf_clearance`, `agentID` | `agent`, `customerID`, `password`, `name`, `timeAccepted`, `timeScheduled`, `type`, `print`, `delete`, `custTotal`, `agentOwner`, `agentSite`, `__cf_bm` | 16 |
+| `playerDetails` | `token`, `cf_clearance`, `playerID` | `agentID`, `agentOwner`, `agentSite` | 6 |
+| `playerLimits` | `token`, `cf_clearance`, `playerID` | `agentID`, `agentOwner`, `agentSite` | 6 |
+| `searchCustomer` | `token`, `cf_clearance`, `agentID`, `filter` | `agentOwner`, `agentSite` | 6 |
+| `notifySettings` | `token`, `cf_clearance`, `customerID` | `telegramID`, `email`, `minimum` | 6 |
+| `playerStatus` | `token`, `cf_clearance`, `playerID`, `status` | `agentID`, `agentOwner`, `agentSite` | 7 |
 
 Routes that are registered and should remain visible in this document, even when their full response examples live in deeper docs:
 
@@ -303,6 +328,27 @@ Routes that are registered and should remain visible in this document, even when
 | Backend proxy compatibility | POST | `/api/proxy/Manager/:operation` | `handleProxyCompatibleRoute` | operation-specific form body | Buckeye manager operation result | Covers operations listed in `/api/proxy/endpoints`. |
 | Backend proxy compatibility | POST | `/api/proxy/System/:operation` | `handleProxyCompatibleRoute` | operation-specific form body | Buckeye system operation result | Primarily `renewToken`. |
 | Backend proxy compatibility | POST | `/api/proxy/Log/:operation` | `handleProxyCompatibleRoute` | log payload | Buckeye log operation result | Primarily activity/log writes. |
+| Telegram | GET | `/api/telegram/topics` | `registerTelegramTopicsRoutes` | `purpose=agent|system|all` | Topic list, count, applied filter | Merges `agent_supergroup_topics` with legacy `telegram_topics` for backward compatibility. |
+| Telegram | GET | `/api/telegram/channels` | `registerTelegramChannelsRoutes` | none | Channel list and count | Reads `telegram_channels`, ordered by channel name. |
+| Telegram | GET/POST | `/api/telegram/topics/:topicId/messages` | `registerTelegramTopicMessagesRoutes` | GET `limit`; POST `{ "text": "...", "parse_mode": "Markdown", "pin": false }` | Local message history or sent message id | POST sends to Telegram when `TELEGRAM_BOT_TOKEN` or keychain token is configured, then stores audit history. |
+| Telegram | POST | `/api/telegram/topics/:topicId/messages/:messageId/pin` | `registerTelegramTopicMessagesRoutes` | path ids | `{ "pinned": true }` | Pins remotely when a Telegram message id exists and always updates local `telegram_messages`. |
+| Risk alerts | POST | `/api/risk-alerts/dispatch` | `registerRiskAlertCommandRoutes` | `customer_id`, `risk_level`, `confidence`, `summary`, `suggested_action` | `{ sent, failed }` | Publishes SSE alert, fans out matching webhooks, and best-effort routes to the agent Telegram `alerts` topic. |
+| Risk alerts | POST | `/api/risk-alerts/test` | `registerRiskAlertCommandRoutes` | `{ "webhook_id": 1 }` | Webhook test result | Uses the same Discord/Slack/Telegram/generic payload formatter as live alerts. |
+| Risk alerts | GET | `/api/risk-alerts/log` | `registerRiskAlertCommandRoutes` | `customer_id`, `webhook_id`, `limit` | Alert delivery rows | Reads `risk_alert_log`; separate from generic webhook delivery history. |
+| Command Center | GET | `/api/command-center/map` | `registerCommandCenterRoutes` | none | Public endpoint/param/SSE mapping | Source is `COMMAND_CENTER_MAP`; use this for frontend capability discovery. |
+| Command Center | GET | `/api/command-center/status` | `registerCommandCenterRoutes` | none | Runtime command center health | Includes scheduler and data freshness evidence. |
+| Streams | GET | `/api/stream/live-wagers`, `/api/stream/wagers`, `/api/stream/positions`, `/api/stream/all`, `/api/stream/topic/:topic`, `/api/stream/stats` | `registerStreamRoutes` | bearer token or `token` query where required | SSE stream or stats | Topics are `wagers`, `alerts`, `positions`, and bridge topics from `COMMAND_CENTER_MAP.sse.topics`. |
+| Enforcement | GET/POST | `/api/enforcement/*` | `registerCommandCenterRoutes` | route-specific | Breach checks, queue, apply/view/escalate actions | Queue mutation routes are JWT/admin guarded depending on environment/config. |
+
+Grouped registrations that intentionally share route handlers:
+
+| Area | Exact Registered Routes |
+|------|-------------------------|
+| Agent IP/rules | `DELETE /api/agent/rules/:id` |
+| Sandbox | `GET /api/sandbox/list`, `GET /api/sandbox/load`, `POST /api/sandbox/save`, `POST /api/sandbox/delete`, `POST /api/sandbox/archive`, `POST /api/sandbox/restore`, `POST /api/sandbox/hard-delete`, `DELETE /api/sandbox/scenarios/:id`, `POST /api/sandbox/generate-summaries`, `GET /api/sandbox/queue-status`, `POST /api/sandbox/customer-summary`, `GET /api/sandbox/ab-tests`, `POST /api/sandbox/ab-test`, `GET /api/sandbox/ab-test/:id`, `GET /api/sandbox/export/csv`, `GET /api/sandbox/export/features`, `GET /api/sandbox/stats`, `GET /api/sandbox/health` |
+| Positions | `GET /api/positions/latest`, `GET /api/positions/stats`, `GET /api/positions/:id` |
+| Dashboard | `GET /api/dashboard/summary`, `GET /api/dashboard/exposure`, `GET /api/dashboard/sharp-alerts`, `GET /api/dashboard/pending`, `GET /api/dashboard/positions-pending`, `GET /api/dashboard/buckets`, `GET /api/dashboard/pnl` |
+| Enforcement | `GET /api/enforcement/breaches`, `POST /api/enforcement/check`, `POST /api/enforcement/run`, `GET /api/enforcement/queue`, `POST /api/enforcement/queue`, `POST /api/enforcement/mark-viewed`, `POST /api/enforcement/mark-applied`, `POST /api/enforcement/escalate` |
 
 Do not confuse these backend compatibility routes with the enhanced proxy aliases. For example, `GET /api/agents/downline?live=true` is the public `3000` route for live downline data; `/api/proxy/agentDownline` is a `3001` diagnostic alias.
 
@@ -672,6 +718,98 @@ Parses archived local seed files (`docs/archive/legacy/agentobject.md` and `docs
 }
 ```
 
+### `GET /api/hierarchy/stats`
+
+Dashboard KPIs for the P2 Hierarchy tab. Reads `agent_hierarchy`, `agent_closure`, and product rate columns.
+
+**Response 200:**
+```json
+{
+  "total_agents": 2288,
+  "hubs": 96,
+  "risk_agents": 14,
+  "zero_rate_agents": 2100,
+  "last_imported": "2026-05-11T14:10:00.000Z"
+}
+```
+
+### `GET /api/hierarchy/search?q=NOLA`
+
+Debounced dashboard search. Returns compact rows with agent identity, hierarchy level, commission rate, risk score, and parent hub label.
+
+### `GET /api/hierarchy/hubs`
+
+Returns hub rows for the dashboard table:
+
+```json
+{
+  "hubs": [
+    {
+      "hub_id": "BILLY667",
+      "hub_name": "BILLY667",
+      "agent_count": 240,
+      "level": 1,
+      "risk_agent_count": 3,
+      "commission_tier": "standard"
+    }
+  ]
+}
+```
+
+### `GET /api/hierarchy/hub?id=BILLY667&maxLevel=3`
+
+Loads a single hub drawer/modal. Uses `agent_closure` for subtree depth and returns agents up to `maxLevel` (`1` to `17`, default `3`).
+
+### `GET /api/hierarchy/risk?threshold=0.5`
+
+Risk-flagged hierarchy rows for the collapsible dashboard panel. The local risk score is heuristic and derived from test/sandbox labels, zero-rate accounts, empty hubs, and deep hierarchy levels until live risk features are available.
+
+### `GET /api/hierarchy/tests`
+
+Returns agents whose login/display name indicates test, sandbox, or demo use.
+
+### `GET /api/hierarchy/zero-commission`
+
+Returns agents where every tracked Buckeye product rate is zero.
+
+### `POST /api/hierarchy/import`
+
+Manual Buckeye hierarchy refresh for the dashboard. Requires `ADMIN_API_TOKEN` only when configured. Records an `agent_flat_refresh` row in `background_jobs` and emits WebSocket `sync_status` / `sync_error` messages on the `agent-updates` channel payload.
+
+**Response 200:**
+```json
+{
+  "success": true,
+  "total_imported": 2288,
+  "clusters_found": 25,
+  "players": 56494,
+  "linked_players": 56494,
+  "errors": [],
+  "job_id": 102,
+  "source": "manual_import"
+}
+```
+
+### `GET /api/hierarchy/sync-status`
+
+Returns persisted sync configuration plus the latest `background_jobs` heartbeat and recent failures.
+
+### `PUT /api/hierarchy/sync-config`
+
+Update persisted background refresh settings.
+
+**Request:**
+```json
+{
+  "enabled": true,
+  "interval_minutes": 30
+}
+```
+
+### `POST /api/proxy/downline`
+
+Legacy proxy-compatible refresh trigger. It now records the same `background_jobs` heartbeat as `/api/hierarchy/import` and uses source `proxy_downline`.
+
 ---
 
 ## 4. Players
@@ -811,6 +949,60 @@ bun run integrity:check
 ```
 
 The check reconciles `wagers` against `wager_archive`, verifies the legacy `wager_type IN (...)` constraint is gone, checks blank wager identities, checks orphan `player_agent_map` rows, and validates the expected seeded hierarchy shape (`3` roots, `2288` agents, max level `17`). It flags anomalies such as zero-amount wagers or newly observed wager type codes without deleting data.
+
+### Agent/Player Export Ingest
+
+The canonical offline ingest path is relational SQLite first, then optional AI exports. The backend already uses this layout:
+
+| Purpose | Tables |
+|---------|--------|
+| Raw normalized compatibility rows | `agents`, `players` |
+| API-facing hierarchy and player map | `agent_hierarchy`, `player_agent_map` |
+| Fast subtree lookups | `agent_closure` |
+| Watermarks/metadata | `ingestion_checkpoints` |
+
+Run the importer from the repo root:
+
+```bash
+bun run backfill:hierarchy -- --agents docs/agentobject.md --players path/to/customerpreview.txt
+```
+
+If paths are omitted, it checks `BUCKEYE_AGENT_EXPORT_PATH`, `BUCKEYE_PLAYER_EXPORT_PATH`, `docs/agentobject.md`, and `docs/agentslistharz.md`. The parser accepts raw JSON files and pasted/export files with text before the JSON payload. It strips player passwords from stored `raw_json`, infers parent links from `SeqNumber`/`Level` when `ParentAgentID` is missing, fills `ChildCount`/`PlayerCount`, syncs `agent_hierarchy` and `player_agent_map`, and rebuilds `agent_closure`.
+
+Expected post-ingest shape for the current Buckeye exports:
+
+| Check | Expected |
+|-------|----------|
+| Agents | about `2288` |
+| Players | about `56000` |
+| Roots | `3` |
+| Max hierarchy level | `17` |
+| Player map orphans | `0` |
+
+Verify after ingest:
+
+```bash
+bun run integrity:check
+```
+
+### AI/ML Enriched Wager Export
+
+Use the SQLite tables as the online serving store and export enriched wager datasets for offline training:
+
+```bash
+python scripts/export-enriched-wagers.py --db backend/data/terminal.db --out data/ai/enriched_wagers.csv
+python scripts/export-enriched-wagers.py --db backend/data/terminal.db --out data/ai/enriched_wagers.jsonl --format jsonl
+python scripts/export-enriched-wagers.py --db backend/data/terminal.db --out data/ai/enriched_wagers.parquet --format parquet
+```
+
+The exporter joins `wager_archive` to `players` and `agent_hierarchy`, adding fields such as `agent_level`, `agent_type`, `parent_agent_id`, player exposure fields, every product rate column, and boolean rate flags such as `has_live_betting_rate` and `has_prop_builder_rate`. Parquet output requires `pandas` plus a Parquet engine such as `pyarrow` or `fastparquet`; CSV and JSONL use only Python's standard library.
+
+Optional filters:
+
+```bash
+python scripts/export-enriched-wagers.py --db backend/data/terminal.db --out data/ai/bello3.csv --agent-login BELLO3 --since "2026-05-08" --until "2026-05-09"
+python scripts/export-enriched-wagers.py --db backend/data/terminal.db --out data/ai/player_sample.jsonl --format jsonl --customer-id EMSM49 --limit 100
+```
 
 ---
 
@@ -993,6 +1185,7 @@ Frontend applications should not call these routes directly. If a feature needs 
 | `/openapi.json` | GET | none | endpoint catalog | none | OpenAPI document generated from proxy metadata |
 | `/dashboard` | GET | none | static proxy dashboard | none | Minimal ticker/metrics dashboard |
 | `/ws` | WebSocket | Buckeye token/cookie in subscribe payload | `Manager/getBetTicker` | WS feature flags | Subscribe to live ticker events with `{ "type": "subscribe", "customerID", "token", "cf_clearance" }` |
+| `/api/live/ticker?customerID=...` | GET | API key when configured + stored proxy token | `Manager/getBetTicker` | 5s memory cache | Live ticker response parsed with `Bun.readableStreamToJSON`, normalized to wagers, timed with `Bun.nanoseconds`, and broadcast as `live_ticker` on proxy WebSocket fanout |
 | `/api/proxy/auth` | POST | Cloudflare cookie | `System/authenticateCustomer` | no cache | Authenticate against Buckeye and persist an auth-code/token row |
 | `/api/proxy/:endpoint` | POST | API key when configured + Buckeye token/cookie or stored customer token | any `ENDPOINT_MAP` path or explicit Buckeye path | endpoint TTL, SWR, retry, idempotency | Generic proxy with optional cache, stream mode, retry, idempotency, and rate limiting |
 | `/api/proxy/{endpointKey}` | POST | same as generic proxy | `ENDPOINT_MAP[endpointKey]` | endpoint TTL | Friendly-key variant of the generic proxy route |
@@ -1216,7 +1409,169 @@ Delivery log for a webhook.
 
 ---
 
-## 10. Audit & Analytics
+## 10. Telegram Topics & Notification Mapping
+
+Telegram has two related surfaces:
+
+1. Sports Terminal topic management on backend `3000`.
+2. Buckeye notification-settings discovery through the proxy/Buckeye catalog.
+
+These are separate contracts. Terminal Telegram routes manage supergroups, topics, and local message audit history. Buckeye `getAddedInfo`/`saveNotifyAgent` manage the upstream agent notification ID and minimum notification threshold.
+
+### `GET /api/telegram/topics`
+
+List Telegram topics from the normalized `agent_supergroup_topics` mapping, with legacy `telegram_topics` merged in for backward compatibility.
+
+**Query params:** `purpose=agent|system|all` (default `all`)
+
+**Response shape:**
+```json
+{
+  "topics": [
+    {
+      "id": 1,
+      "agent_login": "BILLY666",
+      "topic_name": "alerts",
+      "purpose": "alerts",
+      "topic_thread_id": 123,
+      "supergroup_chat_id": "-1001234567890",
+      "supergroup_purpose": "agent",
+      "is_managed": 1,
+      "created_at": "2026-05-11 10:00:00"
+    }
+  ],
+  "count": 1,
+  "filter": "all"
+}
+```
+
+### `GET /api/telegram/channels`
+
+List configured Telegram channels from `telegram_channels`.
+
+**Response shape:**
+```json
+{
+  "channels": [
+    {
+      "id": 1,
+      "channel_name": "Risk Alerts",
+      "channel_type": "supergroup",
+      "purpose": "risk_alerts",
+      "is_active": 1,
+      "telegram_chat_id": "-1001234567890"
+    }
+  ],
+  "count": 1
+}
+```
+
+### `GET /api/telegram/topics/:topicId/messages`
+
+Read local audit history for a topic from `telegram_messages`.
+
+**Query params:** `limit` (default `50`, max `100`)
+
+### `POST /api/telegram/topics/:topicId/messages`
+
+Send an operator message to the topic and store a local audit row. If `TELEGRAM_BOT_TOKEN` or the `telegram-bot-token` keychain secret is not configured, the route still stores the local message with `telegram_message_id: null`.
+
+**Request body:**
+```json
+{
+  "text": "Review player WC8036 exposure before next limits update.",
+  "parse_mode": "Markdown",
+  "pin": false
+}
+```
+
+**Response shape:**
+```json
+{
+  "id": 42,
+  "telegram_message_id": 9001,
+  "pinned": false
+}
+```
+
+### `POST /api/telegram/topics/:topicId/messages/:messageId/pin`
+
+Pins the Telegram message remotely when the stored message has a `telegram_message_id`, then marks the local `telegram_messages.is_pinned` flag.
+
+**Response shape:**
+```json
+{ "pinned": true }
+```
+
+### Topic Mapping Tables
+
+| Table | Purpose | Notes |
+|-------|---------|-------|
+| `agent_supergroups` | Maps one Telegram supergroup to an owner agent or system-internal purpose | `purpose='agent'` for agent-facing groups, `purpose='system_internal'` for terminal ops groups. |
+| `agent_supergroup_topics` | Maps supergroup forum topics to terminal purposes | Unique by `(supergroup_id, topic_thread_id)`; indexed by `(supergroup_id, purpose)`. |
+| `telegram_topics` | Legacy topic table | Migrated into `agent_supergroup_topics` idempotently and still merged by the read route. |
+| `telegram_channels` | Channel registry for operator UI | Read by `/api/telegram/channels`. |
+| `telegram_messages` | Local message audit/history | Stores sent text, parse mode, remote Telegram message id, pin state, and sent timestamp. |
+
+### System Topic Secret Mapping
+
+`TelegramTopicService` reads system topic thread ids from OS keychain credentials. These are not returned by API routes unless already represented in DB rows.
+
+| Purpose | Credential |
+|---------|------------|
+| `risk_alerts` | `telegram-topic-risk-alerts` |
+| `webhook_events` | `telegram-topic-webhook-events` |
+| `service_health` | `telegram-topic-service-health` |
+| `domain_dns` | `telegram-topic-domain-dns` |
+| `analytics` | `telegram-topic-analytics` |
+| `bot_miniapp` | `telegram-topic-bot-miniapp` |
+
+Bot credentials:
+
+| Credential / Env | Used By | Notes |
+|------------------|---------|-------|
+| `TELEGRAM_BOT_TOKEN` | `TelegramBotClient` | Preferred env override for local runs. |
+| `telegram-bot-token` | `TelegramBotClient` | OS keychain fallback via `backend/src/services/secrets.ts`. |
+| `telegram-chat-id` | `TelegramTopicService.getSystemChatId()` | System-internal supergroup id for infra/risk messages. |
+
+### Risk Alert Routing
+
+`POST /api/risk-alerts/dispatch` publishes live SSE alert events, dispatches matching webhooks from `alert_webhooks`, and then best-effort routes the same risk event to Telegram:
+
+1. Find the latest `wagers.agent_login` for `customer_id`.
+2. Find `agent_supergroups.owner_agent_login = agent_login` with `purpose='agent'`.
+3. Find the topic with `purpose='alerts'`.
+4. Send a Markdown message to that supergroup `message_thread_id`.
+
+Webhook platform `telegram` is still supported through generic webhook CRUD. That path posts a Telegram-formatted JSON payload to the configured webhook URL. The topic route above is separate and uses the bot token directly.
+
+### Buckeye Notification Settings Mapping
+
+These Buckeye operations were added to `endpoint-index.ts` and `proxy-enhanced.ts` from manager.js reverse engineering and proxy deep scan on May 11, 2026.
+
+| Buckeye Operation | Proxy Alias / Route | Params | Meaning |
+|-------------------|---------------------|--------|---------|
+| `Manager/getAddedInfo` | `POST /api/proxy/notifySettings` when only reading | `operation`, `customerID`, `RRO` plus proxy auth material | Reads upstream Telegram ID and `MaxAmountNotifyTelegram` for an agent/customer. |
+| `Manager/saveNotifyAgent` | `POST /api/proxy/notifySettings` when saving | `operation`, `telegramID`, `email`, `minimum`, `customerID` plus proxy auth material | Saves upstream Telegram notification settings. Error `Type` values: `1` invalid format, `2` minimum length, `3` duplicate, `4` already used. |
+
+The enhanced proxy alias takes:
+
+```json
+{
+  "token": "...",
+  "cf_clearance": "...",
+  "customerID": "BILLY666",
+  "telegramID": "@agent_alerts",
+  "email": "ops@example.com",
+  "minimum": 500
+}
+```
+
+Omit `telegramID`, `email`, and `minimum` for a read-style request. Include them for save/update behavior. Treat returned Telegram IDs and email addresses as sensitive operator notification data.
+
+---
+
+## 11. Audit & Analytics
 
 ### `GET /api/analytics/raw-logs`
 
@@ -1504,7 +1859,7 @@ Deep-dive performance detail for a single agent.
 
 ---
 
-## 11. CSV Exports
+## 12. CSV Exports
 
 All CSV endpoints return `Content-Type: text/csv` with `Content-Disposition: attachment`.
 
@@ -2036,3 +2391,6 @@ Buckeye API Error
 | 2026-05-09 | System | Initial document — all endpoints captured from live server |
 | 2026-05-09 | System | Added Error Handling & Recovery section with real error types, backoff strategy, watermark recovery, and recovery flow diagram |
 | 2026-05-10 | Codex | v3 canonical boundary: `3000` is the public frontend API, `3001` is internal/debug proxy; added authentication, port, WebSocket, rate-limit, proxy-error, and CSV filename guidance. |
+| 2026-05-11 | Codex | Reconciled route counts with current router/catalog sources, added backend live/command-center/stream route families, and documented Telegram topic/message routes plus Buckeye notification-settings mapping. |
+| 2026-05-11 | Codex | Added P2 hierarchy dashboard endpoints, manual import/sync config contracts, and `background_jobs` heartbeat behavior. |
+| 2026-05-11 | Codex | Added `GET /api/live/ticker` contract with 5s proxy cache, Bun stream JSON parsing, nanosecond timing metrics, and live WebSocket broadcast. |

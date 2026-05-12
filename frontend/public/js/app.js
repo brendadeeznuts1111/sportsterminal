@@ -1,4 +1,4 @@
-v/**
+/**
  * Sports Terminal — App Orchestrator
  * Thin entry point that imports feature modules, wires up event handlers,
  * and exports global symbols for inline HTML onclick handlers.
@@ -55,6 +55,7 @@ import {
 } from './modules/player-search.js';
 import './modules/performance-analytics.js';
 import './modules/agent-network.js';
+import './modules/hierarchy-dashboard.js';
 import './modules/api-status.js';
 import './modules/settings-auth.js';
 import './command-center.js';
@@ -62,10 +63,11 @@ import { renderEnforcementQueue, startPolling, stopPolling } from './modules/enf
 
 // ==================== WEBSOCKET CLIENT ====================
 const wsClient = new TerminalWebSocketClient({
-  url: (() => {
+  getDefaultWsUrl: () => {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${proto}//${window.location.host}/ws`;
-  })(),
+    // Connect directly to proxy WebSocket (port 3001), not frontend server (port 3002)
+    return `${proto}//localhost:3001/ws`;
+  },
   reconnectInterval: 5000,
   maxReconnectAttempts: 10,
 });
@@ -327,11 +329,11 @@ function switchSection(section, btn) {
   syncSidebarActiveGroup();
 
   // Hide all sections
-  document.querySelectorAll('.section-panel').forEach(el => el.classList.add('hidden'));
-  document.querySelectorAll('.section-panel').forEach(el => el.classList.remove('flex'));
+  document.querySelectorAll('.section-panel, .section-content').forEach(el => el.classList.add('hidden'));
+  document.querySelectorAll('.section-panel, .section-content').forEach(el => el.classList.remove('flex'));
 
   // Show target section
-  const target = document.getElementById(`section-${section}`);
+  const target = document.getElementById(`section-${section}`) || document.getElementById(`${section}Section`);
   if (target) {
     target.classList.remove('hidden');
     target.classList.add('flex');
@@ -353,6 +355,9 @@ function switchSection(section, btn) {
   }
   if (section === 'agentTree' || section === 'agentNetwork') {
     if (typeof loadAgentNetworkData === 'function') loadAgentNetworkData();
+  }
+  if (section === 'hierarchy') {
+    if (typeof initHierarchyDashboard === 'function') initHierarchyDashboard();
   }
   if (section === 'performance') {
     if (typeof loadPerformanceData === 'function') loadPerformanceData();
@@ -610,6 +615,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  wsClient.on('sync_status', (msg) => {
+    if (typeof handleHierarchySyncMessage === 'function') handleHierarchySyncMessage(msg);
+  });
+
+  wsClient.on('sync_error', (msg) => {
+    if (typeof handleHierarchySyncMessage === 'function') handleHierarchySyncMessage(msg);
+  });
+
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {
     if (e.key === '/' && !['INPUT', 'TEXTAREA'].includes(e.target.tagName)) {
@@ -642,7 +655,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Deep link from URL hash
   const hash = window.location.hash.replace('#', '');
-  if (hash && document.getElementById(`section-${hash}`)) {
+  if (hash && (document.getElementById(`section-${hash}`) || document.getElementById(`${hash}Section`))) {
     switchSection(hash, getSidebarButton(hash));
   } else {
     switchSection('floor', getSidebarButton('floor'));

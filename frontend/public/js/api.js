@@ -18,8 +18,14 @@ export function getApiToken() {
 
 export function getApiHeaders(headers = {}) {
   const token = getApiToken();
+  const apiKey = localStorage.getItem('apiKey')
+    || localStorage.getItem('xApiKey')
+    || localStorage.getItem('integrationApiKey')
+    || localStorage.getItem('ADMIN_API_TOKEN')
+    || '';
   return {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(apiKey ? { 'X-API-Key': apiKey } : {}),
     ...headers,
   };
 }

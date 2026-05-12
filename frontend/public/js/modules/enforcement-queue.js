@@ -4,9 +4,10 @@
  * Traders see pending positions, open Buckeye admin, mark as applied.
  */
 
-import { getApiBaseUrl } from '../api.js';
 import { escapeHtml, money } from '../utils.js';
 import { get } from './state.js';
+
+const PROXY_BASE = localStorage.getItem('proxyBaseUrl') || 'http://localhost:3001';
 
 // ==================== STATE ====================
 let queuePollInterval = null;
@@ -14,7 +15,7 @@ let currentFilter = 'all';
 
 // ==================== API ====================
 async function fetchQueue(status = null, risk_level = null, limit = 50) {
-  const res = await fetch(`${getApiBaseUrl()}/api/enforcement/queue`, {
+  const res = await fetch(`${PROXY_BASE}/api/enforcement/queue`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-API-Key': get('proxyApiKey') || 'dev-key-123' },
     body: JSON.stringify({ status, risk_level, limit }),
@@ -24,7 +25,7 @@ async function fetchQueue(status = null, risk_level = null, limit = 50) {
 }
 
 async function markViewed(queueId, traderName = 'current_user') {
-  const res = await fetch(`${getApiBaseUrl()}/api/enforcement/mark-viewed`, {
+  const res = await fetch(`${PROXY_BASE}/api/enforcement/mark-viewed`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-API-Key': get('proxyApiKey') || 'dev-key-123' },
     body: JSON.stringify({ queue_id: queueId, trader_name: traderName }),
@@ -34,7 +35,7 @@ async function markViewed(queueId, traderName = 'current_user') {
 }
 
 async function markApplied(queueId, traderName = 'current_user') {
-  const res = await fetch(`${getApiBaseUrl()}/api/enforcement/mark-applied`, {
+  const res = await fetch(`${PROXY_BASE}/api/enforcement/mark-applied`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-API-Key': get('proxyApiKey') || 'dev-key-123' },
     body: JSON.stringify({ queue_id: queueId, trader_name: traderName }),
@@ -370,6 +371,3 @@ function injectStyles() {
 if (typeof document !== 'undefined') {
   injectStyles();
 }
-
-// ==================== EXPORTS ====================
-export { loadQueue, startPolling, stopPolling };

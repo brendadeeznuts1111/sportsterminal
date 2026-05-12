@@ -5,6 +5,7 @@
  */
 
 import type { Database } from '../database';
+import { logger } from '../utils/logger';
 
 export const DEFAULT_SENSITIVE_FIELDS = [
   'password',
@@ -114,7 +115,7 @@ export class RawApiLogger {
       }
     } catch (error) {
       // Log errors silently — don't let logging failures break the application
-      console.error('[RawApiLogger] Failed to log raw API response:', error);
+      logger.error('Failed to log raw API response', error);
     }
   }
 
@@ -206,9 +207,9 @@ export class RawApiLogger {
         await this.db.run('ROLLBACK');
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.warn(`[RawApiLogger] Rollback failed: ${msg}`);
+        logger.warn(`Rollback failed: ${msg}`);
       }
-      console.error('[RawApiLogger] Failed to flush raw API logs:', error);
+      logger.error('Failed to flush raw API logs', error);
       // Re-queue failed batch at front for retry
       this.queue.unshift(...batch);
     } finally {

@@ -1,0 +1,46 @@
+{
+  "name": "risk-sharp-detector",
+  "version": "1.0.0",
+  "description": "Detects sharp money using CLV and velocity patterns",
+  "author": "sportsterminal",
+  "category": "risk-rules",
+  "config_file": "config.json",
+  "inject": {
+    "kimi_api_key": "KIMI_API_KEY"
+  },
+  "tools": [
+    {
+      "name": "detect-sharp",
+      "description": "Analyze a player for sharp betting patterns using CLV, velocity, and odds movement",
+      "command": ["bun", "scripts/detect.ts"],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "string",
+            "description": "The player's customer ID"
+          },
+          "lookback_hours": {
+            "type": "integer",
+            "description": "Hours of history to analyze",
+            "default": 24
+          }
+        },
+        "required": ["customer_id"]
+      },
+      "output": {
+        "type": "json",
+        "schema": {
+          "risk_score": "number",
+          "confidence": "number",
+          "factors": "string[]"
+        }
+      }
+    }
+  ],
+  "hooks": {
+    "on_wager": "scripts/on-wager.ts",
+    "on_flag": "scripts/on-flag.ts",
+    "on_cron": { "schedule": "*/15 * * * *", "script": "scripts/cron.ts" }
+  }
+}

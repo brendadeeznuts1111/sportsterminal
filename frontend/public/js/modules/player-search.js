@@ -1461,14 +1461,61 @@ export function renderLivePnlSummary(livePerf) {
     pnl: (Number(row.Won || 0) - Number(row.Lost || 0)) / 100,
   }));
   const total = entries.reduce((sum, row) => sum + row.pnl, 0);
-  const best = entries.reduce((max, row) => Math.max(max, row.pnl), Number.NEGATIVE_INFINITY);
-  const worst = entries.reduce((min, row) => Math.min(min, row.pnl), Number.POSITIVE_INFINITY);
   return `<div class="intel-summary-strip">
     <span>Net <strong class="${total >= 0 ? 'good' : 'danger'}">${formatCompactDollars(total)}</strong></span>
-    <span>Best <strong class="good">${formatCompactDollars(best)}</strong></span>
-    <span>Worst <strong class="danger">${formatCompactDollars(worst)}</strong></span>
-    <span style="color:var(--text-dim);font-size:10px;">${entries.length} days</span>
+    <span>Entries <strong>${entries.length}</strong></span>
   </div>`;
+}
+
+// ==================== STUB TAB RENDERERS ====================
+// These are placeholder implementations for profile tabs that are
+// referenced in renderPlayerProfile() but were not yet defined.
+// They render a simple panel with a message into the correct DOM element.
+
+function renderPlayerProfileStub(profile, panelId, title) {
+  const el = document.getElementById(panelId);
+  if (!el) return;
+  el.innerHTML = `<div class="profile-doc-panel"><h3>${escapeHtml(title)}</h3><p class="text-sm" style="color:var(--text-dim);">This tab is under construction. Data will be available once the backend endpoint is wired.</p></div>`;
+}
+
+export function renderPlayerProfileWagers(profile) {
+  renderPlayerProfileStub(profile, 'playerProfileWagers', 'Wager History');
+}
+
+export function renderPlayerProfileAccess(profile) {
+  renderPlayerProfileStub(profile, 'playerProfileAccess', 'Access Logs');
+}
+
+export function renderPlayerProfilePerformance(profile) {
+  renderPlayerProfileStub(profile, 'playerProfilePerformance', 'Performance');
+}
+
+export function renderPlayerProfileDeposits(profile) {
+  renderPlayerProfileStub(profile, 'playerProfileDeposits', 'Deposits');
+}
+
+export function renderPlayerProfileTransactions(profile) {
+  renderPlayerProfileStub(profile, 'playerProfileTransactions', 'Transactions');
+}
+
+export function renderPlayerProfileAccount(profile) {
+  renderPlayerProfileStub(profile, 'playerProfileAccount', 'Account');
+}
+
+export function renderPlayerProfileLinks(profile) {
+  renderPlayerProfileStub(profile, 'playerProfileLinks', 'Linked Accounts');
+}
+
+export function renderPlayerProfileNotes(profile) {
+  renderPlayerProfileStub(profile, 'playerProfileNotes', 'Notes');
+}
+
+export function renderPlayerProfileStatus(profile) {
+  renderPlayerProfileStub(profile, 'playerProfileStatus', 'Status');
+}
+
+export function renderPlayerProfileDocs(profile) {
+  renderPlayerProfileStub(profile, 'playerProfileDocs', 'Documents');
 }
 
 export function renderClvBySport(profile) {
@@ -1565,6 +1612,26 @@ export function focusPlayerFlagComposer() {
 export function focusPlayerNoteComposer() {
   setPlayerProfileTab('notes');
   setTimeout(() => document.getElementById('playerNoteBody')?.focus(), 0);
+}
+
+// ==================== ADDITIONAL STUBS ====================
+export function renderPlayerMiniPnlChart(weeklyPnl) {
+  // Stub: chart rendering would go here
+  console.log('[PlayerProfile] renderPlayerMiniPnlChart called with', weeklyPnl?.length, 'entries');
+}
+
+export function getActivePlayerProfileId() {
+  return get('playerProfileState').playerId || null;
+}
+
+export function setPlayerTransactionTab(tab) {
+  const playerProfileState = get('playerProfileState');
+  playerProfileState.transactionTab = tab;
+  set('playerProfileState', playerProfileState);
+}
+
+export function checkPlayerMultiAccounts() {
+  console.log('[PlayerProfile] checkPlayerMultiAccounts called');
 }
 
 // ==================== WINDOW EXPORTS ====================

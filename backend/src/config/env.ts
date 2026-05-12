@@ -1,3 +1,5 @@
+import { logger } from '../utils/logger';
+
 export interface AppEnv {
   PORT: number;
   HOST: string;
@@ -28,7 +30,7 @@ export function loadEnv(source: Record<string, string | undefined> = Bun.env): A
       new URL(buckeyeBaseUrl);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      console.warn(`[Env] Invalid BUCKEYE_BASE_URL: ${msg}`);
+      logger.warn(`Invalid BUCKEYE_BASE_URL: ${msg}`);
       throw new Error('BUCKEYE_BASE_URL must be a valid URL', { cause: error });
     }
   }

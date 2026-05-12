@@ -1,0 +1,13 @@
+# bunfig.plugin.toml — Plugin development configuration
+# Usage: bun --config bunfig.plugin.toml run plugins/cli.ts
+
+[console]
+depth = 4
+
+[run]
+preload = ["./scripts/preload.ts"]
+envFile = [".env.shared", ".env.local"]
+smol = true
+
+[install]
+auto = "fallback"

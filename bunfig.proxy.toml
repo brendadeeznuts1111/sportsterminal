@@ -1,0 +1,13 @@
+# bunfig.proxy.toml — Proxy server configuration
+# Usage: bun --config bunfig.proxy.toml run proxy-enhanced.ts
+
+[console]
+depth = 6
+
+[run]
+preload = ["./scripts/preload.ts"]
+envFile = [".env.shared", ".env.local"]
+
+[install]
+# Don't auto-install during proxy runtime — fail fast if dep missing
+auto = "disable"

@@ -3,28 +3,20 @@
  * Color-coded, timestamped structured logger.
  * Keeps backward-compatible function signatures (logInfo, logWarn, etc.)
  * while adding a new `logger` object with .info(), .success(), .warn(), .error(), .debug().
+ * Uses Bun.color() (v1.2+) for ANSI color generation.
  */
 
-const colors = {
-  reset: '\x1b[0m',
-  bright: '\x1b[1m',
-  dim: '\x1b[2m',
-  red: '\x1b[31m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  blue: '\x1b[34m',
-  magenta: '\x1b[35m',
-  cyan: '\x1b[36m',
-  white: '\x1b[37m',
-  gray: '\x1b[90m',
-};
+import { color } from 'bun';
+
+const reset = '\x1b[0m';
+const dim = '\x1b[2m';
 
 function timestamp(): string {
   return new Date().toISOString().replace('T', ' ').split('.')[0];
 }
 
 function formatMessage(level: string, message: string, data?: unknown): string {
-  let out = `${colors.dim}[${timestamp()}]${colors.reset} ${level} ${message}`;
+  let out = `${dim}[${timestamp()}]${reset} ${level} ${message}`;
   if (data !== undefined) {
     if (typeof data === 'object' && data !== null) {
       out += ' ' + Bun.inspect(data, { colors: true });
@@ -39,16 +31,16 @@ function formatMessage(level: string, message: string, data?: unknown): string {
 
 export const logger = {
   info: (msg: string, data?: unknown) =>
-    console.log(formatMessage(`${colors.cyan}INFO ${colors.reset} `, msg, data)),
+    console.log(formatMessage(`${color('cyan', 'ansi')}INFO ${reset} `, msg, data)),
   success: (msg: string, data?: unknown) =>
-    console.log(formatMessage(`${colors.green}SUCCESS${colors.reset}`, msg, data)),
+    console.log(formatMessage(`${color('green', 'ansi')}SUCCESS${reset}`, msg, data)),
   warn: (msg: string, data?: unknown) =>
-    console.warn(formatMessage(`${colors.yellow}WARN ${colors.reset} `, msg, data)),
+    console.warn(formatMessage(`${color('yellow', 'ansi')}WARN ${reset} `, msg, data)),
   error: (msg: string, data?: unknown) =>
-    console.error(formatMessage(`${colors.red}ERROR${colors.reset}`, msg, data)),
+    console.error(formatMessage(`${color('red', 'ansi')}ERROR${reset}`, msg, data)),
   debug: (msg: string, data?: unknown) => {
     if (process.env.DEBUG === 'true')
-      console.log(formatMessage(`${colors.gray}DEBUG${colors.reset}`, msg, data));
+      console.log(formatMessage(`${color('gray', 'ansi')}DEBUG${reset}`, msg, data));
   },
 };
 

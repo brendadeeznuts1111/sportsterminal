@@ -404,25 +404,6 @@ export async function ccSendTopicMessage(topicId) {
   }
 }
 
-    if (!channels.length) {
-      renderEmpty('ccTelegramChannels', 'No broadcast channels registered');
-    } else {
-      setHtml('ccTelegramChannels', channels.map((c) => `
-        <div class="flex items-center gap-2 rounded p-2 mb-1" style="background:var(--bg);border:1px solid var(--border);">
-          <span class="px-1.5 py-0.5 rounded font-mono text-xs" style="background:var(--purple)22;color:var(--purple);border:1px solid var(--purple)55;">${escapeHtml(c.channel_type || 'broadcast')}</span>
-          <span class="font-mono text-xs" style="color:var(--text);">${escapeHtml(c.channel_name)}</span>
-          <span class="text-xs" style="color:var(--text-dim);">${escapeHtml(c.purpose || '')}</span>
-          <span class="ml-auto text-xs" style="color:${c.is_active ? 'var(--green)' : 'var(--text-dim)'};">${c.is_active ? 'Active' : 'Inactive'}</span>
-          ${c.telegram_chat_id ? `<span class="text-xs font-mono" style="color:var(--text-dim);">${escapeHtml(c.telegram_chat_id)}</span>` : ''}
-        </div>
-      `).join(''));
-    }
-  } catch (error) {
-    renderEmpty('ccTelegramTopics', `Telegram unavailable: ${error.message}`);
-    renderEmpty('ccTelegramChannels', `Channels unavailable: ${error.message}`);
-  }
-}
-
 async function renderWebhookHealth() {
   try {
     const rows = await fetchJson('/api/risk/webhooks/health');
@@ -579,6 +560,16 @@ export function ccRefreshViolations() {
 
 export function ccRefreshWebhookHealth() {
   renderWebhookHealth();
+}
+
+export function ccRefreshTelegram() {
+  // Stub: Telegram refresh not yet implemented
+  console.log('[CommandCenter] ccRefreshTelegram called');
+}
+
+export function ccRefreshWriteLog() {
+  // Stub: Write log refresh not yet implemented
+  console.log('[CommandCenter] ccRefreshWriteLog called');
 }
 
 export function ccSetEnforcementFilter(filter) {

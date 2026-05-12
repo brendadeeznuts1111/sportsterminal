@@ -977,6 +977,8 @@ Local read-only audit:
 | Command | Meaning |
 |---------|---------|
 | `bun run integrity:check` | Reconciles `wagers` and `wager_archive`, checks for legacy wager-type constraints, blank wager identities, orphan `player_agent_map` rows, expected hierarchy shape, zero-amount wager anomalies, and newly observed wager type codes. |
+| `bun run backfill:hierarchy -- --agents <file> --players <file>` | Parses local Buckeye agent/player exports, upserts `agents` and `players`, syncs `agent_hierarchy` and `player_agent_map`, and rebuilds `agent_closure`. |
+| `python scripts/export-enriched-wagers.py --db backend/data/terminal.db --out data/ai/enriched_wagers.csv` | Exports `wager_archive` joined to player and agent hierarchy context for AI/ML feature engineering; supports `csv`, `jsonl`, and `parquet` when a Parquet engine is installed. |
 
 Buckeye:
 

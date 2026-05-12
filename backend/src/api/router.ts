@@ -590,6 +590,12 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
     return Response.json(await client.pending(date, agentID));
   });
 
+  router.get('/api/live/ticker', async (url, _request) => {
+    const agentID = String(url.searchParams.get('customerID') || url.searchParams.get('agentID') || url.searchParams.get('agentId') || '');
+    const client = new ProxyClient(deps.scraperManager);
+    return Response.json(await client.liveTicker(agentID));
+  });
+
   router.post('/api/live/betTicker', async (url, request) => {
     const body = await request.json() as Record<string, unknown>;
     const agentID = String(body.agentID || body.agentId || url.searchParams.get('agentID') || '');

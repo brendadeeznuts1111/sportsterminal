@@ -4,49 +4,50 @@
  * Replaces Puppeteer-based scraper management.
  */
 
-import type { Database } from '../database';
-import {
-  BuckeyeAPI,
-  BuckeyeCredentials,
-  type BuckeyeAgentPerformanceOptions,
-  type BuckeyeAgentPerformanceResult,
-  type BuckeyeAccountInfoResult,
-  type BuckeyeAgentHierarchy,
-  type BuckeyeCustomerSnapshot,
-  type BuckeyeCustomerSnapshotResult,
-  type BuckeyeDepositRow,
-  type BuckeyeManagerSnapshotResult,
-  type BuckeyeTransactionListResult,
-  type BuckeyeTransactionRow,
-  type BuckeyePlayersList,
-  type BuckeyeWeeklyFigureOptions,
-  type BuckeyeWeeklyFigureResult,
-  type BuckeyeWebLogOptions,
-  type BuckeyeWebLogRow,
-  type BuckeyeUiConfigResult,
-} from './BuckeyeAPI';
-import { LiveAgentTree } from './LiveAgentTree';
-import { evaluateWager, Alert, type EnrichedWager } from '../risk/AlertEngine';
-import { WebhookService } from '../services/WebhookService';
-import { PatternService } from '../patterns/PatternService';
 import { ActionQueue, type ActionResult } from '../actions/ActionQueue';
-import { backfillAgentsAndPlayers, upsertLiveAgentHierarchy } from '../services/HierarchyBackfillService';
 import { clearAgentHierarchyTreeCache } from '../api/routes/agentHierarchyTree';
-import type { BunSecretVault } from '../services/BunSecretVault';
-import { PerformanceCache } from '../services/PerformanceCache';
-import { decodeEntities } from '../utils/decodeEntities';
-import { RawApiLogger } from '../services/RawApiLogger';
-import { extractBuckeyeCookies, type EnhancedProxyCredentials } from '../services/ProxyClient';
-import { createManagedInterval, type ManagedIntervalTask } from '../services/Scheduler';
-import { enrichIpGeo } from '../services/GeoIpService';
-import { IPTracker } from '../services/IPTracker';
-import { computeCLV, refreshRecentClosingLines } from '../services/CLV';
-import { evaluateRules, takeAction } from '../services/RulesEngine';
+import type { Database } from '../database';
+import { PatternService } from '../patterns/PatternService';
 import {
   getPlayer360SourcePolicy,
   nextRefreshAt,
   shouldRefreshPlayer360Source,
 } from '../player360/policies';
+import { Alert, evaluateWager, type EnrichedWager } from '../risk/AlertEngine';
+import type { BunSecretVault } from '../services/BunSecretVault';
+import { computeCLV, refreshRecentClosingLines } from '../services/CLV';
+import { enrichIpGeo } from '../services/GeoIpService';
+import { backfillAgentsAndPlayers, upsertLiveAgentHierarchy } from '../services/HierarchyBackfillService';
+import { IPTracker } from '../services/IPTracker';
+import { PerformanceCache } from '../services/PerformanceCache';
+import { extractBuckeyeCookies, type EnhancedProxyCredentials } from '../services/ProxyClient';
+import { RawApiLogger } from '../services/RawApiLogger';
+import { evaluateRules, takeAction } from '../services/RulesEngine';
+import { createManagedInterval, type ManagedIntervalTask } from '../services/Scheduler';
+import { WebhookService } from '../services/WebhookService';
+import { decodeEntities } from '../utils/decodeEntities';
+import { logger } from '../utils/logger';
+import {
+  BuckeyeAPI,
+  BuckeyeCredentials,
+  type BuckeyeAccountInfoResult,
+  type BuckeyeAgentHierarchy,
+  type BuckeyeAgentPerformanceOptions,
+  type BuckeyeAgentPerformanceResult,
+  type BuckeyeCustomerSnapshot,
+  type BuckeyeCustomerSnapshotResult,
+  type BuckeyeDepositRow,
+  type BuckeyeManagerSnapshotResult,
+  type BuckeyePlayersList,
+  type BuckeyeTransactionListResult,
+  type BuckeyeTransactionRow,
+  type BuckeyeUiConfigResult,
+  type BuckeyeWebLogOptions,
+  type BuckeyeWebLogRow,
+  type BuckeyeWeeklyFigureOptions,
+  type BuckeyeWeeklyFigureResult,
+} from './BuckeyeAPI';
+import { LiveAgentTree } from './LiveAgentTree';
 
 interface AgentInstance {
   api: BuckeyeAPI;
@@ -98,7 +99,14 @@ const WAGER_LIST_COLUMNS = `
   parsed_side,
   parsed_price,
   parsed_period,
-  matched_event_id
+  matched_event_id,
+  agent_level,
+  agent_type,
+  parent_agent_id,
+  mapped_agent_id,
+  mapped_agent_login,
+  agent_path_json,
+  hierarchy_source
 `;
 
 interface CountRow {
@@ -107,6 +115,23 @@ interface CountRow {
 
 interface TotalRow {
   total: number | null;
+}
+
+interface HierarchySyncConfigRow {
+  enabled: number;
+  interval_minutes: number;
+  updated_at?: string;
+}
+
+interface HierarchyImportResult {
+  success: boolean;
+  total_imported: number;
+  clusters_found: number;
+  players: number;
+  linked_players: number;
+  errors: string[];
+  job_id: number;
+  source: string;
 }
 
 interface PersistedAgentHierarchyRow {
@@ -203,6 +228,16 @@ interface PlayerProfileRow extends SqlRow {
   total_volume?: number;
 }
 
+interface WagerHierarchyContext {
+  agentLevel: number | null;
+  agentType: string | null;
+  parentAgentId: string | null;
+  mappedAgentId: string | null;
+  mappedAgentLogin: string | null;
+  agentPathJson: string;
+  hierarchySource: string;
+}
+
 interface PlayerDetailsResult {
   playerId: string;
   profile: PlayerProfileRow;
@@ -252,6 +287,11 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function stringOrNull(value: unknown): string | null {
+  const text = String(value || '').trim();
+  return text || null;
+}
+
 function emptyBuckeyeData(): LooseBuckeyeData {
   return { GENERAL: [] };
 }
@@ -269,6 +309,11 @@ function readPositiveIntEnv(name: string, fallback: number): number {
   if (!raw) return fallback;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function numberOrNull(value: unknown): number | null {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
 }
 
 function transactionRowToDeposit(row: BuckeyeTransactionRow): BuckeyeDepositRow {
@@ -323,8 +368,11 @@ export class BuckeyeScraperManager {
   private performanceCache?: PerformanceCache;
   private rawApiLogger: RawApiLogger;
   private hierarchyRefreshTask?: ManagedIntervalTask;
+  private staticHierarchyRefreshTask?: ManagedIntervalTask;
   private closingLineTask?: ManagedIntervalTask;
-  private readonly hierarchyRefreshIntervalMs: number;
+  private hierarchyRefreshIntervalMs: number;
+  private hierarchySyncEnabled: boolean = true;
+  private readonly staticHierarchyRefreshIntervalMs: number;
   private readonly closingLineIntervalMs: number;
 
   private debugMode: boolean;
@@ -349,11 +397,13 @@ export class BuckeyeScraperManager {
     this.player360MaxPlayersPerPoll = readPositiveIntEnv('PLAYER360_MAX_PLAYERS_PER_POLL', this.player360MaxPlayersPerPoll);
     this.player360ColdBackfillPerPoll = readPositiveIntEnv('PLAYER360_COLD_BACKFILL_PER_POLL', this.player360ColdBackfillPerPoll);
     this.customerSnapshotTtlMs = readPositiveIntEnv('CUSTOMER_SNAPSHOT_TTL_MS', this.customerSnapshotTtlMs);
-    this.hierarchyRefreshIntervalMs = readPositiveIntEnv('HIERARCHY_REFRESH_INTERVAL_MS', 5 * 60 * 1000);
+    this.hierarchyRefreshIntervalMs = readPositiveIntEnv('HIERARCHY_REFRESH_INTERVAL_MS', 30 * 60 * 1000);
+    this.staticHierarchyRefreshIntervalMs = readPositiveIntEnv('STATIC_HIERARCHY_REFRESH_INTERVAL_MS', 7 * 24 * 60 * 60 * 1000);
     this.closingLineIntervalMs = readPositiveIntEnv('CLOSING_LINE_INTERVAL_MS', 60 * 60 * 1000);
     this.webhookService = new WebhookService(db);
     this.patternService = new PatternService(db, broadcast);
     this.rawApiLogger = new RawApiLogger(db, true);
+    void this.initializeHierarchySyncConfig();
     this.actionQueue = new ActionQueue(db, broadcast, 30_000, async (request) => this.executeBetAction(request));
     this.closingLineTask = createManagedInterval(
       'closing-lines.refresh',
@@ -361,9 +411,68 @@ export class BuckeyeScraperManager {
       () => this.refreshClosingLines(),
       {
         initialDelayMs: this.closingLineIntervalMs,
-        onError: (error) => console.warn('[CLV] Closing-line refresh failed:', error instanceof Error ? error.message : error),
+        onError: (error) => logger.warn('CLV closing-line refresh failed', error instanceof Error ? error.message : error),
       }
     );
+    if (this.staticHierarchyRefreshIntervalMs > 0) {
+      this.staticHierarchyRefreshTask = createManagedInterval(
+        'buckeye.hierarchy.staticSeed',
+        this.staticHierarchyRefreshIntervalMs,
+        () => this.refreshStaticHierarchySeed(),
+        {
+          initialDelayMs: this.staticHierarchyRefreshIntervalMs,
+          onError: (error) => logger.warn('Static hierarchy seed refresh failed', error instanceof Error ? error.message : error),
+        }
+      );
+    }
+  }
+
+  private async initializeHierarchySyncConfig(): Promise<void> {
+    await this.ensureHierarchySyncTables();
+    const config = await this.readHierarchySyncConfig();
+    this.hierarchySyncEnabled = config.enabled;
+    this.hierarchyRefreshIntervalMs = config.intervalMinutes * 60 * 1000;
+  }
+
+  private async ensureHierarchySyncTables(): Promise<void> {
+    this.db.run(`CREATE TABLE IF NOT EXISTS background_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_name TEXT NOT NULL,
+        status TEXT CHECK(status IN ('running','completed','failed')) NOT NULL,
+        started_at TEXT,
+        finished_at TEXT,
+        error TEXT,
+        details TEXT
+      )`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_background_jobs_name_started
+        ON background_jobs(job_name, started_at DESC)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_background_jobs_status_started
+        ON background_jobs(status, started_at DESC)`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS hierarchy_sync_config (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        enabled INTEGER NOT NULL DEFAULT 1,
+        interval_minutes INTEGER NOT NULL DEFAULT 30,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`);
+    this.db.run(
+      `INSERT OR IGNORE INTO hierarchy_sync_config (id, enabled, interval_minutes)
+       VALUES (1, 1, 30)`
+    );
+  }
+
+  private async readHierarchySyncConfig(): Promise<{ enabled: boolean; intervalMinutes: number; updatedAt: string | null }> {
+    await this.ensureHierarchySyncTables();
+    const row = await this.db.get<HierarchySyncConfigRow>(
+      `SELECT enabled, interval_minutes, updated_at
+       FROM hierarchy_sync_config
+       WHERE id = 1`
+    );
+    const intervalMinutes = Math.min(Math.max(Number(row?.interval_minutes || 30), 1), 1440);
+    return {
+      enabled: Number(row?.enabled ?? 1) === 1,
+      intervalMinutes,
+      updatedAt: row?.updated_at || null,
+    };
   }
 
   /**
@@ -371,7 +480,7 @@ export class BuckeyeScraperManager {
    */
   async startAgent(agentId: string, credentials: BuckeyeCredentials): Promise<void> {
     if (this.agents.has(agentId)) {
-      console.log(`[Manager] Agent ${agentId} already active`);
+      logger.info(`Agent ${agentId} already active`);
       return;
     }
 
@@ -385,7 +494,7 @@ export class BuckeyeScraperManager {
         throw new Error(`Login failed for agent ${agentId}`);
       }
     } else {
-      console.log(`[Manager] Using pre-authenticated token for ${agentId}`);
+      logger.info(`Using pre-authenticated token for ${agentId}`);
     }
 
     const instance: AgentInstance = {
@@ -415,7 +524,7 @@ export class BuckeyeScraperManager {
     this.startDailyArchiveRefresh(agentId, instance);
     this.startPlayer360Polling(agentId, instance);
     this.startHierarchyBackgroundRefresh();
-    console.log(`[Manager] Started polling for ${agentId} every ${this.pollIntervalMs}ms`);
+    logger.success(`Started polling for ${agentId} every ${this.pollIntervalMs}ms`);
 
   }
 
@@ -425,7 +534,7 @@ export class BuckeyeScraperManager {
    */
   async resumeAgent(agentId: string, credentials: BuckeyeCredentials, token: string): Promise<boolean> {
     if (this.agents.has(agentId)) {
-      console.log(`[Manager] Agent ${agentId} already active`);
+      logger.info(`Agent ${agentId} already active`);
       return true;
     }
 
@@ -435,7 +544,7 @@ export class BuckeyeScraperManager {
     // Test if token still works
     const accessOk = await api.testAccess();
     if (!accessOk) {
-      console.log(`[Manager] Stored token invalid for ${agentId}, needs re-login`);
+      logger.warn(`Stored token invalid for ${agentId}, needs re-login`);
       return false;
     }
 
@@ -466,7 +575,7 @@ export class BuckeyeScraperManager {
     this.startDailyArchiveRefresh(agentId, instance);
     this.startPlayer360Polling(agentId, instance);
     this.startHierarchyBackgroundRefresh();
-    console.log(`[Manager] Resumed session for ${agentId}`);
+    logger.success(`Resumed session for ${agentId}`);
 
     return true;
   }
@@ -503,7 +612,7 @@ export class BuckeyeScraperManager {
     instance.player360Task?.stop();
     this.actionQueue.clearAgent(agentId);
     this.agents.delete(agentId);
-    console.log(`[Manager] Stopped polling for ${agentId}`);
+    logger.info(`Stopped polling for ${agentId}`);
 
     if (this.agents.size === 0) {
       this.stopHierarchyBackgroundRefresh();
@@ -522,6 +631,10 @@ export class BuckeyeScraperManager {
   }
 
   private startHierarchyBackgroundRefresh(): void {
+    if (!this.hierarchySyncEnabled || this.hierarchyRefreshIntervalMs <= 0) {
+      this.stopHierarchyBackgroundRefresh();
+      return;
+    }
     if (this.hierarchyRefreshTask?.isRunning()) return;
     this.hierarchyRefreshTask?.stop();
     this.hierarchyRefreshTask = createManagedInterval(
@@ -530,41 +643,178 @@ export class BuckeyeScraperManager {
       () => this.refreshHierarchyInBackground(),
       {
         initialDelayMs: this.hierarchyRefreshIntervalMs,
-        onError: (err) => console.warn('[Manager] Hierarchy background refresh failed:', err instanceof Error ? err.message : err),
+        onError: (err) => logger.warn('Hierarchy background refresh failed', err instanceof Error ? err.message : err),
       }
     );
-    console.log(`[Manager] Hierarchy background refresh started (every ${Math.round(this.hierarchyRefreshIntervalMs / 1000)}s)`);
+    logger.info(`Hierarchy background refresh started (every ${Math.round(this.hierarchyRefreshIntervalMs / 1000)}s)`);
   }
 
   private stopHierarchyBackgroundRefresh(): void {
     this.hierarchyRefreshTask?.stop();
     this.hierarchyRefreshTask = undefined;
-    console.log('[Manager] Hierarchy background refresh stopped');
+    logger.info('Hierarchy background refresh stopped');
   }
 
   private async refreshHierarchyInBackground(): Promise<void> {
-    const instance = Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
-    if (!instance) {
-      console.warn('[Manager] Hierarchy background refresh skipped — no authenticated agents');
-      return;
-    }
+    if (!this.hierarchySyncEnabled) return;
+    await this.runHierarchyImport('background_refresh');
+  }
+
+  async runHierarchyImport(source: string = 'manual_import', agentId?: string): Promise<HierarchyImportResult> {
+    await this.ensureHierarchySyncTables();
+    const jobId = await this.startBackgroundJob('agent_flat_refresh', { source, agentId: agentId || null });
     try {
+      const instance = agentId
+        ? this.agents.get(agentId)
+        : Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
+      if (!instance || !instance.api.isAuthenticated()) {
+        throw new Error('No authenticated Buckeye agent available for hierarchy import');
+      }
       const hierarchy = await instance.api.getAgentHierarchy();
       if (!Array.isArray(hierarchy?.GENERAL) || hierarchy.GENERAL.length === 0) {
-        console.warn('[Manager] Hierarchy background refresh returned empty GENERAL array');
-        return;
+        throw new Error('Buckeye hierarchy import returned an empty GENERAL array');
       }
-      const result = await upsertLiveAgentHierarchy(this.db, hierarchy, 'background_refresh');
+      const result = await upsertLiveAgentHierarchy(this.db, hierarchy, source);
       clearAgentHierarchyTreeCache();
-      console.log(`[Manager] Hierarchy background refresh complete: ${result.agents} agents, ${result.players} players, ${result.linkedPlayers} linked`);
+      await this.finishBackgroundJob(jobId, 'completed', {
+        source,
+        agents: result.agents,
+        players: result.players,
+        linkedPlayers: result.linkedPlayers,
+      });
+      logger.success(`Hierarchy ${source} complete: ${result.agents} agents, ${result.players} players, ${result.linkedPlayers} linked`);
+      return {
+        success: true,
+        total_imported: result.agents,
+        clusters_found: result.topAgentsByPlayers?.length || 0,
+        players: result.players,
+        linked_players: result.linkedPlayers,
+        errors: [],
+        job_id: jobId,
+        source,
+      };
     } catch (err) {
-      console.error('[Manager] Hierarchy background refresh failed:', err instanceof Error ? err.message : err);
+      const message = errorMessage(err);
+      await this.finishBackgroundJob(jobId, 'failed', { source }, message);
+      this.broadcast({ type: 'sync_error', channel: 'agent-updates', status: 'failed', error: message, job_id: jobId });
+      logger.error(`Hierarchy ${source} failed`, message);
+      throw err;
+    }
+  }
+
+  async getHierarchySyncStatus(): Promise<Record<string, unknown>> {
+    const config = await this.readHierarchySyncConfig();
+    const latest = await this.db.get<SqlRow>(
+      `SELECT id, job_name, status, started_at, finished_at, error, details
+       FROM background_jobs
+       WHERE job_name = 'agent_flat_refresh'
+       ORDER BY datetime(COALESCE(started_at, finished_at)) DESC, id DESC
+       LIMIT 1`
+    );
+    const recentErrors = await this.db.all<SqlRow>(
+      `SELECT id, job_name, status, started_at, finished_at, error, details
+       FROM background_jobs
+       WHERE job_name = 'agent_flat_refresh' AND status = 'failed'
+       ORDER BY datetime(COALESCE(finished_at, started_at)) DESC, id DESC
+       LIMIT 5`
+    );
+    const lastFinished = stringOrNull(latest?.finished_at) || stringOrNull(latest?.started_at);
+    const nextRun = config.enabled && lastFinished
+      ? new Date(new Date(lastFinished).getTime() + config.intervalMinutes * 60 * 1000).toISOString()
+      : null;
+    return {
+      enabled: config.enabled,
+      interval_minutes: config.intervalMinutes,
+      last_run: latest || null,
+      last_error: stringOrNull(latest?.error),
+      recent_errors: recentErrors,
+      next_run: nextRun,
+      running: latest?.status === 'running',
+    };
+  }
+
+  async updateHierarchySyncConfig(input: { enabled?: unknown; interval_minutes?: unknown }): Promise<Record<string, unknown>> {
+    const enabled = input.enabled === undefined ? this.hierarchySyncEnabled : Boolean(input.enabled);
+    const intervalMinutes = input.interval_minutes === undefined
+      ? Math.max(1, Math.round(this.hierarchyRefreshIntervalMs / 60_000))
+      : Math.min(Math.max(Number(input.interval_minutes) || 30, 1), 1440);
+    await this.ensureHierarchySyncTables();
+    await this.db.run(
+      `INSERT INTO hierarchy_sync_config (id, enabled, interval_minutes, updated_at)
+       VALUES (1, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+        enabled = excluded.enabled,
+        interval_minutes = excluded.interval_minutes,
+        updated_at = excluded.updated_at`,
+      [enabled ? 1 : 0, intervalMinutes, new Date().toISOString()]
+    );
+    this.hierarchySyncEnabled = enabled;
+    this.hierarchyRefreshIntervalMs = intervalMinutes * 60 * 1000;
+    if (enabled && this.agents.size > 0) {
+      if (this.hierarchyRefreshTask?.isRunning()) {
+        this.hierarchyRefreshTask.restart(this.hierarchyRefreshIntervalMs, Math.min(60_000, this.hierarchyRefreshIntervalMs));
+      } else {
+        this.startHierarchyBackgroundRefresh();
+      }
+    } else {
+      this.stopHierarchyBackgroundRefresh();
+    }
+    return this.getHierarchySyncStatus();
+  }
+
+  private async startBackgroundJob(jobName: string, details: Record<string, unknown>): Promise<number> {
+    const startedAt = new Date().toISOString();
+    const result = await this.db.run(
+      `INSERT INTO background_jobs (job_name, status, started_at, details)
+       VALUES (?, 'running', ?, ?)`,
+      [jobName, startedAt, JSON.stringify(details)]
+    );
+    const jobId = Number(result.lastID || 0);
+    this.broadcast({ type: 'sync_status', channel: 'agent-updates', status: 'running', job_name: jobName, job_id: jobId, started_at: startedAt });
+    return jobId;
+  }
+
+  private async finishBackgroundJob(
+    jobId: number,
+    status: 'completed' | 'failed',
+    details: Record<string, unknown>,
+    error?: string
+  ): Promise<void> {
+    const finishedAt = new Date().toISOString();
+    await this.db.run(
+      `UPDATE background_jobs
+       SET status = ?, finished_at = ?, error = ?, details = ?
+       WHERE id = ?`,
+      [status, finishedAt, error || null, JSON.stringify(details), jobId]
+    );
+    this.broadcast({
+      type: 'sync_status',
+      channel: 'agent-updates',
+      status,
+      job_name: 'agent_flat_refresh',
+      job_id: jobId,
+      finished_at: finishedAt,
+      error: error || null,
+    });
+  }
+
+  private async refreshStaticHierarchySeed(): Promise<void> {
+    try {
+      const result = await backfillAgentsAndPlayers(this.db, { source: 'static_seed_refresh' });
+      if (result.agents > 0) {
+        clearAgentHierarchyTreeCache();
+        logger.success(`Static hierarchy seed refresh complete: ${result.agents} agents, ${result.players} players`);
+      } else {
+        logger.warn('Static hierarchy seed refresh found no local agent export rows');
+      }
+    } catch (err) {
+      logger.warn('Static hierarchy seed refresh skipped', err instanceof Error ? err.message : err);
     }
   }
 
   requestPlayer360Refresh(playerId: string, reason: string = 'profile_open'): void {
     void this.refreshPlayer360OnDemand(playerId, reason).catch((error) => {
-      console.warn(`[Manager] Player 360 on-demand refresh failed for ${playerId}:`, error instanceof Error ? error.message : error);
+      logger.warn(`Player 360 on-demand refresh failed for ${playerId}`, error instanceof Error ? error.message : error);
     });
   }
 
@@ -802,7 +1052,7 @@ export class BuckeyeScraperManager {
       const data = await instance.api.getAgentHierarchy();
       return data;
     } catch (err) {
-      console.error('[ScraperManager] getAgentHierarchy error:', errorMessage(err));
+      logger.error('getAgentHierarchy error', errorMessage(err));
       return { GENERAL: [], PLAYERS: [], error: errorMessage(err) };
     }
   }
@@ -819,7 +1069,7 @@ export class BuckeyeScraperManager {
       const data = await instance.api.getPlayersList();
       return data;
     } catch (err) {
-      console.error('[ScraperManager] getBuckeyePlayersList error:', errorMessage(err));
+      logger.error('getBuckeyePlayersList error', errorMessage(err));
       return { LIST: [], error: errorMessage(err) };
     }
   }
@@ -890,7 +1140,7 @@ export class BuckeyeScraperManager {
         source: 'database',
       };
     } catch (err) {
-      console.error('[ScraperManager] getPersistedAgentHierarchy error:', errorMessage(err));
+      logger.error('getPersistedAgentHierarchy error', errorMessage(err));
       return { GENERAL: [], source: 'database', error: errorMessage(err) };
     }
   }
@@ -918,7 +1168,7 @@ export class BuckeyeScraperManager {
     try {
       return await instance.api.getLanguageUiConfig({ includeRaw, includeAgentParams });
     } catch (err) {
-      console.error('[ScraperManager] getBuckeyeUiConfig error:', errorMessage(err));
+      logger.error('getBuckeyeUiConfig error', errorMessage(err));
       return { parsed: null, error: errorMessage(err) };
     }
   }
@@ -949,7 +1199,7 @@ export class BuckeyeScraperManager {
       this.accountInfoCache.set(cacheKey, { data, timestamp: Date.now() });
       return data;
     } catch (err) {
-      console.error('[ScraperManager] getBuckeyeAccountInfo error:', errorMessage(err));
+      logger.error('getBuckeyeAccountInfo error', errorMessage(err));
       return { accountInfo: null, error: errorMessage(err) };
     }
   }
@@ -974,14 +1224,11 @@ export class BuckeyeScraperManager {
       try {
         await this.persistWeeklyFigureReport(result);
       } catch (persistError) {
-        console.warn(
-          '[ScraperManager] weekly figure archive failed:',
-          persistError instanceof Error ? persistError.message : persistError
-        );
+        logger.warn('Weekly figure archive failed', persistError instanceof Error ? persistError.message : persistError);
       }
       return result as ManagerWeeklyFigureResult;
     } catch (err) {
-      console.error('[ScraperManager] getWeeklyFigureByAgentLite error:', errorMessage(err));
+      logger.error('getWeeklyFigureByAgentLite error', errorMessage(err));
       return { data: null, error: errorMessage(err) };
     }
   }
@@ -1003,14 +1250,11 @@ export class BuckeyeScraperManager {
       try {
         await this.persistManagerSnapshot(result);
       } catch (persistError) {
-        console.warn(
-          '[ScraperManager] manager snapshot archive failed:',
-          persistError instanceof Error ? persistError.message : persistError
-        );
+        logger.warn('Manager snapshot archive failed', persistError instanceof Error ? persistError.message : persistError);
       }
       return result as ManagerSnapshotResult;
     } catch (err) {
-      console.error('[ScraperManager] getBuckeyeManagerSnapshot error:', errorMessage(err));
+      logger.error('getBuckeyeManagerSnapshot error', errorMessage(err));
       return { data: null, sportsType: emptyBuckeyeData(), error: errorMessage(err) };
     }
   }
@@ -1037,7 +1281,7 @@ export class BuckeyeScraperManager {
         ]
       );
     } catch (err) {
-      console.error(`[Manager] persistManagerSnapshot failed for ${result.agentId}:`, err instanceof Error ? err.message : err);
+      logger.error(`persistManagerSnapshot failed for ${result.agentId}`, err instanceof Error ? err.message : err);
       throw err;
     }
     this.broadcast({
@@ -1074,7 +1318,7 @@ export class BuckeyeScraperManager {
       await this.persistAgentPerformanceReport(result);
       return result as ManagerAgentPerformanceResult;
     } catch (err) {
-      console.error('[ScraperManager] getBuckeyeAgentPerformanceReport error:', errorMessage(err));
+      logger.error('getBuckeyeAgentPerformanceReport error', errorMessage(err));
       return { data: null, error: errorMessage(err) };
     }
   }
@@ -1104,7 +1348,7 @@ export class BuckeyeScraperManager {
       );
       return result as ManagerAgentPerformanceResult;
     } catch (err) {
-      console.error('[ScraperManager] getBuckeyePlayerPerformance error:', errorMessage(err));
+      logger.error('getBuckeyePlayerPerformance error', errorMessage(err));
       return { data: emptyBuckeyeData(), error: errorMessage(err) };
     }
   }
@@ -1126,7 +1370,7 @@ export class BuckeyeScraperManager {
       }
       return result;
     } catch (err) {
-      console.error('[ScraperManager] getBuckeyePlayerInfo error:', errorMessage(err));
+      logger.error('getBuckeyePlayerInfo error', errorMessage(err));
       return { data: null, error: errorMessage(err) };
     }
   }
@@ -1146,7 +1390,7 @@ export class BuckeyeScraperManager {
       const result = await instance.api.getTransactionList(customerId, { start });
       return result;
     } catch (err) {
-      console.error('[ScraperManager] getBuckeyePlayerTransactions error:', errorMessage(err));
+      logger.error('getBuckeyePlayerTransactions error', errorMessage(err));
       return { data: null, error: errorMessage(err) };
     }
   }
@@ -1715,7 +1959,7 @@ export class BuckeyeScraperManager {
       const agents = Array.isArray(hierarchy?.GENERAL) ? hierarchy.GENERAL : [];
       instance.liveTree = new LiveAgentTree(agents);
     } catch {
-      console.warn(`[Manager] Live agent tree hierarchy unavailable for ${agentId}; using wager-only deltas`);
+      logger.warn(`Live agent tree hierarchy unavailable for ${agentId}; using wager-only deltas`);
       instance.liveTree = new LiveAgentTree([]);
     }
 
@@ -1738,7 +1982,7 @@ export class BuckeyeScraperManager {
 
     // Guard against concurrent polls (e.g., if a poll takes longer than the interval)
     if (instance.isPolling) {
-      console.warn(`[Manager] Skipping poll for ${agentId} — previous poll still running`);
+      logger.warn(`Skipping poll for ${agentId} — previous poll still running`);
       return;
     }
     instance.isPolling = true;
@@ -1815,7 +2059,7 @@ export class BuckeyeScraperManager {
       instance.consecutiveErrors++;
       this.errorCount++;
       instance.lastError = error instanceof Error ? error.message : String(error);
-      console.error(`[Manager] Poll error for ${agentId}:`, error);
+      logger.error(`Poll error for ${agentId}`, error);
 
       // Backoff: increase poll interval on consecutive errors
       const backoffMs = Math.min(
@@ -1825,20 +2069,20 @@ export class BuckeyeScraperManager {
       if (backoffMs !== instance.currentPollMs) {
         instance.currentPollMs = backoffMs;
         instance.pollTask.restart(instance.currentPollMs);
-        console.log(`[Manager] Backing off ${agentId} to ${backoffMs}ms`);
+        logger.info(`Backing off ${agentId} to ${backoffMs}ms`);
       }
 
       // Re-auth if session expired
       if (!instance.api.isAuthenticated() || instance.consecutiveErrors >= 3) {
         if (instance.reloginAttempts < 3) {
           instance.reloginAttempts++;
-          console.log(`[Manager] Re-authenticating ${agentId} (attempt ${instance.reloginAttempts})...`);
+          logger.info(`Re-authenticating ${agentId} (attempt ${instance.reloginAttempts})...`);
           const ok = await instance.api.login();
           if (!ok) {
-            console.warn(`[Manager] Re-login failed for ${agentId}`);
+            logger.warn(`Re-login failed for ${agentId}`);
           }
         } else {
-          console.error(`[Manager] Max re-login attempts reached for ${agentId}. Stopping.`);
+          logger.error(`Max re-login attempts reached for ${agentId}. Stopping.`);
           this.broadcast({
             type: 'auth_failed',
             timestamp: new Date().toISOString(),
@@ -1867,14 +2111,14 @@ export class BuckeyeScraperManager {
       return;
     }
 
-    console.warn(`[Manager] Token renewal failed for ${agentId}, attempting password re-login`);
+    logger.warn(`Token renewal failed for ${agentId}, attempting password re-login`);
     const reloginOk = await instance.api.login();
     if (reloginOk) {
       instance.lastError = undefined;
       await this.saveAgentSecrets(agentId, instance);
     } else {
       instance.lastError = 'Token renewal and password re-login failed';
-      console.warn(`[Manager] Password re-login failed for ${agentId}; will retry on next renewal`);
+      logger.warn(`Password re-login failed for ${agentId}; will retry on next renewal`);
     }
   }
 
@@ -1894,6 +2138,7 @@ export class BuckeyeScraperManager {
   private async persistWager(wager: EnrichedWager): Promise<Awaited<ReturnType<PatternService['correlateWager']>>> {
     const correlation = await this.patternService.correlateWager(wager);
     const parsed = correlation.parsed;
+    const hierarchy = await this.resolveWagerHierarchyContext(wager);
 
     try {
       // Insert into main wagers table
@@ -1903,8 +2148,10 @@ export class BuckeyeScraperManager {
          amount_wagered, to_win_amount, volume_amount, insert_datetime,
          ticket_writer, short_desc, vip, agent_login, sport,
          parsed_game, parsed_market, parsed_side, parsed_price, parsed_period,
-         matched_event_id, pin_reference_json, scraped_at, raw_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         matched_event_id, pin_reference_json, raw_json, agent_level, agent_type,
+         parent_agent_id, mapped_agent_id, mapped_agent_login, agent_path_json,
+         hierarchy_source, scraped_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           wager.WagerNumber,
           wager.AgentID,
@@ -1927,15 +2174,19 @@ export class BuckeyeScraperManager {
           parsed.period,
           correlation.match.eventId,
           JSON.stringify(correlation.pinReference || {}),
-          new Date().toISOString(),
           JSON.stringify(wager),
+          hierarchy.agentLevel,
+          hierarchy.agentType,
+          hierarchy.parentAgentId,
+          hierarchy.mappedAgentId,
+          hierarchy.mappedAgentLogin,
+          hierarchy.agentPathJson,
+          hierarchy.hierarchySource,
+          new Date().toISOString(),
         ]
       );
     } catch (err) {
-      console.error(
-        `[Manager] persistWager INSERT failed for wager #${wager.WagerNumber}:`,
-        err instanceof Error ? err.message : err
-      );
+      logger.error(`persistWager INSERT failed for wager #${wager.WagerNumber}`, err instanceof Error ? err.message : err);
       throw err;
     }
 
@@ -1944,8 +2195,10 @@ export class BuckeyeScraperManager {
         `INSERT OR IGNORE INTO wager_archive
         (wager_number, agent_id, customer_id, login, wager_type,
          amount_wagered, to_win_amount, insert_date_time, ticket_writer,
-         volume_amount, short_desc_raw, vip, agent_login, ingested_at, raw_json, sport, league, price)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         volume_amount, short_desc_raw, vip, agent_login, ingested_at, raw_json,
+         sport, league, price, agent_level, agent_type, parent_agent_id,
+         mapped_agent_id, mapped_agent_login, agent_path_json, hierarchy_source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           wager.WagerNumber,
           wager.AgentID,
@@ -1965,16 +2218,20 @@ export class BuckeyeScraperManager {
           null,
           null,
           null,
+          hierarchy.agentLevel,
+          hierarchy.agentType,
+          hierarchy.parentAgentId,
+          hierarchy.mappedAgentId,
+          hierarchy.mappedAgentLogin,
+          hierarchy.agentPathJson,
+          hierarchy.hierarchySource,
         ]
       );
       if (archiveInsert.changes > 0) {
         this.deferWagerArchiveParse(wager.WagerNumber, wager.ShortDesc, parsed.price);
       }
     } catch (err) {
-      console.warn(
-        `[Manager] wager_archive INSERT failed for wager #${wager.WagerNumber}:`,
-        err instanceof Error ? err.message : err
-      );
+      logger.warn(`wager_archive INSERT failed for wager #${wager.WagerNumber}`, err instanceof Error ? err.message : err);
     }
 
     try {
@@ -1984,13 +2241,97 @@ export class BuckeyeScraperManager {
         scrapedAt: new Date().toISOString(),
       });
     } catch (err) {
-      console.warn(
-        `[Manager] ingestion checkpoint update failed for wager #${wager.WagerNumber}:`,
-        err instanceof Error ? err.message : err
-      );
+      logger.warn(`Ingestion checkpoint update failed for wager #${wager.WagerNumber}`, err instanceof Error ? err.message : err);
     }
 
     return correlation;
+  }
+
+  private async resolveWagerHierarchyContext(wager: EnrichedWager): Promise<WagerHierarchyContext> {
+    const playerId = String(wager.CustomerID || '').trim();
+    const login = String(wager.Login || '').trim();
+    const wagerAgent = String(wager.AgentLogin || wager.AgentID || '').trim();
+    const mapped = await this.db.get<{
+      mapped_agent_id: string | null;
+      mapped_agent_login: string | null;
+      agent_level: number | null;
+      agent_type: string | null;
+      parent_agent_id: string | null;
+      source: string | null;
+    }>(
+      `SELECT
+        m.agent_id AS mapped_agent_id,
+        COALESCE(ah.login, m.agent_login, m.agent_id) AS mapped_agent_login,
+        ah.level AS agent_level,
+        ah.agent_type AS agent_type,
+        ah.parent_agent_id AS parent_agent_id,
+        m.source AS source
+       FROM player_agent_map m
+       LEFT JOIN agent_hierarchy ah ON ah.provider = m.provider AND ah.agent_id = m.agent_id
+       WHERE m.provider = 'buckeye'
+        AND (m.player_id = ? OR m.player_login = ? OR m.player_id = ? OR m.player_login = ?)
+       ORDER BY CASE WHEN m.player_id = ? THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [playerId, playerId, login, login, playerId]
+    );
+
+    const fallback = mapped?.mapped_agent_id ? null : await this.db.get<{
+      mapped_agent_id: string | null;
+      mapped_agent_login: string | null;
+      agent_level: number | null;
+      agent_type: string | null;
+      parent_agent_id: string | null;
+    }>(
+      `SELECT
+        agent_id AS mapped_agent_id,
+        login AS mapped_agent_login,
+        level AS agent_level,
+        agent_type,
+        parent_agent_id
+       FROM agent_hierarchy
+       WHERE provider = 'buckeye'
+        AND (agent_id = ? OR login = ?)
+       LIMIT 1`,
+      [wagerAgent, wagerAgent]
+    );
+
+    const row = mapped?.mapped_agent_id ? mapped : fallback;
+    const mappedAgentId = String(row?.mapped_agent_id || wagerAgent || '').trim() || null;
+    const mappedAgentLogin = String(row?.mapped_agent_login || wagerAgent || '').trim() || mappedAgentId;
+    const path = mappedAgentId ? await this.getAgentPath(mappedAgentId) : [];
+
+    return {
+      agentLevel: numberOrNull(row?.agent_level),
+      agentType: row?.agent_type ? String(row.agent_type) : null,
+      parentAgentId: row?.parent_agent_id ? String(row.parent_agent_id) : null,
+      mappedAgentId,
+      mappedAgentLogin,
+      agentPathJson: JSON.stringify(path),
+      hierarchySource: mapped?.mapped_agent_id ? `player_agent_map:${mapped.source || 'unknown'}` : fallback ? 'wager_agent' : 'wager_fallback',
+    };
+  }
+
+  private async getAgentPath(agentId: string): Promise<Array<{ agentId: string; login: string; level: number | null }>> {
+    const rows = await this.db.all<{ agent_id: string; login: string | null; level: number | null; depth: number }>(
+      `SELECT ah.agent_id, ah.login, ah.level, ac.depth
+       FROM agent_closure ac
+       JOIN agent_hierarchy ah ON ah.provider = ac.provider AND ah.agent_id = ac.ancestor
+       WHERE ac.provider = 'buckeye' AND ac.descendant = ?
+       ORDER BY ac.depth DESC`,
+      [agentId]
+    );
+    if (rows.length > 0) {
+      return rows.map((row) => ({
+        agentId: row.agent_id,
+        login: row.login || row.agent_id,
+        level: numberOrNull(row.level),
+      }));
+    }
+    const self = await this.db.get<{ agent_id: string; login: string | null; level: number | null }>(
+      `SELECT agent_id, login, level FROM agent_hierarchy WHERE provider = 'buckeye' AND agent_id = ? LIMIT 1`,
+      [agentId]
+    );
+    return self ? [{ agentId: self.agent_id, login: self.login || self.agent_id, level: numberOrNull(self.level) }] : [];
   }
 
   private deferWagerArchiveParse(wagerNumber: unknown, shortDesc: unknown, parsedPrice: number | null): void {
@@ -2010,7 +2351,7 @@ export class BuckeyeScraperManager {
          WHERE wager_number = ?`,
         [sport || null, league || null, price || null, archiveId]
       ).catch((err) => {
-        console.warn('[Manager] Deferred wager archive parse failed:', err instanceof Error ? err.message : err);
+        logger.warn('Deferred wager archive parse failed', err instanceof Error ? err.message : err);
       });
     });
   }
@@ -2066,7 +2407,7 @@ export class BuckeyeScraperManager {
       () => this.refreshAccessLogs(agentId).then(() => undefined),
       {
         initialDelayMs: 1000,
-        onError: (err) => console.warn(`[Manager] Access log refresh failed for ${agentId}:`, err instanceof Error ? err.message : err),
+        onError: (err) => logger.warn(`Access log refresh failed for ${agentId}`, err instanceof Error ? err.message : err),
       }
     );
   }
@@ -2079,7 +2420,7 @@ export class BuckeyeScraperManager {
       () => this.refreshAgentPerformance(agentId).then(() => undefined),
       {
         initialDelayMs: 2000,
-        onError: (err) => console.warn(`[Manager] Agent performance refresh failed for ${agentId}:`, err instanceof Error ? err.message : err),
+        onError: (err) => logger.warn(`Agent performance refresh failed for ${agentId}`, err instanceof Error ? err.message : err),
       }
     );
   }
@@ -2092,7 +2433,7 @@ export class BuckeyeScraperManager {
       () => this.refreshDailyArchives(agentId).then(() => undefined),
       {
         initialDelayMs: 30_000,
-        onError: (err) => console.warn(`[Manager] Daily archive refresh failed for ${agentId}:`, err instanceof Error ? err.message : err),
+        onError: (err) => logger.warn(`Daily archive refresh failed for ${agentId}`, err instanceof Error ? err.message : err),
       }
     );
   }
@@ -2105,7 +2446,7 @@ export class BuckeyeScraperManager {
       () => this.refreshPlayer360(agentId).then(() => undefined),
       {
         initialDelayMs: 10_000,
-        onError: (err) => console.warn(`[Manager] Player 360 refresh failed for ${agentId}:`, err instanceof Error ? err.message : err),
+        onError: (err) => logger.warn(`Player 360 refresh failed for ${agentId}`, err instanceof Error ? err.message : err),
       }
     );
   }
@@ -2167,22 +2508,19 @@ export class BuckeyeScraperManager {
           if (refreshDeletedTransactions) {
             await this.markPlayerSourceError(player, 'deleted_transactions', error);
           }
-          console.warn(
-            `[Manager] transaction ledger probe failed for ${customerId}:`,
-            error instanceof Error ? error.message : error
-          );
+          logger.warn(`Transaction ledger probe failed for ${customerId}`, error instanceof Error ? error.message : error);
         }
       }
 
       if (await this.shouldRefreshPlayerSource(customerId, player.login, 'customer_snapshots')) {
         await this.markPlayerSourceAttempt(player, 'customer_snapshots');
         try {
-        const snapshot = await instance.api.getCustomerSnapshot(customerId);
-        if (snapshot.snapshot) {
-          await this.persistCustomerSnapshot(snapshot.snapshot);
-          snapshots += 1;
-          await this.markPlayerSourceSuccess(player, 'customer_snapshots');
-        }
+          const snapshot = await instance.api.getCustomerSnapshot(customerId);
+          if (snapshot.snapshot) {
+            await this.persistCustomerSnapshot(snapshot.snapshot);
+            snapshots += 1;
+            await this.markPlayerSourceSuccess(player, 'customer_snapshots');
+          }
         } catch (error) {
           await this.markPlayerSourceError(player, 'customer_snapshots', error);
         }
@@ -2194,30 +2532,24 @@ export class BuckeyeScraperManager {
           await instance.api.getTeaserProfile(customerId);
         } catch (error) {
           await this.markPlayerSourceError(player, 'teaser_profile', error);
-          console.warn(
-            `[Manager] getTeaserProfile probe failed for ${customerId}:`,
-            error instanceof Error ? error.message : error
-          );
+          logger.warn(`getTeaserProfile probe failed for ${customerId}`, error instanceof Error ? error.message : error);
         }
       }
 
       if (await this.shouldRefreshPlayerSource(customerId, player.login, 'agent_performance_snapshots')) {
         await this.markPlayerSourceAttempt(player, 'agent_performance_snapshots');
         try {
-        const performance = await instance.api.getPerformancePlayer(customerId, {
-          acc: customerId,
-          period: 0,
-          agentID: agentId,
-          agentOwner: agentId,
-        });
-        performanceRows += await this.persistPlayerPerformanceSnapshot(performance, customerId, player.login);
+          const performance = await instance.api.getPerformancePlayer(customerId, {
+            acc: customerId,
+            period: 0,
+            agentID: agentId,
+            agentOwner: agentId,
+          });
+          performanceRows += await this.persistPlayerPerformanceSnapshot(performance, customerId, player.login);
           await this.markPlayerSourceSuccess(player, 'agent_performance_snapshots');
         } catch (error) {
           await this.markPlayerSourceError(player, 'agent_performance_snapshots', error);
-          console.warn(
-            `[Manager] getPerformancePlayer probe failed for ${customerId}:`,
-            error instanceof Error ? error.message : error
-          );
+          logger.warn(`getPerformancePlayer probe failed for ${customerId}`, error instanceof Error ? error.message : error);
         }
       }
 
@@ -2457,7 +2789,7 @@ export class BuckeyeScraperManager {
     }
 
     if (errors.length) {
-      console.warn(`[Manager] Partial transaction ledger refresh for ${customerId}: ${errors.join('; ')}`);
+      logger.warn(`Partial transaction ledger refresh for ${customerId}`, errors.join('; '));
     }
 
     let transactionRows = 0;
@@ -3101,7 +3433,7 @@ export class BuckeyeScraperManager {
         this.broadcast(event);
       }
     } catch (error) {
-      console.warn('[IPTracker] Alert broadcast failed:', error instanceof Error ? error.message : String(error));
+      logger.warn('IPTracker alert broadcast failed', error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -3126,7 +3458,7 @@ export class BuckeyeScraperManager {
         await takeAction(this.db, rule, wager, { clvResult, ipStats }, this.broadcast);
       }
     } catch (error) {
-      console.warn('[RulesEngine] Evaluation failed:', error instanceof Error ? error.message : String(error));
+      logger.warn('RulesEngine evaluation failed', error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -3307,7 +3639,7 @@ export class BuckeyeScraperManager {
     try {
       const instance = this.agents.get(agentId);
       if (!instance || !instance.api.isAuthenticated()) {
-        console.warn(`[Manager] pollMasterSnapshot: Agent ${agentId} not active, skipping`);
+        logger.warn(`pollMasterSnapshot: Agent ${agentId} not active, skipping`);
         return;
       }
 
@@ -3341,9 +3673,9 @@ export class BuckeyeScraperManager {
         ]
       );
       await this.setWatermark(`last_master_snapshot.${agentId}`, timestamp);
-      console.log(`[Manager] Master snapshot inserted for ${agentId}`);
+      logger.success(`Master snapshot inserted for ${agentId}`);
     } catch (err) {
-      console.error(`[Manager] pollMasterSnapshot failed for ${agentId}:`, err instanceof Error ? err.message : err);
+      logger.error(`pollMasterSnapshot failed for ${agentId}`, err instanceof Error ? err.message : err);
     }
   }
 

@@ -212,6 +212,16 @@ export class ProxyClient {
     });
   }
 
+  async callGet<T>(endpoint: string, agentId?: string): Promise<T> {
+    return proxyClientCall<T>(this.provider, {
+      endpoint,
+      method: 'GET',
+      includeBuckeyeAuth: false,
+      agentId,
+      cfg: this.cfg,
+    });
+  }
+
   // ==========================================
   // 1. PROXY ALIASES (cached via proxy SWR)
   // ==========================================
@@ -250,6 +260,11 @@ export class ProxyClient {
 
   async betTicker(agentID?: string) {
     return this.call<ProxyResponse>('/api/proxy/betTicker', { agentID }, agentID);
+  }
+
+  async liveTicker(agentID?: string) {
+    const query = agentID ? `?customerID=${encodeURIComponent(agentID)}` : '';
+    return this.callGet<ProxyResponse>(`/api/live/ticker${query}`, agentID);
   }
 
   async scoresLive(agentID?: string) {

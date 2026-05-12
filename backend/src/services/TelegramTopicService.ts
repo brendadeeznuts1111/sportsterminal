@@ -277,7 +277,7 @@ export class TelegramTopicService {
   async getSystemTopicThreadId(purpose: string): Promise<number | null> {
     const secretName = this.purposeToSecretName(purpose);
     if (!secretName) return null;
-    const raw = await getCredential(secretName);
+    const raw = await getCredential(secretName as CredentialName);
     if (!raw) return null;
     const parsed = parseInt(raw, 10);
     return Number.isFinite(parsed) ? parsed : null;
@@ -289,7 +289,7 @@ export class TelegramTopicService {
   async saveSystemTopicThreadId(purpose: string, threadId: number): Promise<void> {
     const secretName = this.purposeToSecretName(purpose);
     if (!secretName) return;
-    await setCredential(secretName, String(threadId));
+    await setCredential(secretName as CredentialName, String(threadId));
   }
 
   private purposeToSecretName(purpose: string): CredentialName | null {

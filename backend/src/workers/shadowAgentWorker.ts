@@ -1,6 +1,6 @@
 import { initDatabase, type Database } from '../database';
-import { COMMAND_CENTER_MAP } from '../config/commandCenterMap';
 import { LIVE_RISK_SYSTEM_PROMPT } from '../services/LiveFeatureService';
+import { logger } from '../utils/logger';
 
 interface ShadowRequest {
   id: number;
@@ -58,7 +58,7 @@ self.onmessage = async (event: MessageEvent<ShadowRequest>) => {
       [JSON.stringify(results), agreementScore, avgSeverityDiff, agreementScore < 0.7 ? 1 : 0, request.id]
     );
 
-    console.log(`[${COMMAND_CENTER_MAP.logEvents.shadowAbCompleted}] id=${request.id} customers=${request.customer_ids.length}`);
+    logger.info('Shadow A/B completed', { id: request.id, customers: request.customer_ids.length });
     self.postMessage({ id: request.id, ok: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

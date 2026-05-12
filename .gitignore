@@ -10,6 +10,9 @@ frontend/dist/
 
 # Environment variables
 .env
+.env.local
+.env.production
+.mcp.json
 backend/.env
 
 # Database
@@ -20,6 +23,7 @@ backend/data/*.db-wal
 buckeye_cache.sqlite
 buckeye_cache.sqlite-shm
 buckeye_cache.sqlite-wal
+terminal.db
 
 # Sensitive agent data
 docs/agentobject.md
@@ -72,3 +76,6 @@ coverage/
 tmp-build/
 admin-test.json
 start-proxy-test.bat
+buckeye-bundle-analysis.json
+/file
+/backend/file

@@ -1,8 +1,31 @@
 import { AppDatabase, normalizeDatabasePath } from '../src/database';
 
 const KIMI_API_KEY = process.env.KIMI_API_KEY;
+const KIMI_API_BASE = 'https://api.moonshot.cn/v1';
 const KIMI_TIMEOUT_MS = 20_000;
 const BATCH_SIZE = 10; // Process in small batches to avoid rate limits
+
+async function validateKimiKey(): Promise<boolean> {
+  if (!KIMI_API_KEY) {
+    console.error('[AI] KIMI_API_KEY not configured');
+    return false;
+  }
+  try {
+    const res = await fetch(`${KIMI_API_BASE}/models`, {
+      headers: { Authorization: `Bearer ${KIMI_API_KEY}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.status === 401) {
+      console.error('[AI] Key invalid for Moonshot API — you may be using a Kimi Code CLI key');
+      console.error('[AI] Get a general API key from https://platform.moonshot.cn/');
+      return false;
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('[AI] Failed to validate key:', err instanceof Error ? err.message : String(err));
+    return false;
+  }
+}
 
 interface CustomerData {
   customer_id: string;
@@ -124,8 +147,9 @@ async function main() {
   console.log('🤖 BATCH AI RISK ANALYSIS (Kimi)');
   console.log('═══════════════════════════════════════════════════\n');
 
-  if (!KIMI_API_KEY) {
-    console.log('⚠️  KIMI_API_KEY not set. Running in heuristic mode...\n');
+  const keyValid = await validateKimiKey();
+  if (!keyValid) {
+    console.log('⚠️  KIMI_API_KEY invalid or not set. Running in heuristic mode...\n');
   }
 
   // Get RED/BLACK customers + top YELLOW customers by sharp_score

@@ -1104,6 +1104,25 @@ export async function initDatabase(url: string = dbUrl): Promise<AppDatabase> {
     CREATE INDEX IF NOT EXISTS idx_ai_risk_flags_level ON ai_risk_flags(risk_level, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_ai_risk_flags_unreviewed ON ai_risk_flags(reviewed, created_at DESC);
 
+    -- Plugin execution log: audit trail for plugin hook dispatches
+    CREATE TABLE IF NOT EXISTS plugin_execution_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      plugin_name TEXT NOT NULL,
+      hook_name TEXT NOT NULL,
+      wager_number INTEGER,
+      customer_id TEXT,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      result_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'success',
+      duration_ms INTEGER,
+      error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_plugin_exec_plugin ON plugin_execution_log(plugin_name, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_plugin_exec_hook ON plugin_execution_log(hook_name, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_plugin_exec_wager ON plugin_execution_log(wager_number, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_plugin_exec_customer ON plugin_execution_log(customer_id, created_at DESC);
+
     -- Live AI command center: latest extracted player feature vector.
     CREATE TABLE IF NOT EXISTS customer_features (
       customer_id TEXT PRIMARY KEY,

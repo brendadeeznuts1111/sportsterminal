@@ -1,5 +1,10 @@
 # bunfig.toml — Sports Terminal v3.0
 # Root: /C:/Users/bobby/sportsterminal/bunfig.toml
+#
+# Per-environment overrides:
+#   bunfig.proxy.toml  — Proxy server (deep console, no auto-install)
+#   bunfig.test.toml   — Test suite (shallow console, .env.test)
+#   bunfig.plugin.toml — Plugin dev (smol mode, fast GC)
 
 # ==========================================
 # RUNTIME
@@ -11,34 +16,15 @@ watch = false
 # Preload before every script: env validation + WAL + performance hooks
 preload = ["./scripts/preload.ts"]
 
+# Default env files for all bun run commands
+envFile = [".env.shared", ".env.local"]
+
 # Bun.js flags
 smol = false
 
 # Keep nested Buckeye/Kimi payloads inspectable in operator logs.
 [console]
 depth = 6
-
-# ==========================================
-# ENVIRONMENT (Development defaults)
-# ==========================================
-[env]
-DEMO_MODE = "false"
-ENABLE_METRICS = "true"
-ENABLE_REQUEST_LOGGING = "true"
-ENABLE_AUTO_RETRY = "true"
-ENABLE_RATE_LIMITING = "false"
-ENABLE_WS_BATCHING = "true"
-ENABLE_TOKEN_MEM_CACHE = "true"
-ENABLE_MEMORY_CACHE = "true"
-ENABLE_RESPONSE_NORMALIZE = "true"
-ENABLE_REQUEST_DEDUPE = "true"
-ENABLE_IDEMPOTENCY = "false"
-PROXY_API_KEY = "dev-key-123"
-PROXY_INTERNAL_URL = "http://localhost:3001"
-BACKEND_PORT = "3000"
-VITE_BACKEND_URL = "http://localhost:3000"
-VITE_WS_URL = "ws://localhost:3000"
-BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS = "300"
 
 # ==========================================
 # PACKAGE MANAGER
@@ -48,8 +34,17 @@ registry = "https://registry.npmjs.org"
 cache = ".bun/install/cache"
 lockfile = "bun.lockb"
 exact = true
-peer = true
-production = false
+# Development: auto-install missing deps; production overrides to "disable"
+auto = "fallback"
+
+# ==========================================
+# TEST
+# ==========================================
+[test]
+root = "./"
+preload = "./scripts/preload.ts"
+coverage = false
+coverageThreshold = 0.8
 
 # ==========================================
 # WORKSPACE (Monorepo)
@@ -62,15 +57,6 @@ packages = [
   "proxy",
   "shared",
 ]
-
-# ==========================================
-# TEST RUNNER
-# ==========================================
-[test]
-root = "./"
-preload = ["./scripts/preload.ts"]
-coverage = false
-coverageThreshold = 0.8
 
 # ==========================================
 # BUNDLER

@@ -1,5 +1,6 @@
-import type { Database } from '../database';
 import { COMMAND_CENTER_MAP } from '../config/commandCenterMap';
+import type { Database } from '../database';
+import { logger } from '../utils/logger';
 
 export interface StartShadowAbInput {
   customer_ids: string[];
@@ -37,7 +38,7 @@ export class ShadowAgentService {
     );
 
     const id = result.lastID;
-    console.log(`[${COMMAND_CENTER_MAP.logEvents.shadowAbStarted}] id=${id} customers=${customerIds.length}`);
+    logger.info(`Shadow A/B started`, { id, customers: customerIds.length });
     this.spawnWorker({
       id,
       customer_ids: customerIds,
@@ -72,7 +73,7 @@ export class ShadowAgentService {
       worker.terminate();
     };
     worker.onerror = (error) => {
-      console.error(`[${COMMAND_CENTER_MAP.logEvents.shadowAbFailed}]`, error.message);
+      logger.error('Shadow A/B failed', error.message);
       void this.db.run(
         `UPDATE live_shadow_ab_tests
             SET status='failed', error=?, completed_at=datetime('now')

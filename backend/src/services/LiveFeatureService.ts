@@ -24,6 +24,10 @@ export interface CustomerFeatureVector {
   archetype: string;
   risk_tier: RiskLevel;
   clv: number;
+  agent_level: number | null;
+  agent_type: string | null;
+  agent_live_betting_rate: number | null;
+  agent_prop_builder_rate: number | null;
   feature_json: string;
   source_json: string;
 }
@@ -157,6 +161,9 @@ export class LiveFeatureService {
       this.getPlayer(customerId),
     ]);
 
+    // Fetch agent context for risk scoring enrichment
+    const agentContext = await this.getAgentContext(player?.agent_login);
+
     const now = Date.now();
     const behavioralFeatures = await this.computeBehavioralFeatures(customerId, wagers, player, now);
     const lifetimeWagers = behavioralFeatures.total_wagers_90d;
@@ -184,6 +191,7 @@ export class LiveFeatureService {
     });
     const source = {
       player,
+      agent_context: agentContext,
       wager_count: wagers.length,
       recent_wager_numbers: wagers.slice(0, 10).map((w) => w.wager_number),
       sports: [...sports],
@@ -196,8 +204,10 @@ export class LiveFeatureService {
         customer_id, extracted_at, feature_version, lifetime_wagers,
         avg_wager_size, max_wager_size, win_rate, days_since_last_wager,
         sport_diversity_score, deposit_velocity_30d, withdrawal_ratio,
-        bonus_dependency, sharp_score, chase_flag, archetype, risk_tier, clv, feature_json, source_json
-      ) VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        bonus_dependency, sharp_score, chase_flag, archetype, risk_tier, clv,
+        agent_level, agent_type, agent_live_betting_rate, agent_prop_builder_rate,
+        feature_json, source_json
+      ) VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(customer_id) DO UPDATE SET
         extracted_at = excluded.extracted_at,
         feature_version = excluded.feature_version,
@@ -215,6 +225,10 @@ export class LiveFeatureService {
         archetype = excluded.archetype,
         risk_tier = excluded.risk_tier,
         clv = excluded.clv,
+        agent_level = excluded.agent_level,
+        agent_type = excluded.agent_type,
+        agent_live_betting_rate = excluded.agent_live_betting_rate,
+        agent_prop_builder_rate = excluded.agent_prop_builder_rate,
         feature_json = excluded.feature_json,
         source_json = excluded.source_json`,
       [
@@ -234,6 +248,10 @@ export class LiveFeatureService {
         archetype,
         riskTier,
         behavioralFeatures.avg_clv,
+        agentContext?.level ?? null,
+        agentContext?.agent_type ?? null,
+        agentContext?.live_betting_rate_m ?? null,
+        agentContext?.prop_builder_rate_m ?? null,
         JSON.stringify(behavioralFeatures),
         JSON.stringify(source),
       ]
@@ -263,8 +281,9 @@ export class LiveFeatureService {
       `INSERT INTO ai_risk_flags (
         customer_id, player_id, risk_level, risk_score, confidence, summary,
         reasoning, factors, suggested_action, max_exposure, action, raw_response,
+        agent_level, agent_type, agent_live_betting_rate, agent_prop_builder_rate,
         flagged_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
       [
         customerId,
         customerId,
@@ -278,6 +297,10 @@ export class LiveFeatureService {
         analysis.max_exposure_usd,
         analysis.suggested_action === 'none' ? 'watch' : 'flagged',
         analysis.raw_response || JSON.stringify(analysis),
+        features.agent_level ?? null,
+        features.agent_type ?? null,
+        features.agent_live_betting_rate ?? null,
+        features.agent_prop_builder_rate ?? null,
       ]
     );
 
@@ -608,6 +631,22 @@ export class LiveFeatureService {
     );
   }
 
+  private async getAgentContext(agentLogin: string | null | undefined): Promise<{
+    level: number;
+    agent_type: string;
+    live_betting_rate_m: number;
+    prop_builder_rate_m: number;
+  } | null> {
+    if (!agentLogin) return null;
+    return this.db.get(
+      `SELECT level, agent_type, live_betting_rate_m, prop_builder_rate_m
+       FROM agents
+       WHERE provider = 'buckeye' AND login = ?
+       LIMIT 1`,
+      [agentLogin.trim().toUpperCase()]
+    );
+  }
+
   private async analyzeWithKimiOrHeuristic(
     features: CustomerFeatureVector,
     recentWagers: WagerFeatureRow[]
@@ -712,6 +751,28 @@ function buildHeuristicAnalysis(features: CustomerFeatureVector): LiveRiskAnalys
   if (features.sport_diversity_score >= 0.8 && winRate > 0.53) {
     score += 8;
     factors.push('broad market activity with positive results');
+  }
+
+  // Agent context risk factors
+  const agentLevel = Number(features.agent_level ?? 0);
+  const agentLiveRate = Number(features.agent_live_betting_rate ?? 0);
+  const agentPropRate = Number(features.agent_prop_builder_rate ?? 0);
+
+  if (agentLevel === 1 || agentLevel === 2) {
+    score += 6;
+    factors.push(`top-tier agent (level ${agentLevel}) — syndicate exposure possible`);
+  }
+  if (agentLiveRate > 0.5) {
+    score += 4;
+    factors.push('agent has elevated live betting rate');
+  }
+  if (agentPropRate > 0.5) {
+    score += 4;
+    factors.push('agent has elevated prop builder rate');
+  }
+  if (features.agent_type === 'M' && lifetime >= 30) {
+    score += 3;
+    factors.push('manager-type agent with active player');
   }
 
   score = Math.min(100, Math.max(score, tierScoreFloor(features.risk_tier)));

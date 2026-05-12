@@ -1,6 +1,10 @@
-import { describe, test, expect } from 'bun:test';
-import { evaluateWager, evaluateWagers } from '../src/risk/AlertEngine';
+import { describe, expect, test } from 'bun:test';
 import { loadLocalAgentHierarchy } from '../src/api/helpers';
+import type { Database } from '../src/database';
+import { classifyPlayer360Freshness } from '../src/player360/policies';
+import type { EnrichedWager } from '../src/risk/AlertEngine';
+import { evaluateWager, evaluateWagers } from '../src/risk/AlertEngine';
+import type { BuckeyeAgentPerformanceOptions, BuckeyeWeeklyFigureOptions } from '../src/scrapers/BuckeyeAPI';
 import {
   parseAgentPerformanceReport,
   parsePlayerPerformanceReport,
@@ -8,11 +12,7 @@ import {
   parseWeeklyFigureSummary,
   sanitizeBuckeyeLogin,
 } from '../src/scrapers/BuckeyeAPI';
-import type { EnrichedWager } from '../src/risk/AlertEngine';
-import { classifyPlayer360Freshness } from '../src/player360/policies';
 import type { AgentDelta } from '../src/scrapers/LiveAgentTree';
-import type { BuckeyeAgentPerformanceOptions, BuckeyeWeeklyFigureOptions } from '../src/scrapers/BuckeyeAPI';
-import type { Database } from '../src/database';
 import type { BuckeyeScraperManager } from '../src/scrapers/ScraperManager';
 
 interface TestAgentEntry {
@@ -40,7 +40,15 @@ interface LocalHierarchyAgent {
 }
 
 function testDatabase(db: object): Database {
-  return db as unknown as Database;
+  // Provide a minimal mock that satisfies both bun:sqlite Database and AppDatabase usage
+  const mock = {
+    run: () => ({ changes: 0, lastInsertRowid: 0 }),
+    get: () => null,
+    exec: () => Promise.resolve(),
+    query: () => ({ all: () => [], get: () => null, run: () => ({ changes: 0 }) }),
+    ...db,
+  };
+  return mock as unknown as Database;
 }
 
 function managerAgents(manager: BuckeyeScraperManager): Map<string, TestAgentEntry> {
@@ -418,7 +426,7 @@ describe('LiveAgentTree', () => {
 describe('BuckeyeScraperManager hierarchy', () => {
   test('returns unauthenticated response without an active Buckeye agent', async () => {
     const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
-    const manager = new BuckeyeScraperManager(testDatabase({}), () => {}, false);
+    const manager = new BuckeyeScraperManager(testDatabase({}), () => { }, false);
 
     const result = await manager.getAgentHierarchy();
 
@@ -428,7 +436,7 @@ describe('BuckeyeScraperManager hierarchy', () => {
 
   test('uses requested active agent for hierarchy lookups', async () => {
     const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
-    const manager = new BuckeyeScraperManager(testDatabase({}), () => {}, false);
+    const manager = new BuckeyeScraperManager(testDatabase({}), () => { }, false);
     const calls: string[] = [];
 
     managerAgents(manager).set('A1', {
@@ -460,7 +468,7 @@ describe('BuckeyeScraperManager hierarchy', () => {
 describe('BuckeyeScraperManager weekly figures', () => {
   test('returns unauthenticated response without an active Buckeye agent', async () => {
     const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
-    const manager = new BuckeyeScraperManager(testDatabase({}), () => {}, false);
+    const manager = new BuckeyeScraperManager(testDatabase({}), () => { }, false);
 
     const result = await manager.getWeeklyFigureByAgentLite(undefined, { week: 0 });
 
@@ -470,7 +478,7 @@ describe('BuckeyeScraperManager weekly figures', () => {
 
   test('uses requested active agent for weekly figure lookups', async () => {
     const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
-    const manager = new BuckeyeScraperManager(testDatabase({}), () => {}, false);
+    const manager = new BuckeyeScraperManager(testDatabase({}), () => { }, false);
     const calls: string[] = [];
 
     managerAgents(manager).set('A1', {
@@ -979,7 +987,7 @@ describe('Buckeye vault restore', () => {
 describe('BuckeyeScraperManager manager snapshot', () => {
   test('returns unauthenticated response without an active Buckeye agent', async () => {
     const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
-    const manager = new BuckeyeScraperManager(testDatabase({}), () => {}, false);
+    const manager = new BuckeyeScraperManager(testDatabase({}), () => { }, false);
 
     const result = await manager.getBuckeyeManagerSnapshot();
 
@@ -989,7 +997,7 @@ describe('BuckeyeScraperManager manager snapshot', () => {
 
   test('uses requested active agent for manager snapshot lookups', async () => {
     const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
-    const manager = new BuckeyeScraperManager(testDatabase({}), () => {}, false);
+    const manager = new BuckeyeScraperManager(testDatabase({}), () => { }, false);
     const calls: string[] = [];
 
     managerAgents(manager).set('A1', {
@@ -1022,7 +1030,7 @@ describe('BuckeyeScraperManager manager snapshot', () => {
 describe('BuckeyeScraperManager Buckeye agent performance report', () => {
   test('returns unauthenticated response without an active Buckeye agent', async () => {
     const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
-    const manager = new BuckeyeScraperManager(testDatabase({}), () => {}, false);
+    const manager = new BuckeyeScraperManager(testDatabase({}), () => { }, false);
 
     const result = await manager.getBuckeyeAgentPerformanceReport(undefined, {
       start: '04/28/2026',
@@ -1035,7 +1043,7 @@ describe('BuckeyeScraperManager Buckeye agent performance report', () => {
 
   test('uses requested active agent for Buckeye agent performance lookups', async () => {
     const { BuckeyeScraperManager } = await import('../src/scrapers/ScraperManager');
-    const manager = new BuckeyeScraperManager(testDatabase({}), () => {}, false);
+    const manager = new BuckeyeScraperManager(testDatabase({}), () => { }, false);
     const calls: string[] = [];
 
     managerAgents(manager).set('A1', {
@@ -1076,7 +1084,7 @@ describe('BuckeyeScraperManager Buckeye agent performance report', () => {
         return { lastID: 0, changes: 1 };
       },
     };
-    const manager = new BuckeyeScraperManager(testDatabase(db), () => {}, false);
+    const manager = new BuckeyeScraperManager(testDatabase(db), () => { }, false);
 
     managerAgents(manager).set('A1', {
       api: {
@@ -1270,7 +1278,7 @@ describe('BuckeyeScraperManager player details', () => {
       },
       all: async () => [{ agent_login: 'AGENT1' }],
     };
-    const manager = new BuckeyeScraperManager(testDatabase(fakeDb), () => {}, false);
+    const manager = new BuckeyeScraperManager(testDatabase(fakeDb), () => { }, false);
 
     const result = await manager.getPlayerDetails('PLAYER1');
 

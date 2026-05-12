@@ -24,6 +24,17 @@ export interface SecretStore {
   delete(options: { service: string; name: string }): Promise<void | boolean>;
 }
 
+const SECRET_TIMEOUT_MS = 3000;
+
+function withTimeout<T>(promise: Promise<T>, label: string): Promise<T | null> {
+  return Promise.race([
+    promise.then((v) => v as T | null),
+    new Promise<T | null>((_, reject) =>
+      setTimeout(() => reject(new Error(`Secret operation timed out after ${SECRET_TIMEOUT_MS}ms: ${label}`)), SECRET_TIMEOUT_MS)
+    ),
+  ]);
+}
+
 export class BunSecretVault {
   constructor(private readonly store: SecretStore = secrets) {}
 
@@ -163,7 +174,8 @@ export class BunSecretVault {
 
   private async get(name: string): Promise<string | null> {
     try {
-      return await this.store.get({ service: BUCKEYE_SERVICE, name });
+      const result = await withTimeout(this.store.get({ service: BUCKEYE_SERVICE, name }), `get:${name}`);
+      return result;
     } catch (error) {
       console.warn(`[SecretVault] Unable to read ${name}:`, error instanceof Error ? error.message : error);
       return null;
@@ -172,7 +184,7 @@ export class BunSecretVault {
 
   private async set(name: string, value: string): Promise<void> {
     try {
-      await this.store.set({ service: BUCKEYE_SERVICE, name, value });
+      await withTimeout(this.store.set({ service: BUCKEYE_SERVICE, name, value }), `set:${name}`);
     } catch (error) {
       console.warn(`[SecretVault] Unable to save ${name}:`, error instanceof Error ? error.message : error);
     }
@@ -180,7 +192,7 @@ export class BunSecretVault {
 
   private async delete(name: string): Promise<void> {
     try {
-      await this.store.delete({ service: BUCKEYE_SERVICE, name });
+      await withTimeout(this.store.delete({ service: BUCKEYE_SERVICE, name }), `delete:${name}`);
     } catch (error) {
       console.warn(`[SecretVault] Unable to delete ${name}:`, error instanceof Error ? error.message : error);
     }

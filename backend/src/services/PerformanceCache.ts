@@ -8,6 +8,8 @@
  * - Graceful degradation when Redis is unavailable
  */
 
+import { logger } from '../utils/logger';
+
 const DEFAULT_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const CACHE_PREFIX = 'sportsterminal:perf:';
 const PUBSUB_CHANNEL = 'sportsterminal:perf:updates';
@@ -140,7 +142,7 @@ export class PerformanceCache {
         this.redis.close();
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.warn(`[PerformanceCache] Redis close error: ${msg}`);
+        logger.warn(`Redis close error: ${msg}`);
       }
     }
     this.redis = null;
@@ -155,15 +157,15 @@ export class PerformanceCache {
       this.redis = new RedisClient(redisUrl);
       this.redis.onconnect = () => {
         this.connected = true;
-        console.log('[PerformanceCache] Redis connected');
+        logger.info('Redis connected');
       };
       this.redis.onclose = () => {
         this.connected = false;
-        console.log('[PerformanceCache] Redis disconnected');
+        logger.info('Redis disconnected');
       };
       this.redis.connect();
     } catch {
-      console.warn('[PerformanceCache] Redis unavailable — running in fallback mode');
+      logger.warn('Redis unavailable — running in fallback mode');
       this.redis = null;
       this.connected = false;
     }

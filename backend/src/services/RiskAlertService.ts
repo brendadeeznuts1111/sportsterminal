@@ -4,12 +4,13 @@
  * Uses the existing alert_webhooks table and WebhookService infrastructure.
  */
 
-import type { Database } from '../database';
 import { COMMAND_CENTER_MAP } from '../config/commandCenterMap';
+import type { Database } from '../database';
+import { logger } from '../utils/logger';
 import { streamHub } from './StreamHub';
-import { webhookCircuitBreaker } from './WebhookCircuitBreaker';
-import { TelegramTopicService } from './TelegramTopicService';
 import { TelegramBotClient } from './TelegramBotClient';
+import { TelegramTopicService } from './TelegramTopicService';
+import { webhookCircuitBreaker } from './WebhookCircuitBreaker';
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -91,7 +92,7 @@ export class RiskAlertService {
 
     for (const hook of webhooks) {
       if (!webhookCircuitBreaker.canDeliver(hook.url)) {
-        console.warn(`[RiskAlert] Circuit open for webhook ${hook.name}, skipping`);
+        logger.warn(`Circuit open for webhook ${hook.name}, skipping`);
         failed++;
         continue;
       }
@@ -123,7 +124,7 @@ export class RiskAlertService {
           failed++;
         }
       } catch (err) {
-        console.error(`[RiskAlert] Webhook failed for ${hook.name}:`, err);
+        logger.error(`Webhook failed for ${hook.name}`, err);
         webhookCircuitBreaker.recordFailure(hook.url);
         await this.logDelivery({
           customer_id: input.customer_id,
@@ -141,7 +142,7 @@ export class RiskAlertService {
     try {
       await this.routeToTelegramTopic(input);
     } catch (err) {
-      console.warn('[RiskAlert] Telegram routing failed:', err instanceof Error ? err.message : err);
+      logger.warn('Telegram routing failed', err instanceof Error ? err.message : err);
     }
 
     return { sent, failed };
@@ -154,15 +155,14 @@ export class RiskAlertService {
   async sendSystemAlert(summary: string, detail?: string): Promise<void> {
     const topicService = new TelegramTopicService(this.db);
     const client = new TelegramBotClient();
+    await client.init();
     if (!client.isConfigured) return;
 
-    const systemSg = await this.db.get<{ supergroup_chat_id: string }>(
-      `SELECT supergroup_chat_id FROM agent_supergroups WHERE purpose = 'system_internal' LIMIT 1`
-    );
-    if (!systemSg) return;
+    const chatId = await topicService.getSystemChatId();
+    if (!chatId) return;
 
-    const topic = await topicService.findTopicByPurpose(systemSg.supergroup_chat_id, 'risk_alerts');
-    if (!topic) return;
+    const threadId = await topicService.getSystemTopicThreadId('risk_alerts');
+    if (!threadId) return;
 
     const text = [
       `⚙️ *SYSTEM ALERT*`,
@@ -174,8 +174,8 @@ export class RiskAlertService {
     ].join('\n');
 
     await client.sendMessage({
-      chat_id: systemSg.supergroup_chat_id,
-      message_thread_id: topic.topic_thread_id,
+      chat_id: chatId,
+      message_thread_id: threadId,
       text,
       parse_mode: 'Markdown',
     });
@@ -454,6 +454,7 @@ export class RiskAlertService {
 
   private async routeToTelegramTopic(input: RiskAlertInput): Promise<void> {
     const client = new TelegramBotClient();
+    await client.init();
     if (!client.isConfigured) return;
 
     const topicService = new TelegramTopicService(this.db);

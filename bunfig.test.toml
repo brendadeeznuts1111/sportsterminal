@@ -1,0 +1,14 @@
+# bunfig.test.toml — Test suite configuration
+# Usage: bun --config bunfig.test.toml test
+
+[console]
+depth = 2
+
+[run]
+envFile = [".env.shared", ".env.test"]
+
+[test]
+preload = "./scripts/preload.ts"
+
+[install]
+auto = "disable"

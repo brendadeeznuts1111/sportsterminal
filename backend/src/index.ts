@@ -1,4 +1,4 @@
-import { serve, type ServerWebSocket } from 'bun';
+import { fetch as bunFetch, dns, serve, type ServerWebSocket } from 'bun';
 import { corsHeaders } from './api/helpers';
 import { RateLimiter, getRateLimiter } from './api/rateLimiter';
 import { routeRequest } from './api/router';
@@ -10,6 +10,9 @@ import { OddsPoller } from './odds/OddsPoller';
 import { BuckeyeScraperManager } from './scrapers/ScraperManager';
 import { restoreBuckeyeAgentsFromVault } from './services/BuckeyeVaultRestore';
 import { BunSecretVault } from './services/BunSecretVault';
+import { pluginLoader } from './services/PluginLoader';
+import { TickerBuffer, setGlobalTickerBuffer } from './services/TickerBuffer';
+import { registerBuiltinPlugins } from './services/BuiltinPlugins';
 import { initRiskCommandCenterCron } from './services/CommandCenterCron';
 import { PerformanceCache } from './services/PerformanceCache';
 import { startSandboxJanitor, startSandboxQueueProcessor } from './services/SandboxService';
@@ -156,7 +159,8 @@ async function isClientIpBlocked(clientIp: string): Promise<boolean> {
       [clientIp]
     );
     return Boolean(row);
-  } catch {
+  } catch (err) {
+    logger.warn('IP denylist check failed — allowing request', err instanceof Error ? err.message : String(err));
     return false;
   }
 }
@@ -165,6 +169,19 @@ async function startServer() {
   // Initialize database
   db = await initDatabase();
   logger.success('Database initialized');
+
+  // Warm DNS + preconnect for Buckeye API (shaves ~200-500ms off first call)
+  if (env.BUCKEYE_BASE_URL) {
+    try {
+      const hostname = new URL(env.BUCKEYE_BASE_URL).hostname;
+      dns.prefetch(hostname, 443);
+      bunFetch.preconnect(env.BUCKEYE_BASE_URL);
+      logger.info('DNS prefetch warmed up', { hostname });
+    } catch {
+      // Non-critical — skip if URL is malformed
+    }
+  }
+
   startSandboxQueueProcessor(db);
   startSandboxJanitor(db);
   logger.success('Sandbox queue processor initialized');
@@ -188,6 +205,13 @@ async function startServer() {
   secretVault = new BunSecretVault();
   scraperManager = new BuckeyeScraperManager(db, broadcast, debugMode, secretVault, performanceCache);
   logger.success('Scraper manager initialized');
+
+  // Initialize plugin system + ticker buffer
+  registerBuiltinPlugins((p) => pluginLoader.register(p));
+  const tickerBuffer = new TickerBuffer(db, { maxBufferSize: 200, flushIntervalMs: 3000 });
+  setGlobalTickerBuffer(tickerBuffer);
+  logger.success(`Plugin system initialized (${pluginLoader.list().length} plugins)`);
+  logger.success('Ticker buffer initialized');
 
   // Initialize odds poller
   oddsPoller = new OddsPoller(db, broadcast);
@@ -241,7 +265,7 @@ async function startServer() {
         ws.unsubscribe(WS_TOPIC_WAGERS_ALL);
       },
       drain(ws) {
-        console.debug('[WS] Backpressure cleared for', ws.remoteAddress);
+        logger.debug('WS backpressure cleared', ws.remoteAddress);
       },
     },
     async fetch(request, srv) {
@@ -608,4 +632,4 @@ async function handleWebSocketMessage(
   }
 }
 
-startServer().catch(console.error);
+startServer().catch((err) => logger.error('Fatal startup error', err));
