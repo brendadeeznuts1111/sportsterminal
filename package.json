@@ -5,7 +5,8 @@
   "type": "module",
   "private": true,
   "workspaces": [
-    "backend"
+    "backend",
+    "deploy/cli"
   ],
   "scripts": {
     "dev": "bun run --cwd backend dev",
