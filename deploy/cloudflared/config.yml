@@ -1,9 +1,0 @@
-# Cloudflare Tunnel Configuration
-# Routes terminal.factory-wager.com → localhost:3000
-tunnel: sportsterminal
-credentials-file: /root/.cloudflared/sportsterminal.json
-
-ingress:
-  - hostname: terminal.factory-wager.com
-    service: http://localhost:3000
-  - service: http_status:404

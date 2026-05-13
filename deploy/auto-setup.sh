@@ -54,7 +54,7 @@ ok "Docker $(docker --version | cut -d' ' -f3 | tr -d ',') ready"
 # ═══════════════════════════════════════════════════
 info "[3/8] Installing Bun..."
 if ! command -v bun &>/dev/null; then
-  curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1
+  echo "" | curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1
   export BUN_PATH="$HOME/.bun/bin"
   export PATH="$BUN_PATH:$PATH"
   echo 'export PATH="$HOME/.bun/bin:$PATH"' >> ~/.bashrc
@@ -85,7 +85,11 @@ info "[5/8] Fixing database migration for fresh installs..."
 cd "$INSTALL_DIR/backend"
 bun install >/dev/null 2>&1
 mkdir -p data
-bun run scripts/migrate.ts 2>&1 | tail -1 | grep -q "complete" && ok "Database initialized" || fail "Migration failed"
+  if bun run scripts/migrate.ts 2>&1; then
+    ok "Database initialized"
+  else
+    fail "Migration failed — check error above"
+  fi
 
 # ═══════════════════════════════════════════════════
 # 6. ENVIRONMENT CONFIGURATION
@@ -112,7 +116,7 @@ docker compose build app >/dev/null 2>&1
 docker compose up -d app >/dev/null 2>&1
 
 info "  Waiting for health check..."
-for i in $(seq 1 12); do
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   sleep 3
   if curl -sf http://localhost:3000/health >/dev/null 2>&1; then
     ok "Health check passed"

@@ -1,7 +1,7 @@
 FROM oven/bun:1.3.13-alpine
 WORKDIR /app
-COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+COPY package.json ./
+RUN bun install --no-optional 2>/dev/null || bun install
 COPY . .
 RUN mkdir -p data logs
 EXPOSE 3000
