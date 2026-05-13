@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# st — Sports Terminal VPS Management CLI
+# Install: curl -fsSL https://raw.githubusercontent.com/$REPO/master/deploy/st -o /usr/local/bin/st && chmod +x /usr/local/bin/st
+# Usage: st <command> [options]
+# Commands:
+#   deploy        Deploy the app to VPS
+#   status        Check VPS and app health
+#   logs          View container logs
+#   restart       Restart the container
+#   env           Manage environment variables
+#   tunnel        Setup/manage Cloudflare Tunnel
+#   ssh           SSH into the VPS
+#   update        Pull latest code and redeploy
+#   shell         Run interactive shell on the VPS
+#   help          Show this help message
+
+set -e
+
+# ── Configuration ──
+VPS_IP="2.24.96.9"
+VPS_USER="root"
+PROJECT_DIR="/opt/sportsterminal"
+REPO="brendadeeznuts1111/sportsterminal"
+DOMAIN="terminal.factory-wager.com"
+
+# Colors
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+info()  { echo -e "${CYAN}[INFO]${NC}  $1"; }
+ok()    { echo -e "${GREEN}[OK]${NC}    $1"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
+fail()  { echo -e "${RED}[FAIL]${NC}  $1"; exit 1; }
+
+# ── Help ──
+show_help() {
+  echo ""
+  echo -e "${CYAN}Sports Terminal VPS CLI${NC}"
+  echo "Usage: st <command> [options]"
+  echo ""
+  echo "Commands:"
+  echo "  deploy           Deploy app to VPS (runs auto-setup.sh)"
+  echo "  status           Check VPS and app health"
+  echo "  logs [n]         View last N lines of app logs (default: 30)"
+  echo "  restart          Restart the Docker container"
+  echo "  stop             Stop the Docker container"
+  echo "  ssh              SSH into the VPS"
+  echo "  shell            Run a command on the VPS (e.g., st shell 'ls -la')"
+  echo "  update           Pull latest code and redeploy"
+  echo "  env              Show current environment variables"
+  echo "  env set KEY=VAL  Set an environment variable"
+  echo "  tunnel start     Start Cloudflare Tunnel (requires TUNNEL_TOKEN)"
+  echo "  tunnel status    Check Cloudflare Tunnel status"
+  echo "  help             Show this help message"
+  echo ""
+  echo "Examples:"
+  echo "  st deploy        # Deploy the app"
+  echo "  st logs 50       # Show last 50 log lines"
+  echo "  st shell 'docker ps'  # Run docker ps on VPS"
+  echo "  st status        # Full health check"
+  echo ""
+}
+
+# ── SSH Helper ──
+ssh_cmd() {
+  ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "$VPS_USER@$VPS_IP" "$1" 2>&1
+}
+
+# ── Deploy ──
+cmd_deploy() {
+  info "Deploying Sports Terminal to $VPS_IP..."
+  info "This runs the auto-setup script on the VPS."
+  echo ""
+  echo -e "  ${CYAN}curl -fsSL https://raw.githubusercontent.com/$REPO/master/deploy/auto-setup.sh | bash${NC}"
+  echo ""
+  read -p "Continue? (y/n): " confirm
+  if [ "$confirm" != "y" ]; then
+    info "Deploy cancelled."
+    exit 0
+  fi
+  ssh_cmd "curl -fsSL https://raw.githubusercontent.com/$REPO/master/deploy/auto-setup.sh | bash"
+}
+
+# ── Status ──
+cmd_status() {
+  echo ""
+  info "Checking VPS status..."
+  
+  # Check if VPS is reachable
+  if ping -c 1 -W 3 "$VPS_IP" >/dev/null 2>&1; then
+    ok "VPS is reachable ($VPS_IP)"
+  else
+    warn "VPS ping failed (may block ICMP)"
+  fi
+
+  # Check SSH
+  if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "$VPS_USER@$VPS_IP" "echo ok" 2>/dev/null | grep -q ok; then
+    ok "SSH connection works"
+  else
+    warn "SSH connection failed"
+    info "Run: ssh $VPS_USER@$VPS_IP"
+    return
+  fi
+
+  # Check Docker
+  echo ""
+  info "Docker containers:"
+  ssh_cmd "docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || echo 'Docker not available'"
+
+  # Check app health
+  echo ""
+  info "App health check:"
+  HEALTH=$(ssh_cmd "curl -sf http://localhost:3000/health 2>/dev/null || echo 'FAIL'")
+  if [ "$HEALTH" = "FAIL" ]; then
+    warn "Health endpoint not responding"
+    warn "Check logs: st logs"
+  else
+    ok "Health endpoint responds"
+    echo "  $HEALTH" | head -c 300
+    echo ""
+  fi
+
+  # Check disk usage
+  echo ""
+  info "Disk usage:"
+  ssh_cmd "df -h / | tail -1"
+
+  # Check uptime
+  echo ""
+  info "VPS uptime:"
+  ssh_cmd "uptime | sed 's/.*up //; s/,.*//'"
+}
+
+# ── Logs ──
+cmd_logs() {
+  local n="${1:-30}"
+  info "Last $n lines of app logs:"
+  echo ""
+  ssh_cmd "docker logs st-proxy --tail $n 2>/dev/null || docker compose -f $PROJECT_DIR/deploy/docker-compose.yml logs app --tail $n 2>/dev/null || docker logs \$(docker ps -q --filter 'name=sportsterminal' --filter 'name=st-proxy' 2>/dev/null | head -1) --tail $n 2>/dev/null || echo 'No container logs available'"
+}
+
+# ── Restart ──
+cmd_restart() {
+  info "Restarting Docker container..."
+  ssh_cmd "cd $PROJECT_DIR/deploy && docker compose restart app 2>/dev/null || docker restart \$(docker ps -q --filter 'name=sportsterminal' 2>/dev/null | head -1) 2>/dev/null || echo 'No container to restart'"
+  ok "Restart command sent"
+  sleep 5
+  info "Checking health..."
+  if ssh_cmd "curl -sf http://localhost:3000/health >/dev/null 2>&1"; then
+    ok "App is healthy"
+  else
+    warn "App not responding yet - check: st logs"
+  fi
+}
+
+# ── Stop ──
+cmd_stop() {
+  info "Stopping Docker container..."
+  ssh_cmd "cd $PROJECT_DIR/deploy && docker compose down app 2>/dev/null || docker stop \$(docker ps -q --filter 'name=sportsterminal' 2>/dev/null | head -1) 2>/dev/null || echo 'No container to stop'"
+  ok "Container stopped"
+}
+
+# ── Update ──
+cmd_update() {
+  info "Pulling latest code and redeploying..."
+  ssh_cmd "
+    cd $PROJECT_DIR && \
+    git fetch origin && \
+    git reset --hard origin/master && \
+    cd deploy && \
+    docker compose build app && \
+    docker compose up -d app
+  "
+  ok "Update complete"
+  sleep 5
+  cmd_status
+}
+
+# ── Env ──
+cmd_env() {
+  local action="$1"
+  local keyval="$2"
+  
+  if [ "$action" = "set" ] && [ -n "$keyval" ]; then
+    local key="${keyval%%=*}"
+    local val="${keyval#*=}"
+    info "Setting $key on VPS..."
+    ssh_cmd "cd $PROJECT_DIR/deploy && grep -q '^$key=' .env 2>/dev/null && sed -i 's|^$key=.*|$key=$val|' .env || echo '$key=$val' >> .env"
+    ok "$key set to $val"
+    info "Restarting to apply..."
+    cmd_restart
+  else
+    info "Current environment:"
+    ssh_cmd "cat $PROJECT_DIR/deploy/.env 2>/dev/null || echo 'No .env file found'"
+  fi
+}
+
+# ── Tunnel ──
+cmd_tunnel() {
+  local action="$1"
+  case "$action" in
+    start)
+      info "Starting Cloudflare Tunnel..."
+      ssh_cmd "cd $PROJECT_DIR/deploy && docker compose up -d tunnel 2>/dev/null || echo 'Tunnel service not defined in compose'"
+      ok "Tunnel started"
+      info "Route $DOMAIN → localhost:3000 in Cloudflare Dashboard"
+      ;;
+    status)
+      info "Tunnel status:"
+      ssh_cmd "docker ps --filter 'name=cloudflared' --format '{{.Names}} {{.Status}}' 2>/dev/null || echo 'No tunnel container found'"
+      ;;
+    *)
+      warn "Usage: st tunnel {start|status}"
+      ;;
+  esac
+}
+
+# ── SSH ──
+cmd_ssh() {
+  info "Connecting to $VPS_USER@$VPS_IP..."
+  ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP"
+}
+
+# ── Shell (run command) ──
+cmd_shell() {
+  if [ $# -eq 0 ]; then
+    warn "Usage: st shell '<command>'"
+    exit 1
+  fi
+  info "Running on $VPS_IP: $*"
+  ssh_cmd "$*"
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════════════
+
+COMMAND="${1:-help}"
+shift 2>/dev/null || true
+
+case "$COMMAND" in
+  deploy)     cmd_deploy "$@" ;;
+  status)     cmd_status "$@" ;;
+  logs)       cmd_logs "$@" ;;
+  restart)    cmd_restart "$@" ;;
+  stop)       cmd_stop "$@" ;;
+  update)     cmd_update "$@" ;;
+  env)        cmd_env "$@" ;;
+  tunnel)     cmd_tunnel "$@" ;;
+  ssh)        cmd_ssh "$@" ;;
+  shell)      cmd_shell "$@" ;;
+  help|--help|-h) show_help ;;
+  *)
+    echo -e "${RED}Unknown command: $COMMAND${NC}"
+    show_help
+    exit 1
+    ;;
+esac
