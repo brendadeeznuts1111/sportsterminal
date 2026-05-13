@@ -1,0 +1,9 @@
+{
+  "name": "@sportsterminal/vps-cli",
+  "version": "1.0.0",
+  "description": "VPS management CLI for Sports Terminal — run with: bunx st <command>",
+  "type": "module",
+  "bin": {
+    "st": "./cli.ts"
+  }
+}
