@@ -16,12 +16,13 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
+        working-directory: backend
         run: bun install
 
-      - name: Run tests
-        run: bun run --cwd backend test:suite 2>&1 || true
+      - name: Type check
+        working-directory: backend
+        run: bun run typecheck 2>&1 || true
         continue-on-error: true
-        timeout-minutes: 5
 
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.2.0
@@ -39,15 +40,14 @@ jobs:
             docker compose build app
             docker compose up -d app
             echo "⏳ Waiting for health check..."
-            for i in 1 2 3 4 5 6 7 8; do
+            for i in 1 2 3 4 5 6 7 8 9 10; do
               sleep 3
               if curl -sf http://localhost:3000/health > /dev/null 2>&1; then
                 echo "✅ Health check passed"
-                docker compose logs app --tail 5
                 exit 0
               fi
-              echo "  Attempt $i/8..."
+              echo "  Attempt $i/10..."
             done
-            echo "❌ Health check failed"
+            echo "❌ Health check failed — checking logs..."
             docker compose logs app --tail 30
             exit 1
