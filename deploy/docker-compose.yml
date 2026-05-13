@@ -1,0 +1,37 @@
+services:
+  app:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: sportsterminal
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3000
+      - NODE_ENV=production
+      - DATABASE_URL=/app/data/terminal.db
+      - BUCKEYE_BASE_URL=https://fantasy402.com
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production-min-32-chars}
+      - RATE_LIMIT_MAX=100
+      - RATE_LIMIT_WINDOW_MS=60000
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    depends_on:
+      - app

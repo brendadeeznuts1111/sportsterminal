@@ -1,0 +1,51 @@
+name: Deploy to VPS
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --cwd backend
+
+      - name: Run tests
+        run: bun run test:suite
+        continue-on-error: true
+
+      - name: Deploy to VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: 2.24.96.9
+          username: root
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+            echo "🚀 Deploying Sports Terminal..."
+            cd /opt/sportsterminal
+            git fetch origin
+            git reset --hard origin/main
+            docker compose build app
+            docker compose up -d app
+            echo "⏳ Waiting for health check..."
+            for i in 1 2 3 4 5 6 7 8; do
+              sleep 3
+              if curl -sf http://localhost:3000/health > /dev/null 2>&1; then
+                echo "✅ Health check passed"
+                docker compose logs app --tail 5
+                exit 0
+              fi
+              echo "  Attempt $i/8..."
+            done
+            echo "❌ Health check failed"
+            docker compose logs app --tail 30
+            exit 1
