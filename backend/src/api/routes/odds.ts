@@ -8,7 +8,7 @@ export function registerOddsRoutes(
   url: URL,
   _request: Request,
   oddsPoller: OddsPoller
-): Response | null {
+): Response | null | Promise<Response> {
   if (url.pathname === '/api/odds/events') {
     return handleAsync(async () => oddsPoller.getEvents(), corsHeaders);
   }
@@ -64,6 +64,10 @@ export function registerOddsRoutes(
 
   if (url.pathname === '/api/books') {
     return handleAsync(async () => oddsPoller.getBooksList(), corsHeaders);
+  }
+
+  if (url.pathname === '/api/odds/stream') {
+    return oddsPoller.openOddsStream(_request);
   }
 
   if (url.pathname === '/api/odds/live') {

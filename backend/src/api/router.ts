@@ -168,6 +168,10 @@ export function createRouter(deps: RouterDeps, rateLimiter?: RateLimiter): UrlPa
     return registerOddsRoutes(url, request, deps.oddsPoller);
   });
 
+  router.get('/api/odds/stream', async (url, request) => {
+    return registerOddsRoutes(url, request, deps.oddsPoller);
+  });
+
   router.get('/api/odds/events', async (url, request) => {
     return registerOddsRoutes(url, request, deps.oddsPoller);
   });

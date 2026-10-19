@@ -267,6 +267,7 @@ Patterns:
 Odds:
 
 - `GET /api/odds/live`
+- `GET /api/odds/stream` (SSE price deltas; `id:` replay via `Last-Event-ID` or `?lastEventId=`)
 - `GET /api/odds/events`
 - `GET /api/odds/snapshots`
 - `GET /api/odds/movements`

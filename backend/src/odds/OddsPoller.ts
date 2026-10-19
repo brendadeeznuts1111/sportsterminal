@@ -6,6 +6,7 @@
 
 import type { Database } from '../database';
 import type { OddsProvider, EventOdds, LineMovement, BookHealth } from './types';
+import { OddsEventStream } from './OddsEventStream';
 import { TheOddsProvider } from './providers/TheOddsApiProvider';
 import { createManagedInterval, type ManagedIntervalTask } from '../services/Scheduler';
 
@@ -41,6 +42,7 @@ export class OddsPoller {
   private healthIntervalMs: number = 60000; // 60 seconds
   private lastOdds: EventOdds[] = [];
   private broadcast: (msg: object) => void;
+  private oddsStream = new OddsEventStream();
 
   constructor(db: Database, broadcast: (msg: object) => void) {
     this.db = db;
@@ -58,7 +60,16 @@ export class OddsPoller {
     }
   }
 
+  /**
+   * SSE price stream. The /ws odds.update message stays a count-only nudge;
+   * this response carries the actual per-book prices and Last-Event-ID replay.
+   */
+  openOddsStream(request: Request): Response {
+    return this.oddsStream.createResponse(request);
+  }
+
   async start(): Promise<void> {
+    this.oddsStream.start();
     if (this.pollTask?.isRunning()) return;
 
     // Synthetic odds are opt-in only. Buckeye views never depend on this provider.
@@ -88,6 +99,7 @@ export class OddsPoller {
     this.healthTask?.stop();
     this.pollTask = null;
     this.healthTask = null;
+    this.oddsStream.stop();
     console.log('[OddsPoller] Stopped');
   }
 
@@ -102,7 +114,10 @@ export class OddsPoller {
     this.isPolling = true;
 
     try {
+      const previous = this.lastOdds;
       const odds = await this.provider.fetchOdds();
+      if (previous.length === 0) this.oddsStream.publishSnapshot(odds);
+      else this.oddsStream.publishPriceDeltas(previous, odds);
       this.lastOdds = odds;
 
       // Detect movements before storing (needs previous state)
