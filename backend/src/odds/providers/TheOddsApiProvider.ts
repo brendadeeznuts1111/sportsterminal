@@ -38,8 +38,8 @@ export class TheOddsProvider implements OddsProvider {
       throw new Error(`TheOddsAPI error: ${response.status} ${response.statusText}`);
     }
 
-    const data = await response.json();
-    return data.map((item: any) => this.mapEvent(item));
+    const data = await response.json() as unknown[];
+    return data.map((item) => this.mapEvent(item));
   }
 
   async checkHealth(): Promise<BookHealth[]> {

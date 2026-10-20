@@ -28,7 +28,7 @@ describe('DemoOddsProvider', () => {
     const provider = new DemoOddsProvider();
 
     // First poll establishes baseline
-    const first = await provider.fetchOdds();
+    await provider.fetchOdds();
 
     // Second poll should detect changes
     const second = await provider.fetchOdds();

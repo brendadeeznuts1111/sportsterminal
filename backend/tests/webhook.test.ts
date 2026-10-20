@@ -92,6 +92,7 @@ describe('WebhookService', () => {
 
     // We test this indirectly via dispatchAlert
     const alert: Alert = { ruleName: 'Test', severity: 'warning', message: 'test', wagerNumber: 1 };
+    void alert;
     // Only 'All' should match warning (not 'CriticalOnly')
     // This is tested by inspecting the delivery log after a mock dispatch
   });

@@ -353,8 +353,8 @@ describe('LiveAgentTree', () => {
 
     const deltas = tree.processAlert('AGENT1');
 
-    expect(deltas.find((d: any) => d.agent === 'AGENT1').alert_count).toBe(1);
-    expect(deltas.find((d: any) => d.agent === 'MASTER').alert_count).toBe(1);
+    expect(deltas.find((d) => d.agent === 'AGENT1')!.alert_count).toBe(1);
+    expect(deltas.find((d) => d.agent === 'MASTER')!.alert_count).toBe(1);
   });
 });
 
@@ -442,7 +442,8 @@ describe('BuckeyeScraperManager weekly figures', () => {
     });
 
     expect(calls).toEqual(['A2:0:A:byDay']);
-    expect(result.data.GENERAL[0].agent).toBe('A2');
+    const weeklyData = result.data as { GENERAL: Array<{ agent: string }> };
+    expect(weeklyData.GENERAL[0].agent).toBe('A2');
   });
 });
 
@@ -609,7 +610,10 @@ describe('Buckeye vault routes', () => {
       manager,
       vault
     );
-    const status = await statusResponse!.json();
+    const status = await statusResponse!.json() as {
+      available: boolean;
+      agents: Array<Record<string, unknown>>;
+    };
 
     expect(status.available).toBe(true);
     expect(status.agents).toContainEqual({
@@ -636,7 +640,7 @@ describe('Buckeye vault routes', () => {
       manager,
       vault
     );
-    const clear = await clearResponse!.json();
+    const clear = await clearResponse!.json() as { success: boolean };
 
     expect(clear.success).toBe(true);
     expect(await vault.getBuckeyeSecrets('BILLY666')).toBeNull();
@@ -720,8 +724,9 @@ describe('BuckeyeScraperManager manager snapshot', () => {
     const result = await manager.getBuckeyeManagerSnapshot('A2');
 
     expect(calls).toEqual(['A2']);
-    expect(result.agentId).toBe('A2');
-    expect(result.sportsType[0].Sport).toBe('Baseball');
+    const snapshot = result as { agentId: string; sportsType: Array<{ Sport: string }> };
+    expect(snapshot.agentId).toBe('A2');
+    expect(snapshot.sportsType[0].Sport).toBe('Baseball');
   });
 });
 
@@ -770,7 +775,8 @@ describe('BuckeyeScraperManager Buckeye agent performance report', () => {
     });
 
     expect(calls).toEqual(['A2:04/28/2026:05/09/2026:CP']);
-    expect(result.data[0].Agent).toBe('A2');
+    const performanceData = result.data as Array<{ Agent: string }>;
+    expect(performanceData[0].Agent).toBe('A2');
   });
 
   test('persists parsed Buckeye agent performance snapshots and checkpoint', async () => {
@@ -874,14 +880,20 @@ describe('BuckeyeScraperManager Buckeye agent performance report', () => {
 describe('Buckeye agent performance options', () => {
   test('documents all Buckeye getAgentPerformance form fields', async () => {
     const { registerBuckeyeRoutes } = await import('../src/api/routes/buckeye');
-    const response = registerBuckeyeRoutes(
+    const response = await registerBuckeyeRoutes(
       new URL('http://localhost/api/buckeye/agent-performance/options'),
       new Request('http://localhost/api/buckeye/agent-performance/options'),
       {} as any
     );
 
     expect(response).not.toBeNull();
-    const body = await response!.json();
+    const body = await response!.json() as {
+      requestFields: Array<{ key: string }>;
+      activities: Array<{ value: string; label: string }>;
+      sports: Array<{ value: string; label: string; rawValue: string }>;
+      periods: Array<{ value: string; label: string }>;
+      LIST?: Array<Record<string, unknown>>;
+    };
     const keys = body.requestFields.map((field: any) => field.key);
 
     for (const key of [
@@ -932,7 +944,9 @@ describe('Buckeye agent performance options', () => {
     );
 
     expect(response).not.toBeNull();
-    const body = await response!.json();
+    const body = await response!.json() as {
+      LIST: Array<Record<string, unknown>>;
+    };
     expect(body.LIST[0]).toEqual({
       sportType: 'Basketball          ',
       '0': 'Basketball          ',

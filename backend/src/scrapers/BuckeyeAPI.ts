@@ -438,8 +438,8 @@ export class BuckeyeAPI {
       throw new Error(`getBetTicker failed: ${response.status} ${response.statusText} - ${text.substring(0, 200)}`);
     }
 
-    const data = await response.json();
-    const list: any[] = data?.LIST || [];
+    const data = await response.json() as { LIST?: unknown };
+    const list: any[] = (data?.LIST as any[] | undefined) || [];
 
     this.log('getBetTicker returned', list.length, 'wagers');
 
@@ -481,7 +481,7 @@ export class BuckeyeAPI {
       });
 
       if (response.ok) {
-        const data = await response.json();
+        const data = await response.json() as { code?: string; token?: string };
         if (data.code || data.token) {
           this.token = data.code || data.token || '';
           this.log('Token renewed');
@@ -537,7 +537,7 @@ export class BuckeyeAPI {
       throw new Error(`getAgentHierarchy failed: ${response.status} ${response.statusText} - ${text.substring(0, 200)}`);
     }
 
-    const data = await response.json();
+    const data = await response.json() as { GENERAL?: { length?: number } };
     this.log('getAgentHierarchy returned', data?.GENERAL?.length || 0, 'agents');
     return data;
   }
@@ -946,7 +946,7 @@ export class BuckeyeAPI {
         throw new Error(`betTickerAction failed: ${response.status} ${response.statusText} - ${text.substring(0, 200)}`);
       }
 
-      const data = await response.json();
+      const data = await response.json() as { success?: boolean; code?: string; message?: string };
       const success = data?.success === true || data?.code === 'OK' || response.ok;
       return {
         success,
@@ -1274,7 +1274,7 @@ export function parseAgentPerformanceReport(data: any): BuckeyeAgentPerformanceR
       : [];
   const rows = rawRows.map(normalizeAgentPerformanceRow);
   const totals = rows.reduce(
-    (acc, row) => {
+    (acc: BuckeyeAgentPerformanceResult['parsed']['totals'], row: BuckeyeAgentPerformanceRow) => {
       acc.wagerCount += row.wagerCount;
       acc.risk += row.risk;
       acc.toWin += row.toWin;

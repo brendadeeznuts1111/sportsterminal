@@ -1,21 +1,22 @@
 /**
  * Webhook CRUD + delivery log routes
  */
-import { parseRequiredId, readJsonBody, handleAsync, corsHeaders } from '../helpers';
+import { parseRequiredId, readTypedBody, handleAsync, corsHeaders } from '../helpers';
+import { webhookCreateSchema, webhookUpdateSchema } from '../../../../shared/schemas.ts';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 
 export function registerWebhookRoutes(
   url: URL,
   request: Request,
   scraperManager: BuckeyeScraperManager
-): Response | null {
+): Response | Promise<Response | null> | null {
   if (url.pathname === '/api/webhooks') {
     if (request.method === 'GET') {
       return handleAsync(async () => scraperManager.getWebhookService().getWebhooks(), corsHeaders);
     }
     if (request.method === 'POST') {
       return handleAsync(async () => {
-        const body = await readJsonBody(request);
+        const body = await readTypedBody(request, webhookCreateSchema);
         return scraperManager.getWebhookService().createWebhook(body);
       }, corsHeaders);
     }
@@ -32,7 +33,7 @@ export function registerWebhookRoutes(
     if (request.method === 'PUT') {
       return handleAsync(async () => {
         const webhookId = parseRequiredId(webhookMatch[1]);
-        const body = await readJsonBody(request);
+        const body = await readTypedBody(request, webhookUpdateSchema);
         return scraperManager.getWebhookService().updateWebhook(webhookId, body);
       }, corsHeaders);
     }

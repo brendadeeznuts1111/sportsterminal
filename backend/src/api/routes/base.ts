@@ -5,6 +5,8 @@
 
 import { handleAsync, corsHeaders } from '../helpers';
 
+type HeaderMap = Record<string, string>;
+
 /**
  * Generic route handler for simple path matching.
  * @param path - The route path (e.g., '/api/agents')
@@ -12,10 +14,10 @@ import { handleAsync, corsHeaders } from '../helpers';
  * @param corsHeaders - CORS headers to include in response
  * @returns A route handler function
  */
-export function createRouteHandler<T>(
+export function createRouteHandler<T, R = unknown>(
   path: string,
-  handler: (url: URL, request: Request, deps: T) => Promise<any>,
-  headers: HeadersInit = corsHeaders
+  handler: (url: URL, request: Request, deps: T) => Promise<R>,
+  headers: HeaderMap = corsHeaders
 ): (url: URL, request: Request, deps: T) => Promise<Response | null> {
   return async (url: URL, request: Request, deps: T): Promise<Response | null> => {
     if (url.pathname !== path) return null;
@@ -31,11 +33,11 @@ export function createRouteHandler<T>(
  * @param corsHeaders - CORS headers to include in response
  * @returns A route handler function
  */
-export function createParamRouteHandler<T>(
+export function createParamRouteHandler<T, R = unknown>(
   path: string,
-  paramName: string,
-  handler: (url: URL, request: Request, deps: T, params: Record<string, string>) => Promise<any>,
-  headers: HeadersInit = corsHeaders
+  _paramName: string,
+  handler: (url: URL, request: Request, deps: T, params: Record<string, string>) => Promise<R>,
+  headers: HeaderMap = corsHeaders
 ): (url: URL, request: Request, deps: T) => Promise<Response | null> {
   return async (url: URL, request: Request, deps: T): Promise<Response | null> => {
     const match = url.pathname.match(new RegExp(`^${path.replace(/:([^/]+)/g, '([^/]+)')}$`));
@@ -59,11 +61,11 @@ export function createParamRouteHandler<T>(
  * @param corsHeaders - CORS headers to include in response
  * @returns A route handler function
  */
-export function createMethodRouteHandler<T>(
+export function createMethodRouteHandler<T, R = unknown>(
   path: string,
   method: 'GET' | 'POST' | 'PUT' | 'DELETE',
-  handler: (url: URL, request: Request, deps: T) => Promise<any>,
-  headers: HeadersInit = corsHeaders
+  handler: (url: URL, request: Request, deps: T) => Promise<R>,
+  headers: HeaderMap = corsHeaders
 ): (url: URL, request: Request, deps: T) => Promise<Response | null> {
   return async (url: URL, request: Request, deps: T): Promise<Response | null> => {
     if (url.pathname !== path || request.method !== method) return null;
@@ -79,11 +81,11 @@ export function createMethodRouteHandler<T>(
  * @param corsHeaders - CORS headers to include in response
  * @returns A route handler function
  */
-export function createQueryRouteHandler<T>(
+export function createQueryRouteHandler<T, R = unknown>(
   path: string,
   queryParams: Record<string, string>,
-  handler: (url: URL, request: Request, deps: T, query: URLSearchParams) => Promise<any>,
-  headers: HeadersInit = corsHeaders
+  handler: (url: URL, request: Request, deps: T, query: URLSearchParams) => Promise<R>,
+  headers: HeaderMap = corsHeaders
 ): (url: URL, request: Request, deps: T) => Promise<Response | null> {
   return async (url: URL, request: Request, deps: T): Promise<Response | null> => {
     if (url.pathname !== path) return null;

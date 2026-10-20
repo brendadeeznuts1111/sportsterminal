@@ -1,4 +1,4 @@
-import { serve } from 'bun';
+import { serve, type ServerWebSocket } from 'bun';
 import { initDatabase, type Database } from './database';
 import { BuckeyeScraperManager } from './scrapers/ScraperManager';
 import { OddsPoller } from './odds/OddsPoller';
@@ -10,6 +10,15 @@ import { BunSecretVault } from './services/BunSecretVault';
 import { restoreBuckeyeAgentsFromVault } from './services/BuckeyeVaultRestore';
 import { PerformanceCache } from './services/PerformanceCache';
 import { loadEnv } from './config/env';
+import { clientSocketMessageSchema } from '../../shared/schemas.ts';
+import type { BroadcastMessage, ServerSocketReply } from '../../shared/messages.ts';
+
+interface WsSession {
+  agentId: string | null;
+  isAuthenticated: boolean;
+  lastPing: number;
+  pingInterval?: ReturnType<typeof setInterval>;
+}
 
 const env = loadEnv();
 const PORT = env.PORT;
@@ -24,9 +33,9 @@ let secretVault: BunSecretVault;
 let performanceCache: PerformanceCache | undefined;
 
 // Connected WebSocket clients
-const wsClients = new Set<any>();
+const wsClients = new Set<ServerWebSocket<WsSession>>();
 
-function broadcast(msg: object) {
+function broadcast(msg: BroadcastMessage) {
   const payload = JSON.stringify(msg);
   for (const client of wsClients) {
     try {
@@ -108,7 +117,7 @@ async function startServer() {
   await restoreBuckeyeFromVault();
 
   // Create HTTP server with WebSocket support
-  const server = serve({
+  serve<WsSession>({
     port: PORT,
     hostname: HOST,
     websocket: {
@@ -158,7 +167,7 @@ async function startServer() {
             const payload = await verifyToken(token, JWT_SECRET);
             // Token valid — upgrade with pre-authenticated data
             if (server.upgrade(request, {
-              data: { agentId: payload.agentId, isAuthenticated: true },
+              data: { agentId: payload.agentId, isAuthenticated: true, lastPing: Date.now() },
             })) {
               return undefined;
             }
@@ -171,7 +180,7 @@ async function startServer() {
         } else {
           // Dev mode — upgrade without auth
           if (server.upgrade(request, {
-            data: { agentId: null, isAuthenticated: false },
+            data: { agentId: null, isAuthenticated: false, lastPing: Date.now() },
           })) {
             return undefined;
           }
@@ -201,23 +210,35 @@ async function startServer() {
   console.log(`🚀 Backend running at http://${HOST}:${PORT}`);
 }
 
+function sendReply(ws: ServerWebSocket<WsSession>, msg: ServerSocketReply): void {
+  ws.send(JSON.stringify(msg));
+}
+
 async function handleWebSocketMessage(
-  ws: any,
+  ws: ServerWebSocket<WsSession>,
   message: string | Buffer,
   scraperManager: BuckeyeScraperManager
 ) {
   try {
-    const msg = JSON.parse(message.toString());
+    const raw: unknown = JSON.parse(message.toString());
+    const parsed = clientSocketMessageSchema.safeParse(raw);
+    if (!parsed.success) {
+      const type = raw && typeof raw === 'object' && 'type' in raw ? (raw as { type?: unknown }).type : undefined;
+      console.warn('Unknown message type:', type);
+      return;
+    }
+    const msg = parsed.data;
 
     switch (msg.type) {
       case 'auth': {
-        ws.data.agentId = msg.agentId;
+        const agentId = msg.agentId as string;
+        ws.data.agentId = agentId ?? null;
 
         // If token is provided, try to resume session first
         if (msg.token) {
           try {
-            const resumed = await scraperManager.resumeAgent(msg.agentId, {
-              agentId: msg.agentId,
+            const resumed = await scraperManager.resumeAgent(agentId, {
+              agentId,
               password: msg.password || '',
               baseUrl: env.BUCKEYE_BASE_URL,
               cfCookie: msg.cfCookie,
@@ -225,7 +246,7 @@ async function handleWebSocketMessage(
 
             if (resumed) {
               await secretVault.saveBuckeyeSecrets({
-                agentId: msg.agentId,
+                agentId,
                 password: msg.password || undefined,
                 cfCookie: msg.cfCookie,
                 token: msg.token,
@@ -234,18 +255,16 @@ async function handleWebSocketMessage(
               // Issue a fresh JWT
               let jwtToken = '';
               try {
-                jwtToken = await createToken(msg.agentId, JWT_SECRET);
+                jwtToken = await createToken(agentId, JWT_SECRET);
               } catch (err) {
                 console.error('[WS] JWT creation error:', err);
               }
-              ws.send(
-                JSON.stringify({
-                  type: 'auth_response',
-                  success: true,
-                  message: 'Session resumed',
-                  token: jwtToken || msg.token,
-                })
-              );
+              sendReply(ws, {
+                type: 'auth_response',
+                success: true,
+                message: 'Session resumed',
+                token: jwtToken || msg.token,
+              });
               break;
             }
           } catch (err) {
@@ -254,45 +273,41 @@ async function handleWebSocketMessage(
         }
 
         // Fallback to password login
-        const valid = msg.password && msg.password.length > 0;
-        if (!valid) {
-          ws.send(
-            JSON.stringify({
-              type: 'auth_response',
-              success: false,
-              message: 'Invalid credentials',
-            })
-          );
+        const password = msg.password || '';
+        if (!password) {
+          sendReply(ws, {
+            type: 'auth_response',
+            success: false,
+            message: 'Invalid credentials',
+          });
           return;
         }
 
         ws.data.isAuthenticated = true;
 
         try {
-          await scraperManager.startAgent(msg.agentId, {
-            agentId: msg.agentId,
-            password: msg.password,
+          await scraperManager.startAgent(agentId, {
+            agentId,
+            password,
             baseUrl: env.BUCKEYE_BASE_URL,
             cfCookie: msg.cfCookie,
           });
         } catch (err) {
           console.error('[WS] Failed to start agent polling:', err);
-          ws.send(
-            JSON.stringify({
-              type: 'auth_response',
-              success: false,
-              message: err instanceof Error ? err.message : 'Login failed',
-            })
-          );
+          sendReply(ws, {
+            type: 'auth_response',
+            success: false,
+            message: err instanceof Error ? err.message : 'Login failed',
+          });
           return;
         }
 
         // Get token from the agent
-        const agentInstance = scraperManager.getAgentInstance(msg.agentId);
+        const agentInstance = scraperManager.getAgentInstance(agentId);
         const buckeyeToken = agentInstance?.api.getToken() || '';
         await secretVault.saveBuckeyeSecrets({
-          agentId: msg.agentId,
-          password: msg.password,
+          agentId,
+          password,
           cfCookie: msg.cfCookie,
           token: buckeyeToken,
         });
@@ -300,57 +315,49 @@ async function handleWebSocketMessage(
         // Issue our own JWT for future reconnections
         let jwtToken = '';
         try {
-          jwtToken = await createToken(msg.agentId, JWT_SECRET);
+          jwtToken = await createToken(agentId, JWT_SECRET);
         } catch (err) {
           console.error('[WS] JWT creation error:', err);
         }
 
-        ws.send(
-          JSON.stringify({
-            type: 'auth_response',
-            success: true,
-            message: 'Authenticated',
-            token: jwtToken || buckeyeToken,
-          })
-        );
+        sendReply(ws, {
+          type: 'auth_response',
+          success: true,
+          message: 'Authenticated',
+          token: jwtToken || buckeyeToken,
+        });
         break;
       }
 
       case 'request_data': {
         try {
-          const data = await scraperManager.getAgentData(msg.agentId);
-          ws.send(
-            JSON.stringify({
-              type: 'data_response',
-              agentId: msg.agentId,
-              data,
-            })
-          );
+          const data = await scraperManager.getAgentData(msg.agentId as string);
+          sendReply(ws, {
+            type: 'data_response',
+            agentId: msg.agentId,
+            data,
+          });
         } catch (err) {
           console.error('[WS] getAgentData error:', err);
-          ws.send(
-            JSON.stringify({
-              type: 'data_error',
-              agentId: msg.agentId,
-              message: err instanceof Error ? err.message : 'Failed to load agent data',
-            })
-          );
+          sendReply(ws, {
+            type: 'data_error',
+            agentId: msg.agentId,
+            message: err instanceof Error ? err.message : 'Failed to load agent data',
+          });
         }
         break;
       }
 
       case 'refresh': {
         try {
-          await scraperManager.forceRefresh(msg.agentId);
+          await scraperManager.forceRefresh(msg.agentId as string);
         } catch (err) {
           console.error('[WS] Force refresh error:', err);
         }
-        ws.send(
-          JSON.stringify({
-            type: 'refresh_initiated',
-            agentId: msg.agentId,
-          })
-        );
+        sendReply(ws, {
+          type: 'refresh_initiated',
+          agentId: msg.agentId,
+        });
         break;
       }
 
@@ -376,51 +383,42 @@ async function handleWebSocketMessage(
             msg.amount,
             msg.reason
           );
-          ws.send(
-            JSON.stringify({
-              type: 'betAction_queued',
-              actionId,
-              agentId: ws.data.agentId,
-              wagerNumber,
-              action: msg.action,
-            })
-          );
+          sendReply(ws, {
+            type: 'betAction_queued',
+            actionId,
+            agentId: ws.data.agentId,
+            wagerNumber,
+            action: msg.action,
+          });
         } catch (err) {
-          ws.send(
-            JSON.stringify({
-              type: 'betAction_error',
-              message: err instanceof Error ? err.message : 'Action failed',
-            })
-          );
+          sendReply(ws, {
+            type: 'betAction_error',
+            message: err instanceof Error ? err.message : 'Action failed',
+          });
         }
         break;
       }
 
       case 'token_refresh': {
         if (!ws.data?.isAuthenticated || !ws.data?.agentId) {
-          ws.send(JSON.stringify({ type: 'token_refresh_error', message: 'Not authenticated' }));
+          sendReply(ws, { type: 'token_refresh_error', message: 'Not authenticated' });
           return;
         }
         try {
           const newToken = await createToken(ws.data.agentId, JWT_SECRET);
-          ws.send(JSON.stringify({ type: 'token_refreshed', token: newToken }));
+          sendReply(ws, { type: 'token_refreshed', token: newToken });
         } catch (err) {
-          ws.send(JSON.stringify({ type: 'token_refresh_error', message: 'Token refresh failed' }));
+          sendReply(ws, { type: 'token_refresh_error', message: 'Token refresh failed' });
         }
         break;
       }
-
-      default:
-        console.warn('Unknown message type:', msg.type);
     }
   } catch (error) {
     console.error('WS message error:', error);
-    ws.send(
-      JSON.stringify({
-        type: 'error',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      })
-    );
+    sendReply(ws, {
+      type: 'error',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
   }
 }
 

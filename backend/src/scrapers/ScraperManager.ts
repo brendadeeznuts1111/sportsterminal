@@ -7,14 +7,40 @@
 import type { Database } from '../database';
 import {
   BuckeyeAPI,
-  BuckeyeCredentials,
+  type BuckeyeCredentials,
   type BuckeyeAgentPerformanceOptions,
   type BuckeyeAgentPerformanceResult,
   type BuckeyeManagerSnapshotResult,
   type BuckeyeWeeklyFigureOptions,
 } from './BuckeyeAPI';
 import { LiveAgentTree } from './LiveAgentTree';
-import { evaluateWager, Alert } from '../risk/AlertEngine';
+import { evaluateWager, type Alert } from '../risk/AlertEngine';
+import type { BroadcastMessage } from '../../../shared/messages.ts';
+import type {
+  AccessLogRow,
+  AgentDataResponse,
+  AgentDownlineRow,
+  AgentExposureRow,
+  AgentHierarchyResponse,
+  AgentPerformanceResponse,
+  AgentVolumeRow,
+  AlertRow,
+  HierarchyBackfillResponse,
+  PlayerDetailsResponse,
+  PlayerPnlDay,
+  PlayerProfile,
+  ScraperMetrics,
+  SportExposureRow,
+  StatsResponse,
+  WagerRow,
+} from '../../../shared/domain.ts';
+import type {
+  BuckeyeAccountInfoResponse,
+  BuckeyeAgentPerformanceResponse,
+  BuckeyeManagerSnapshotResponse,
+  BuckeyeUiConfigResponse,
+  BuckeyeWeeklyFigureResponse,
+} from '../../../shared/http.ts';
 import { WebhookService } from '../services/WebhookService';
 import { PatternService } from '../patterns/PatternService';
 import { ActionQueue } from '../actions/ActionQueue';
@@ -61,7 +87,7 @@ function readPositiveIntEnv(name: string, fallback: number): number {
 export class BuckeyeScraperManager {
   private agents: Map<string, AgentInstance> = new Map();
   private db: Database;
-  private broadcast: (msg: object) => void;
+  private broadcast: (msg: BroadcastMessage) => void;
   private pollIntervalMs: number = 5000;
   private tokenRenewalMs: number = 15 * 60 * 1000; // 15 minutes
   private accessLogIntervalMs: number = 5 * 60 * 1000;
@@ -69,7 +95,7 @@ export class BuckeyeScraperManager {
   private webhookService: WebhookService;
   private patternService: PatternService;
   private actionQueue: ActionQueue;
-  private accountInfoCache: Map<string, { data: any; timestamp: number }> = new Map();
+  private accountInfoCache: Map<string, { data: BuckeyeAccountInfoResponse; timestamp: number }> = new Map();
   private accountInfoCacheTtlMs: number = 5 * 60 * 1000;
   private wagerCount: number = 0;
   private alertCount: number = 0;
@@ -82,7 +108,7 @@ export class BuckeyeScraperManager {
 
   constructor(
     db: Database,
-    broadcast: (msg: object) => void,
+    broadcast: (msg: BroadcastMessage) => void,
     debugMode: boolean = false,
     secretVault?: BunSecretVault,
     performanceCache?: PerformanceCache
@@ -251,17 +277,17 @@ export class BuckeyeScraperManager {
   /**
    * Get agent data from database.
    */
-  async getAgentData(agentId: string): Promise<any> {
-    const wagers = await this.db.all(
+  async getAgentData(agentId: string): Promise<AgentDataResponse> {
+    const wagers = await this.db.all<WagerRow>(
       'SELECT * FROM wagers WHERE agent_login = ? ORDER BY insert_datetime DESC LIMIT 200',
       [agentId]
     );
 
-    const alerts = await this.db.all(
+    const alerts = await this.db.all<AlertRow>(
       'SELECT * FROM alerts WHERE is_resolved = 0 ORDER BY created_at DESC LIMIT 50'
     );
 
-    const agentRow = await this.db.get(
+    const agentRow = await this.db.get<{ agent_login: string | null; wager_count: number; total_volume: number | null }>(
       'SELECT agent_login, COUNT(*) as wager_count, SUM(amount_wagered) as total_volume FROM wagers WHERE agent_login = ?',
       [agentId]
     );
@@ -276,12 +302,12 @@ export class BuckeyeScraperManager {
   /**
    * Get global stats.
    */
-  async getStats(): Promise<any> {
-    const totalWagers = await this.db.get('SELECT COUNT(*) as count FROM wagers');
-    const totalVolume = await this.db.get('SELECT SUM(amount_wagered) as total FROM wagers');
-    const agentCount = await this.db.get('SELECT COUNT(DISTINCT agent_login) as count FROM wagers');
-    const alertCount = await this.db.get('SELECT COUNT(*) as count FROM alerts WHERE is_resolved = 0');
-    const liveCount = await this.db.get("SELECT COUNT(*) as count FROM wagers WHERE ticket_writer = 'GSLIVE'");
+  async getStats(): Promise<StatsResponse> {
+    const totalWagers = await this.db.get<{ count: number }>('SELECT COUNT(*) as count FROM wagers');
+    const totalVolume = await this.db.get<{ total: number | null }>('SELECT SUM(amount_wagered) as total FROM wagers');
+    const agentCount = await this.db.get<{ count: number }>('SELECT COUNT(DISTINCT agent_login) as count FROM wagers');
+    const alertCount = await this.db.get<{ count: number }>('SELECT COUNT(*) as count FROM alerts WHERE is_resolved = 0');
+    const liveCount = await this.db.get<{ count: number }>("SELECT COUNT(*) as count FROM wagers WHERE ticket_writer = 'GSLIVE'");
 
     return {
       totalWagers: totalWagers?.count || 0,
@@ -295,8 +321,8 @@ export class BuckeyeScraperManager {
   /**
    * Get all wagers (paginated).
    */
-  async getWagers(limit: number = 200, offset: number = 0): Promise<any[]> {
-    return this.db.all(
+  async getWagers(limit: number = 200, offset: number = 0): Promise<WagerRow[]> {
+    return this.db.all<WagerRow>(
       'SELECT * FROM wagers ORDER BY insert_datetime DESC LIMIT ? OFFSET ?',
       [limit, offset]
     );
@@ -305,8 +331,8 @@ export class BuckeyeScraperManager {
   /**
    * Get alert wagers.
    */
-  async getAlertWagers(): Promise<any[]> {
-    return this.db.all(
+  async getAlertWagers(): Promise<WagerRow[]> {
+    return this.db.all<WagerRow>(
       "SELECT * FROM wagers WHERE ticket_writer = 'ALERT' ORDER BY insert_datetime DESC LIMIT 200"
     );
   }
@@ -314,8 +340,8 @@ export class BuckeyeScraperManager {
   /**
    * Get live (GSLIVE) wagers.
    */
-  async getLiveWagers(): Promise<any[]> {
-    return this.db.all(
+  async getLiveWagers(): Promise<WagerRow[]> {
+    return this.db.all<WagerRow>(
       "SELECT * FROM wagers WHERE ticket_writer = 'GSLIVE' ORDER BY insert_datetime DESC LIMIT 200"
     );
   }
@@ -323,8 +349,8 @@ export class BuckeyeScraperManager {
   /**
    * Get top agents by volume.
    */
-  async getAgents(): Promise<any[]> {
-    return this.db.all(
+  async getAgents(): Promise<AgentVolumeRow[]> {
+    return this.db.all<AgentVolumeRow>(
       `SELECT agent_login,
         COUNT(*) as wager_count,
         SUM(amount_wagered) as total_volume,
@@ -339,8 +365,8 @@ export class BuckeyeScraperManager {
   /**
    * Get active alerts.
    */
-  async getAlerts(): Promise<any[]> {
-    return this.db.all(
+  async getAlerts(): Promise<AlertRow[]> {
+    return this.db.all<AlertRow>(
       'SELECT * FROM alerts WHERE is_resolved = 0 ORDER BY created_at DESC LIMIT 100'
     );
   }
@@ -348,8 +374,8 @@ export class BuckeyeScraperManager {
   /**
    * Get agent downline derived from wager data.
    */
-  async getAgentDownline(): Promise<any[]> {
-    return this.db.all(
+  async getAgentDownline(): Promise<AgentDownlineRow[]> {
+    return this.db.all<AgentDownlineRow>(
       `SELECT
         agent_login,
         COUNT(*) as wager_count,
@@ -370,7 +396,7 @@ export class BuckeyeScraperManager {
    * Get real agent hierarchy from Buckeye API.
    * Returns raw GENERAL array or empty object if not authenticated.
    */
-  async getAgentHierarchy(agentId?: string): Promise<any> {
+  async getAgentHierarchy(agentId?: string): Promise<AgentHierarchyResponse> {
     const instance = agentId
       ? this.agents.get(agentId)
       : Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
@@ -387,9 +413,31 @@ export class BuckeyeScraperManager {
     }
   }
 
-  async getPersistedAgentHierarchy(): Promise<any> {
+  async getPersistedAgentHierarchy(): Promise<AgentHierarchyResponse> {
     try {
-      const rows = await this.db.all(
+      const rows = await this.db.all<{
+        id: string;
+        login: string | null;
+        display_name: string | null;
+        parent_agent_id: string | null;
+        level: number | null;
+        child_count: number | null;
+        player_count: number | null;
+        seq_number: number | null;
+        agent_type: string | null;
+        head_count_rate_m: number | null;
+        inet_head_count_rate_m: number | null;
+        casino_head_count_rate_m: number | null;
+        live_betting_rate_m: number | null;
+        live_betting2_rate_m: number | null;
+        live_casino_rate_m: number | null;
+        prop_builder_rate_m: number | null;
+        flash_bets_rate: number | null;
+        ext_props_rate: number | null;
+        crash_rate: number | null;
+        fantasy_rate: number | null;
+        amigo_tech_rate: number | null;
+      }>(
         `SELECT
           id,
           login,
@@ -421,7 +469,7 @@ export class BuckeyeScraperManager {
       }
 
       return {
-        GENERAL: rows.map((row: any) => ({
+        GENERAL: rows.map((row) => ({
           AgentID: row.id,
           SeqNumber: row.seq_number,
           Level: row.level,
@@ -455,7 +503,7 @@ export class BuckeyeScraperManager {
     }
   }
 
-  async backfillAgentHierarchy(): Promise<any> {
+  async backfillAgentHierarchy(): Promise<HierarchyBackfillResponse> {
     return backfillAgentsAndPlayers(this.db);
   }
 
@@ -466,7 +514,7 @@ export class BuckeyeScraperManager {
     agentId?: string,
     includeRaw: boolean = false,
     includeAgentParams: boolean = false
-  ): Promise<any> {
+  ): Promise<BuckeyeUiConfigResponse> {
     const instance = agentId
       ? this.agents.get(agentId)
       : Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
@@ -486,7 +534,7 @@ export class BuckeyeScraperManager {
   /**
    * Fetch sanitized account info through an active Buckeye session.
    */
-  async getBuckeyeAccountInfo(agentId?: string, force: boolean = false): Promise<any> {
+  async getBuckeyeAccountInfo(agentId?: string, force: boolean = false): Promise<BuckeyeAccountInfoResponse> {
     const instance = agentId
       ? this.agents.get(agentId)
       : Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
@@ -517,7 +565,7 @@ export class BuckeyeScraperManager {
   async getWeeklyFigureByAgentLite(
     agentId?: string,
     options: BuckeyeWeeklyFigureOptions = {}
-  ): Promise<any> {
+  ): Promise<BuckeyeWeeklyFigureResponse> {
     const instance = agentId
       ? this.agents.get(agentId)
       : Array.from(this.agents.values()).find((agent) => agent.api.isAuthenticated());
@@ -546,7 +594,7 @@ export class BuckeyeScraperManager {
   /**
    * Fetch Buckeye manager bootstrap/report payloads discovered from manager.html.
    */
-  async getBuckeyeManagerSnapshot(agentId?: string): Promise<BuckeyeManagerSnapshotResult | any> {
+  async getBuckeyeManagerSnapshot(agentId?: string): Promise<BuckeyeManagerSnapshotResponse> {
     const instance = this.resolveAgentInstance(agentId);
 
     if (!instance || !instance.api.isAuthenticated()) {
@@ -612,7 +660,7 @@ export class BuckeyeScraperManager {
       start: '',
       end: '',
     }
-  ): Promise<any> {
+  ): Promise<BuckeyeAgentPerformanceResponse> {
     const instance = this.resolveAgentInstance(agentId);
 
     if (!instance || !instance.api.isAuthenticated()) {
@@ -741,8 +789,8 @@ export class BuckeyeScraperManager {
   /**
    * Get per-agent performance metrics.
    */
-  async getAgentPerformance(agentId: string): Promise<any> {
-    const overview = await this.db.get(
+  async getAgentPerformance(agentId: string): Promise<AgentPerformanceResponse> {
+    const overview = await this.db.get<AgentPerformanceResponse['overview'] & Record<string, never>>(
       `SELECT
         COUNT(*) as wager_count,
         COUNT(DISTINCT login) as unique_players,
@@ -758,7 +806,7 @@ export class BuckeyeScraperManager {
       [agentId]
     );
 
-    const typeBreakdown = await this.db.all(
+    const typeBreakdown = await this.db.all<{ wager_type: string | null; count: number; volume: number | null }>(
       `SELECT
         wager_type,
         COUNT(*) as count,
@@ -769,7 +817,7 @@ export class BuckeyeScraperManager {
       [agentId]
     );
 
-    const sourceBreakdown = await this.db.all(
+    const sourceBreakdown = await this.db.all<{ ticket_writer: string | null; count: number; volume: number | null }>(
       `SELECT
         ticket_writer,
         COUNT(*) as count,
@@ -791,8 +839,8 @@ export class BuckeyeScraperManager {
   /**
    * Get player details from wager data.
    */
-  async getPlayerDetails(playerId: string): Promise<any> {
-    const profile = await this.db.get(
+  async getPlayerDetails(playerId: string): Promise<PlayerDetailsResponse> {
+    const profile = await this.db.get<PlayerProfile>(
       `SELECT
         login,
         agent_login,
@@ -811,7 +859,7 @@ export class BuckeyeScraperManager {
       [playerId]
     );
 
-    const agents = await this.db.all(
+    const agents = await this.db.all<{ agent_login: string | null }>(
       `SELECT DISTINCT agent_login FROM wagers WHERE login = ?`,
       [playerId]
     );
@@ -826,8 +874,8 @@ export class BuckeyeScraperManager {
   /**
    * Get all wagers for a specific player.
    */
-  async getPlayerWagers(playerId: string): Promise<any[]> {
-    return this.db.all(
+  async getPlayerWagers(playerId: string): Promise<WagerRow[]> {
+    return this.db.all<WagerRow>(
       `SELECT * FROM wagers WHERE login = ? ORDER BY insert_datetime DESC LIMIT 200`,
       [playerId]
     );
@@ -837,8 +885,8 @@ export class BuckeyeScraperManager {
    * Get player P&L history over N days.
    * Returns daily buckets with volume, risk, and wager count.
    */
-  async getPlayerPnlHistory(playerId: string, days: number = 7): Promise<any[]> {
-    const rows = await this.db.all(
+  async getPlayerPnlHistory(playerId: string, days: number = 7): Promise<PlayerPnlDay[]> {
+    const rows = await this.db.all<PlayerPnlDay>(
       `SELECT
         date(insert_datetime) as day,
         COUNT(*) as wager_count,
@@ -853,14 +901,15 @@ export class BuckeyeScraperManager {
     );
 
     // Fill in missing days with zeros
-    const result = [];
+    const result: PlayerPnlDay[] = [];
     const seenDays = new Set(rows.map((r) => r.day));
     for (let i = 0; i < days; i++) {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const dayStr = d.toISOString().split('T')[0];
-      if (seenDays.has(dayStr)) {
-        result.push(rows.find((r) => r.day === dayStr));
+      const existing = rows.find((r) => r.day === dayStr);
+      if (seenDays.has(dayStr) && existing) {
+        result.push(existing);
       } else {
         result.push({
           day: dayStr,
@@ -880,12 +929,12 @@ export class BuckeyeScraperManager {
   /**
    * Get sport exposure breakdown with top game per sport.
    */
-  private getWagerExposure(w: any): number {
+  private getWagerExposure(w: WagerRow): number {
     return (w.volume_amount > 0 ? w.volume_amount : w.amount_wagered) || 0;
   }
 
-  async getSportExposure(): Promise<any[]> {
-    const wagers = await this.db.all(
+  async getSportExposure(): Promise<SportExposureRow[]> {
+    const wagers = await this.db.all<WagerRow>(
       `SELECT * FROM wagers ORDER BY insert_datetime DESC LIMIT 500`
     );
 
@@ -967,8 +1016,8 @@ export class BuckeyeScraperManager {
   /**
    * Get agent exposure breakdown with top customer and top game per agent.
    */
-  async getAgentExposure(): Promise<any[]> {
-    const wagers = await this.db.all(
+  async getAgentExposure(): Promise<AgentExposureRow[]> {
+    const wagers = await this.db.all<WagerRow>(
       `SELECT * FROM wagers ORDER BY insert_datetime DESC LIMIT 500`
     );
 
@@ -1075,7 +1124,7 @@ export class BuckeyeScraperManager {
     return { id: request.id, ...result };
   }
 
-  getMetrics(): any {
+  getMetrics(): ScraperMetrics {
     return {
       activeAgents: this.agents.size,
       agents: Array.from(this.agents.entries()).map(([id, inst]) => ({
@@ -1418,8 +1467,8 @@ export class BuckeyeScraperManager {
     );
   }
 
-  async getAccessLogs(limit: number = 200): Promise<any[]> {
-    return this.db.all(
+  async getAccessLogs(limit: number = 200): Promise<AccessLogRow[]> {
+    return this.db.all<AccessLogRow>(
       `SELECT * FROM access_logs ORDER BY access_datetime DESC LIMIT ?`,
       [Math.min(Math.max(limit, 1), 500)]
     );
@@ -1826,7 +1875,8 @@ export class BuckeyeScraperManager {
 
     const balance = parsed.balances?.current || accountInfo.balance || 0;
     const availableBalance = parsed.balances?.available || accountInfo.availableBalance || 0;
-    const percentBook = parsed.balances?.percentBook || accountInfo.percentBook || 0;
+    const balances = parsed.balances as { current?: number; available?: number; percentBook?: number };
+    const percentBook = balances?.percentBook || accountInfo.percentBook || 0;
     const openWagerRow = await this.db.get<{ count: number }>(
       `SELECT COUNT(*) AS count FROM wagers WHERE agent_login = ?`,
       [agentId]
