@@ -6,7 +6,7 @@ import { clampInt } from '../helpers';
 import { logRequest } from '../../utils/logger';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 
-export const registerPlayerDetailsRoutes = createParamRouteHandler(
+export const registerPlayerDetailsRoutes = createParamRouteHandler<BuckeyeScraperManager>(
   '/api/players/:playerId/details',
   'playerId',
   async (_url, _req, scraperManager, params) => {
@@ -15,7 +15,7 @@ export const registerPlayerDetailsRoutes = createParamRouteHandler(
   }
 );
 
-export const registerPlayerWagersRoutes = createParamRouteHandler(
+export const registerPlayerWagersRoutes = createParamRouteHandler<BuckeyeScraperManager>(
   '/api/players/:playerId/wagers',
   'playerId',
   async (_url, _req, scraperManager, params) => {
@@ -24,7 +24,7 @@ export const registerPlayerWagersRoutes = createParamRouteHandler(
   }
 );
 
-export const registerPlayerPnlRoutes = createParamRouteHandler(
+export const registerPlayerPnlRoutes = createParamRouteHandler<BuckeyeScraperManager>(
   '/api/players/:playerId/pnl',
   'playerId',
   async (url, _req, scraperManager, params) => {

@@ -20,7 +20,7 @@ describe('JWT auth', () => {
     const token = await createToken('TEST_AGENT', TEST_SECRET);
     try {
       await verifyToken(token, 'wrong-secret-key-different-value!!');
-      expect('should have thrown').toBe(false);
+      throw new Error('should have thrown');
     } catch (err: any) {
       expect(err.code || err.name).toBeDefined();
     }
@@ -38,7 +38,7 @@ describe('JWT auth', () => {
 
     try {
       await verifyToken(expired, TEST_SECRET);
-      expect('should have thrown').toBe(false);
+      throw new Error('should have thrown');
     } catch (err: any) {
       expect(err.code).toBe('ERR_JWT_EXPIRED');
     }
@@ -47,7 +47,7 @@ describe('JWT auth', () => {
   test('rejects malformed token', async () => {
     try {
       await verifyToken('not.a.jwt.token', TEST_SECRET);
-      expect('should have thrown').toBe(false);
+      throw new Error('should have thrown');
     } catch (err: any) {
       expect(err.code || err.name).toBeDefined();
     }

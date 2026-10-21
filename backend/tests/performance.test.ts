@@ -4,6 +4,20 @@ import { DemoOddsProvider } from '../dev-tools/DemoOddsProvider';
 import { RateLimiter } from '../src/api/rateLimiter';
 import { PerformanceCache } from '../src/services/PerformanceCache';
 import { registerPerformanceRoutes } from '../src/api/routes/performance';
+import type { OddsPoller } from '../src/odds/OddsPoller';
+
+const oddsPoller = {} as OddsPoller;
+
+interface PerformanceRouteJson {
+  agentId?: string;
+  source?: string;
+  data?: { totals?: { totalWagers?: number } };
+  error?: string;
+  cacheEnabled?: boolean;
+  redisConnected?: boolean;
+  defaultTtlMs?: number;
+  message?: string;
+}
 import type { EnrichedWager } from '../src/risk/AlertEngine';
 
 const PERF_WAGER: EnrichedWager = {
@@ -98,14 +112,15 @@ describe('performance cache routes', () => {
     const result = await registerPerformanceRoutes(url, request, {
       scraperManager: mockScraperManager,
       performanceCache: mockPerformanceCache,
+      oddsPoller,
     });
 
     expect(result).not.toBeNull();
     if (result) {
-      const json = await result.json();
+      const json = await result.json() as PerformanceRouteJson;
       expect(json.agentId).toBe('test-agent');
       expect(json.source).toBe('api'); // Initially from API
-      expect(json.data.totals.totalWagers).toBe(100);
+      expect(json.data?.totals?.totalWagers).toBe(100);
     }
   });
 
@@ -117,6 +132,7 @@ describe('performance cache routes', () => {
     let result = await registerPerformanceRoutes(url, request, {
       scraperManager: mockScraperManager,
       performanceCache: mockPerformanceCache,
+      oddsPoller,
     });
     expect(result).not.toBeNull();
 
@@ -124,10 +140,11 @@ describe('performance cache routes', () => {
     result = await registerPerformanceRoutes(url, request, {
       scraperManager: mockScraperManager,
       performanceCache: mockPerformanceCache,
+      oddsPoller,
     });
     expect(result).not.toBeNull();
     if (result) {
-      const json = await result.json();
+      const json = await result.json() as PerformanceRouteJson;
       expect(json.source).toBe('cache');
     }
   });
@@ -139,11 +156,12 @@ describe('performance cache routes', () => {
     const result = await registerPerformanceRoutes(url, request, {
       scraperManager: mockScraperManager,
       performanceCache: mockPerformanceCache,
+      oddsPoller,
     });
 
     expect(result).not.toBeNull();
     if (result) {
-      const json = await result.json();
+      const json = await result.json() as PerformanceRouteJson;
       expect(result.status).toBe(400);
       expect(json.error).toBe('Missing agentId');
     }
@@ -157,11 +175,12 @@ describe('performance cache routes', () => {
     const result = await registerPerformanceRoutes(url, request, {
       scraperManager: mockScraperManager,
       performanceCache: mockPerformanceCache,
+      oddsPoller,
     });
 
     expect(result).not.toBeNull();
     if (result) {
-      const json = await result.json();
+      const json = await result.json() as PerformanceRouteJson;
       expect(result.status).toBe(200);
       expect(json.message).toBe('Cache invalidated');
       expect(json.agentId).toBe('test-agent');
@@ -175,11 +194,12 @@ describe('performance cache routes', () => {
     const result = await registerPerformanceRoutes(url, request, {
       scraperManager: mockScraperManager,
       performanceCache: mockPerformanceCache,
+      oddsPoller,
     });
 
     expect(result).not.toBeNull();
     if (result) {
-      const json = await result.json();
+      const json = await result.json() as PerformanceRouteJson;
       expect(result.status).toBe(200);
       expect(json.cacheEnabled).toBe(true);
       expect(json.redisConnected).toBe(false); // Redis not running in test
@@ -194,11 +214,12 @@ describe('performance cache routes', () => {
     const result = await registerPerformanceRoutes(url, request, {
       scraperManager: mockScraperManager,
       performanceCache: undefined,
+      oddsPoller,
     });
 
     expect(result).not.toBeNull();
     if (result) {
-      const json = await result.json();
+      const json = await result.json() as PerformanceRouteJson;
       expect(json.cacheEnabled).toBe(false);
       expect(json.redisConnected).toBe(false);
     }

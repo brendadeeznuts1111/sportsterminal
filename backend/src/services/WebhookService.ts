@@ -6,6 +6,7 @@
 
 import type { Database } from '../database';
 import type { Alert } from '../risk/AlertEngine';
+import type { WebhookOutboundMessage } from '../../../shared/messages.ts';
 
 export type WebhookPlatform = 'discord' | 'slack' | 'telegram' | 'generic';
 
@@ -162,7 +163,7 @@ export class WebhookService {
 
   // ==================== PAYLOAD FORMATTING ====================
 
-  private formatPayload(platform: WebhookPlatform, alert: Alert): object {
+  private formatPayload(platform: WebhookPlatform, alert: Alert): WebhookOutboundMessage {
     const colorMap: Record<string, number> = {
       info: 3447003,      // blue
       warning: 16776960,  // yellow

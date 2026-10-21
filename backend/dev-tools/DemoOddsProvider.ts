@@ -59,7 +59,7 @@ export class DemoOddsProvider implements OddsProvider {
       const totalJitter = (Math.random() - 0.5) * 1.0;
       const mlJitter = (Math.random() - 0.5) * 10;
 
-      const books: BookOdds[] = BOOKS.map((book, idx) => {
+      const books: BookOdds[] = BOOKS.map((book, _idx) => {
         const isSharp = ['PIN', 'SBO', 'STK', 'BOL'].includes(book);
         const spread = base.spread + spreadJitter + (isSharp ? 0 : (Math.random() - 0.5) * 0.5);
         const total = base.total + totalJitter + (isSharp ? 0 : (Math.random() - 0.5) * 1.0);

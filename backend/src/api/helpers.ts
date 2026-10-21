@@ -26,12 +26,21 @@ export function parseRequiredId(value: string | undefined): number {
   return parsed;
 }
 
-export async function readJsonBody(request: Request): Promise<any> {
+export async function readJsonBody(request: Request): Promise<unknown> {
   try {
     return await request.json();
   } catch {
     throw new ApiError(400, 'Malformed JSON body');
   }
+}
+
+export async function readTypedBody<T>(request: Request, schema: { safeParse: (value: unknown) => { success: true; data: T } | { success: false } }): Promise<T> {
+  const raw = await readJsonBody(request);
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    throw new ApiError(400, 'Malformed JSON body');
+  }
+  return parsed.data;
 }
 
 export interface ParsedLocalAgentExport {
@@ -193,7 +202,7 @@ function buildParsedLocalAgentExport(agents: any[], players: any[], source: stri
 }
 
 export function handleAsync(
-  handler: () => Promise<any>,
+  handler: () => Promise<unknown>,
   headers: Record<string, string>
 ): Promise<Response> {
   return handler()

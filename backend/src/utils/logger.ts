@@ -143,7 +143,6 @@ export function logScraper(
   meta?: LogMeta
 ): void {
   const logMeta: LogMeta = {
-    operation: 'scraper_operation',
     agentId,
     operation,
     error,
@@ -165,7 +164,6 @@ export function logCache(
   meta?: LogMeta
 ): void {
   const logMeta: LogMeta = {
-    operation: 'cache_operation',
     operation,
     key,
     ...meta,

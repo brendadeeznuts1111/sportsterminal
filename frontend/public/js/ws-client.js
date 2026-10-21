@@ -1,19 +1,70 @@
+// @ts-check
+/** @typedef {import('../../../shared/messages.ts').ClientSocketMessage} ClientSocketMessage */
+/** @typedef {import('../../../shared/messages.ts').ServerMessage} ServerMessage */
+/** @typedef {import('../../../shared/domain.ts').AgentDataResponse} AgentDataResponse */
+
+/**
+ * @typedef {Object} WsClientDependencies
+ * @property {() => string} getDefaultWsUrl
+ * @property {(connected: boolean) => void} updateWSStatus
+ * @property {(status: string) => void} updateConnectionStatus
+ * @property {(message: string, level: string) => void} showToast
+ * @property {(data: AgentDataResponse) => void} updateFromBackend
+ * @property {(force?: boolean) => void} loadPersistedWagers
+ */
+
 export class TerminalWebSocketClient {
+  /** @type {WebSocket | null} */
+  ws = null;
+
+  /** @type {() => string} */
+  getDefaultWsUrl;
+
+  /** @type {(connected: boolean) => void} */
+  updateWSStatus;
+
+  /** @type {(status: string) => void} */
+  updateConnectionStatus;
+
+  /** @type {(message: string, level: string) => void} */
+  showToast;
+
+  /** @type {(data: AgentDataResponse) => void} */
+  updateFromBackend;
+
+  /** @type {(force?: boolean) => void} */
+  loadPersistedWagers;
+
+  /** @type {string} */
+  url;
+
+  /** @type {number} */
+  reconnectAttempts = 0;
+
+  /** @type {number} */
+  maxReconnectAttempts = 5;
+
+  /** @type {number} */
+  reconnectDelay = 3000;
+
+  /** @type {boolean} */
+  isAuthenticated = false;
+
+  /** @type {string} */
+  agentId = localStorage.getItem('agentId') || '';
+
+  /** @type {Record<string, (msg: ServerMessage) => void>} */
+  messageHandlers = {};
+
+  /** @param {Partial<WsClientDependencies>} [dependencies] */
   constructor(dependencies = {}) {
-    this.ws = null;
-    this.getDefaultWsUrl = dependencies.getDefaultWsUrl;
-    this.updateWSStatus = dependencies.updateWSStatus;
-    this.updateConnectionStatus = dependencies.updateConnectionStatus;
-    this.showToast = dependencies.showToast;
-    this.updateFromBackend = dependencies.updateFromBackend;
-    this.loadPersistedWagers = dependencies.loadPersistedWagers;
+    this.getDefaultWsUrl = /** @type {() => string} */ (dependencies.getDefaultWsUrl);
+    this.updateWSStatus = /** @type {(connected: boolean) => void} */ (dependencies.updateWSStatus);
+    this.updateConnectionStatus = /** @type {(status: string) => void} */ (dependencies.updateConnectionStatus);
+    this.showToast = /** @type {(message: string, level: string) => void} */ (dependencies.showToast);
+    this.updateFromBackend = /** @type {(data: AgentDataResponse) => void} */ (dependencies.updateFromBackend);
+    this.loadPersistedWagers = /** @type {(force?: boolean) => void} */ (dependencies.loadPersistedWagers);
     this.url = localStorage.getItem('wsUrl') || this.getDefaultWsUrl();
-    this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 5;
-    this.reconnectDelay = 3000;
-    this.isAuthenticated = false;
-    this.agentId = localStorage.getItem('agentId') || '';
-    this.messageHandlers = {};
   }
 
   get isConnected() {
@@ -32,7 +83,7 @@ export class TerminalWebSocketClient {
 
     this.ws.onmessage = (event) => {
       try {
-        const msg = JSON.parse(event.data);
+        const msg = /** @type {ServerMessage} */ (JSON.parse(event.data));
         console.log('[WS] Message:', msg.type);
         this.handleMessage(msg);
       } catch {
@@ -54,6 +105,12 @@ export class TerminalWebSocketClient {
     };
   }
 
+  /**
+   * @param {string} agentId
+   * @param {string} username
+   * @param {string} password
+   * @param {string} cfCookie
+   */
   authenticate(agentId, username, password, cfCookie) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       console.error('[WS] Not connected');
@@ -69,6 +126,11 @@ export class TerminalWebSocketClient {
     });
   }
 
+  /**
+   * @param {string} agentId
+   * @param {string} token
+   * @param {string} cfCookie
+   */
   authenticateWithToken(agentId, token, cfCookie) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       console.error('[WS] Not connected');
@@ -83,6 +145,7 @@ export class TerminalWebSocketClient {
     });
   }
 
+  /** @param {ClientSocketMessage} msg */
   send(msg) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
@@ -98,6 +161,7 @@ export class TerminalWebSocketClient {
     }
   }
 
+  /** @param {ServerMessage} msg */
   handleMessage(msg) {
     switch (msg.type) {
       case 'auth_response':
@@ -128,6 +192,10 @@ export class TerminalWebSocketClient {
     }
   }
 
+  /**
+   * @param {string} type
+   * @param {(msg: ServerMessage) => void} handler
+   */
   on(type, handler) {
     this.messageHandlers[type] = handler;
   }

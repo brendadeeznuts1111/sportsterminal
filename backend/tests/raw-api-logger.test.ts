@@ -95,8 +95,8 @@ describe('RawApiLogger', () => {
     const scraperManager = { getDatabase: () => db };
 
     const url = new URL('http://127.0.0.1/api/analytics/raw-logs?agentId=BILLY666&status=error&days=3&limit=5&includeBody=1');
-    const response = await registerAnalyticsRoutes(url, new Request(url), scraperManager as any) as Response;
-    const payload = await response.json();
+    const response = await registerAnalyticsRoutes(url, new Request(url.toString()), scraperManager as any) as Response;
+    const payload = await response.json() as { logs: Array<{ response_json: string; request_params_summary: string }> };
 
     expect(response.status).toBe(200);
     expect(calls[0].sql).toContain('status_code >= 500');

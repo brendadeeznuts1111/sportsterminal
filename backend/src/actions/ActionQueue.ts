@@ -4,6 +4,7 @@
  * Used for Accept/Decline on the Buckeye bet ticker.
  */
 import type { Database } from '../database';
+import type { BroadcastMessage } from '../../../shared/messages.ts';
 
 export interface ActionRequest {
   id: string;
@@ -31,18 +32,16 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 export class ActionQueue {
   private queues: Map<string, ActionRequest[]> = new Map();
   private timeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
-  private db: Database;
-  private broadcast: (msg: object) => void;
+  private broadcast: (msg: BroadcastMessage) => void;
   private timeoutMs: number;
   private executor: ActionExecutor;
 
   constructor(
-    db: Database,
-    broadcast: (msg: object) => void,
+    _db: Database,
+    broadcast: (msg: BroadcastMessage) => void,
     timeoutMs: number = DEFAULT_TIMEOUT_MS,
     executor?: ActionExecutor
   ) {
-    this.db = db;
     this.broadcast = broadcast;
     this.timeoutMs = timeoutMs;
     this.executor = executor || (async (request) => ({

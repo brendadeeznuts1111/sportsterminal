@@ -1,3 +1,4 @@
+// @ts-check
 export const SIDEBAR_GROUP_STORAGE_KEY = 'sportsTerminal.sidebar.groups.v531';
 
 export const BUCKEYE_ARCHIVE_LIMIT = 500;

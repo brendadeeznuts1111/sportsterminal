@@ -1,5 +1,6 @@
 import type { Database } from '../database';
 import type { EnrichedWager, Severity } from '../risk/AlertEngine';
+import type { BroadcastMessage } from '../../../shared/messages.ts';
 import type { BuckeyeWebLogRow, BuckeyeWebLogType } from '../scrapers/BuckeyeAPI';
 import type { EventMatch, ParsedWager, PatternInsert } from './types';
 import { normalizeName, parseWagerDescription } from './wagerParser';
@@ -8,6 +9,21 @@ interface WagerCorrelation {
   parsed: ParsedWager;
   match: EventMatch;
   pinReference: Record<string, unknown> | null;
+}
+
+interface RecentSideRow {
+  parsed_side: string | null;
+  parsed_market: string | null;
+  sport: string | null;
+  wager_number: number | null;
+  home_team: string | null;
+  away_team: string | null;
+}
+
+interface RecentPlayerWagerRow {
+  insert_datetime: string | null;
+  parsed_market: string | null;
+  matched_event_id: string | null;
 }
 
 interface EventRow {
@@ -24,7 +40,7 @@ const GLOBAL_EVENT_ID = 'pattern-global';
 export class PatternService {
   constructor(
     private readonly db: Database,
-    private readonly broadcast?: (msg: object) => void
+    private readonly broadcast?: (msg: BroadcastMessage) => void
   ) {}
 
   async correlateWager(wager: EnrichedWager): Promise<WagerCorrelation> {
@@ -306,7 +322,7 @@ export class PatternService {
         details: {
           wagerNumber: wager.WagerNumber,
           wagerTime: wager.InsertDateTime,
-          eventStart: event.start_time,
+          eventStart: event?.start_time,
           ticketWriter: wager.TicketWriter,
           minutesAfterStart,
           reasonCodes: ['after_event_start', isLiveWriter ? 'live_writer' : 'not_gslive'],
@@ -350,7 +366,7 @@ export class PatternService {
     detectedAt: string,
     wagerTime: Date
   ): Promise<void> {
-    const recent = await this.db.all(
+    const recent = await this.db.all<RecentSideRow>(
       `SELECT w.parsed_side, w.parsed_market, w.sport, w.wager_number, e.home_team, e.away_team
        FROM wagers w
        LEFT JOIN events e ON e.id = w.matched_event_id
@@ -363,8 +379,8 @@ export class PatternService {
     if (recent.length < 5) return;
 
     const sides = recent
-      .map((row: any) => classifyComparableSide(row.parsed_side, row.parsed_market, row.home_team, row.away_team))
-      .filter(side => side && side !== 'unknown');
+      .map((row) => classifyComparableSide(row.parsed_side, row.parsed_market, row.home_team, row.away_team))
+      .filter((side): side is string => side !== null && side !== 'unknown');
     const counts = new Map<string, number>();
     for (const side of sides) counts.set(side, (counts.get(side) || 0) + 1);
     const majority = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0];
@@ -443,7 +459,7 @@ export class PatternService {
         agentAverageAmount: avgAmount,
         ratio,
         minutesToStart,
-        eventStart: event.start_time,
+        eventStart: event?.start_time,
         reasonCodes: ['near_game_start', 'above_agent_average'],
         correlation,
       },
@@ -606,13 +622,13 @@ export class PatternService {
     wagerTime: Date
   ): Promise<void> {
     if (!correlation.match.eventId) return;
-    const recentPlayerWagers = (await this.db.all(
+    const recentPlayerWagers = (await this.db.all<RecentPlayerWagerRow>(
       `SELECT * FROM wagers
        WHERE login = ? AND matched_event_id IS NOT NULL AND insert_datetime >= ?
        ORDER BY insert_datetime DESC
        LIMIT 30`,
       [wager.Login, new Date(wagerTime.getTime() - 60 * 60 * 1000).toISOString()]
-    )).filter((row: any) => row.parsed_market === correlation.parsed.market);
+    )).filter((row) => row.parsed_market === correlation.parsed.market);
 
     let timingHits = 0;
     for (const row of recentPlayerWagers) {
@@ -624,7 +640,7 @@ export class PatternService {
          LIMIT 1`,
         [
           row.matched_event_id,
-          normalizeMarketForOdds(row.parsed_market),
+          normalizeMarketForOdds(row.parsed_market || 'other'),
           new Date(rowTime.getTime() - 120_000).toISOString(),
           rowTime.toISOString(),
         ]

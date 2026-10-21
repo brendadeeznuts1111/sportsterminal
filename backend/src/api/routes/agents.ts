@@ -6,12 +6,12 @@ import { loadLocalAgentHierarchy } from '../helpers';
 import { logRequest } from '../../utils/logger';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 
-export const registerAgentRoutes = createRouteHandler('/api/agents', async (_url, _req, scraperManager) => {
+export const registerAgentRoutes = createRouteHandler<BuckeyeScraperManager>('/api/agents', async (_url, _req, scraperManager) => {
   logRequest('GET', '/api/agents');
   return scraperManager.getAgents();
 });
 
-export const registerAgentExposureRoutes = createParamRouteHandler(
+export const registerAgentExposureRoutes = createParamRouteHandler<BuckeyeScraperManager>(
   '/api/agents/:agentId/exposure',
   'agentId',
   async (_url, _req, scraperManager, params) => {
@@ -20,7 +20,7 @@ export const registerAgentExposureRoutes = createParamRouteHandler(
   }
 );
 
-export const registerAgentPerformanceRoutes = createParamRouteHandler(
+export const registerAgentPerformanceRoutes = createParamRouteHandler<BuckeyeScraperManager>(
   '/api/agents/:agentId/performance',
   'agentId',
   async (_url, _req, scraperManager, params) => {
@@ -29,12 +29,12 @@ export const registerAgentPerformanceRoutes = createParamRouteHandler(
   }
 );
 
-export const registerAgentDownlineRoutes = createRouteHandler('/api/agents/downline', async (_url, _req, scraperManager) => {
+export const registerAgentDownlineRoutes = createRouteHandler<BuckeyeScraperManager>('/api/agents/downline', async (_url, _req, scraperManager) => {
   logRequest('GET', '/api/agents/downline');
   return scraperManager.getAgentDownline();
 });
 
-export const registerAgentHierarchyRoutes = createRouteHandler('/api/agents/hierarchy', async (url, _req, scraperManager) => {
+export const registerAgentHierarchyRoutes = createRouteHandler<BuckeyeScraperManager>('/api/agents/hierarchy', async (url, _req, scraperManager) => {
   logRequest('GET', '/api/agents/hierarchy');
   const agentId = url.searchParams.get('agentId') || undefined;
   const persistedHierarchy = await scraperManager.getPersistedAgentHierarchy();
@@ -49,7 +49,7 @@ export const registerAgentHierarchyRoutes = createRouteHandler('/api/agents/hier
   return localHierarchy.GENERAL.length > 0 ? localHierarchy : liveHierarchy;
 });
 
-export const registerAgentBackfillRoutes = createMethodRouteHandler(
+export const registerAgentBackfillRoutes = createMethodRouteHandler<BuckeyeScraperManager>(
   '/api/agents/backfill/hierarchy',
   'POST',
   async (_url, _req, scraperManager) => {
@@ -58,7 +58,7 @@ export const registerAgentBackfillRoutes = createMethodRouteHandler(
   }
 );
 
-export const registerAgentAccessLogRoutes = createRouteHandler('/api/agents/access-logs', async (_url, _req, scraperManager) => {
+export const registerAgentAccessLogRoutes = createRouteHandler<BuckeyeScraperManager>('/api/agents/access-logs', async (_url, _req, scraperManager) => {
   logRequest('GET', '/api/agents/access-logs');
   return scraperManager.getAccessLogs();
 });
