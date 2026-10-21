@@ -4,12 +4,28 @@
 
 export interface GameEvent {
   id: string;
+  /** The game: "basketball", "football", "hockey", ... */
   sport: string;
+  /** The competition: "NBA", "NCAAF", "EPL", ... */
   league: string;
   homeTeam: string;
   awayTeam: string;
   startTime: string; // ISO
   status: 'upcoming' | 'live' | 'finished';
+  /** The provider's sport key, e.g. `basketball_nba`. */
+  sportKey?: string;
+  /** Team registry identity, when the league is covered and the name resolves. */
+  homeTeamId?: TeamIdentity;
+  awayTeamId?: TeamIdentity;
+}
+
+export interface TeamIdentity {
+  /** Registry abbreviation, e.g. "LAL". */
+  abbr: string;
+  espnId: string | null;
+  displayName: string;
+  logo: string | null;
+  color: string | null;
 }
 
 export interface BookOdds {

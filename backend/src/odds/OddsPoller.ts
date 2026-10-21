@@ -8,6 +8,7 @@ import type { Database } from '../database';
 import type { OddsProvider, EventOdds, LineMovement } from './types';
 import { OddsEventStream } from './OddsEventStream';
 import { TheOddsProvider } from './providers/TheOddsApiProvider';
+import { parseSportKeys } from './sportKeys';
 import { createManagedInterval, type ManagedIntervalTask } from '../services/Scheduler';
 import type { BroadcastMessage } from '../../../shared/messages.ts';
 import type {
@@ -79,7 +80,7 @@ export class OddsPoller {
 
     const apiKey = process.env.ODDS_API_KEY;
     if (apiKey) {
-      this.provider = new TheOddsProvider(apiKey);
+      this.provider = new TheOddsProvider(apiKey, parseSportKeys(process.env.ODDS_API_SPORTS));
       console.log('[OddsPoller] Using TheOddsAPI provider');
     } else {
       // Provider will be set in start() if ODDS_DEMO_MODE is enabled
@@ -475,7 +476,7 @@ export class OddsPoller {
     let eventRows: EventRow[];
     if (sport && sport !== 'all') {
       eventRows = await this.db.all<EventRow>(
-        `SELECT * FROM events WHERE sport = ? OR league = ? ORDER BY start_time ASC`,
+        `SELECT * FROM events WHERE lower(sport) = lower(?) OR league = ? ORDER BY start_time ASC`,
         [sport, sport]
       );
     } else {

@@ -22,6 +22,7 @@ This is the single reference for Sports Terminal names: environment variables, O
 | `RATE_LIMIT_MAX` | `100` | No | `RateLimiter` | Max HTTP requests per client window |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | No | `RateLimiter` | HTTP rate-limit window length |
 | `ODDS_API_KEY` | unset | No | `OddsPoller` | Enables The Odds API provider; odds polling is disabled when unset |
+| `ODDS_API_SPORTS` | `basketball_nba` | No | `OddsPoller` | The Odds API sport keys to poll, comma or space separated (for example `americanfootball_nfl,basketball_nba,icehockey_nhl`) |
 | `ODDS_DEMO_MODE` | `false` | No | `OddsPoller` | Test/development only: enables synthetic odds if no `ODDS_API_KEY`; never used for Buckeye wager data |
 | `REDIS_URL` | unset | No | `PerformanceCache` | Optional Redis cache URL for performance cache |
 | `FRONTEND_PORT` | `3001` | No | `scripts/serve-frontend.ts` | Optional static frontend-only server port |

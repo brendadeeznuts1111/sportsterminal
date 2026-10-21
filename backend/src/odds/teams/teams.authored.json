@@ -1,0 +1,170 @@
+{
+  "NFL": {
+    "KC": [
+      "Kansas City Chiefs",
+      "Kansas City",
+      "KAN",
+      "Chiefs"
+    ],
+    "BAL": [
+      "Baltimore Ravens",
+      "Baltimore",
+      "Ravens"
+    ],
+    "TB": [
+      "Tampa Bay Buccaneers",
+      "Tampa Bay",
+      "TAM",
+      "Buccaneers"
+    ],
+    "DAL": [
+      "Dallas Cowboys",
+      "Dallas",
+      "Cowboys"
+    ],
+    "BUF": [
+      "Buffalo Bills",
+      "Buffalo",
+      "Bills"
+    ],
+    "NYJ": [
+      "New York Jets",
+      "NY Jets",
+      "Jets"
+    ],
+    "SF": [
+      "San Francisco 49ers",
+      "San Francisco",
+      "SFO",
+      "49ers"
+    ],
+    "LAR": [
+      "Los Angeles Rams",
+      "LA Rams",
+      "Rams"
+    ]
+  },
+  "NCAAF": {
+    "PUR": [
+      "Purdue"
+    ],
+    "TULN": [
+      "Tulane"
+    ],
+    "MEM": [
+      "Memphis"
+    ],
+    "TAMU": [
+      "Texas A&M Aggies",
+      "Texas A&M",
+      "TA&M"
+    ],
+    "MIZ": [
+      "Missouri Tigers",
+      "Missouri"
+    ],
+    "MISS": [
+      "Ole Miss Rebels",
+      "Ole Miss"
+    ],
+    "UGA": [
+      "Georgia Bulldogs",
+      "Georgia"
+    ]
+  },
+  "NBA": {
+    "LAL": [
+      "Los Angeles Lakers",
+      "Lakers"
+    ],
+    "GSW": [
+      "Golden State Warriors",
+      "Warriors",
+      "GS"
+    ],
+    "DEN": [
+      "Denver Nuggets",
+      "Nuggets"
+    ],
+    "UTA": [
+      "Utah Jazz",
+      "Jazz",
+      "UTAH"
+    ],
+    "BOS": [
+      "Boston Celtics",
+      "Celtics"
+    ],
+    "MIA": [
+      "Miami Heat",
+      "Heat"
+    ]
+  },
+  "NCAAB": {
+    "DUKE": [
+      "Duke Blue Devils",
+      "Duke"
+    ],
+    "KU": [
+      "Kansas Jayhawks",
+      "Kansas"
+    ]
+  },
+  "NHL": {
+    "CAR": [
+      "Carolina Hurricanes",
+      "Hurricanes"
+    ],
+    "MTL": [
+      "Montreal Canadiens",
+      "Canadiens"
+    ],
+    "SEA": [
+      "Seattle Kraken",
+      "Kraken"
+    ],
+    "EDM": [
+      "Edmonton Oilers",
+      "Oilers"
+    ],
+    "TOR": [
+      "Toronto Maple Leafs",
+      "Maple Leafs"
+    ],
+    "BOS": [
+      "Boston Bruins",
+      "Bruins"
+    ]
+  },
+  "MLB": {
+    "ATH": [
+      "Athletics",
+      "Oakland Athletics",
+      "Sacramento Athletics"
+    ],
+    "LAD": [
+      "Los Angeles Dodgers",
+      "Dodgers"
+    ],
+    "PHI": [
+      "Philadelphia Phillies",
+      "Phillies"
+    ],
+    "NYY": [
+      "New York Yankees",
+      "Yankees"
+    ],
+    "BOS": [
+      "Boston Red Sox",
+      "Red Sox"
+    ]
+  },
+  "EPL": {
+    "ARS": [
+      "Arsenal"
+    ],
+    "CHE": [
+      "Chelsea"
+    ]
+  }
+}
