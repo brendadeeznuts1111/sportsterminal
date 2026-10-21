@@ -1,0 +1,11 @@
+# bunfig.test.toml — configuration for `bun run test:suite` / `test:parallel`.
+# Passed explicitly with --config, so it replaces bunfig.toml for test runs.
+
+[install]
+auto = "disable"
+
+[install.security]
+scanner = "@bun-security-scanner/osv"
+
+[console]
+depth = 2
