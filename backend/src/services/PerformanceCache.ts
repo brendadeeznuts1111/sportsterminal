@@ -23,7 +23,16 @@ export interface PerformanceFetcher {
   (agentId: string): Promise<unknown>;
 }
 
-type RedisClient = InstanceType<typeof Bun.redis.constructor>;
+interface RedisClient {
+  get(key: string): Promise<string | null>;
+  setex(key: string, seconds: number, value: string): Promise<unknown>;
+  publish(channel: string, message: string): Promise<unknown>;
+  del(key: string): Promise<unknown>;
+  close(): void;
+  connect(): void;
+  onconnect: (() => void) | null;
+  onclose: (() => void) | null;
+}
 
 export class PerformanceCache {
   private redis: RedisClient | null = null;

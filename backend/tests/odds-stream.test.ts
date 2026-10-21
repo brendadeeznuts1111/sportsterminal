@@ -107,9 +107,10 @@ describe('GET /api/odds/stream', () => {
     const freshRequest = new Request('http://localhost/api/odds/stream');
     const fresh = registerOddsRoutes(new URL(freshRequest.url), freshRequest, { openOddsStream: (request: Request) => stream.createResponse(request) } as unknown as OddsPoller);
     expect(fresh).toBeInstanceOf(Response);
-    expect(fresh?.headers.get('content-type')).toContain('text/event-stream');
-    expect(fresh?.headers.get('cache-control')).toContain('no-cache');
-    const freshText = await readUntil(fresh as Response, (text) => text.includes('event: snapshot'));
+    if (!(fresh instanceof Response)) throw new Error('expected a stream response');
+    expect(fresh.headers.get('content-type')).toContain('text/event-stream');
+    expect(fresh.headers.get('cache-control')).toContain('no-cache');
+    const freshText = await readUntil(fresh, (text) => text.includes('event: snapshot'));
     expect(freshText).toContain('retry: 3000');
     expect(freshText).toContain('id: 1');
     expect(freshText).toContain('event: snapshot');

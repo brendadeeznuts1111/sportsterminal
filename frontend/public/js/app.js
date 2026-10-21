@@ -376,8 +376,32 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initialize WebSocket
   wsClient.connect();
 
+  // Socket frames are typed in shared/messages.ts. app.js stays unchecked
+  // because the rest of the module is implicit-any; these aliases document
+  // the handlers below (odds grid feed is WebSocket, not SSE).
+  /** @typedef {import('../../../shared/messages.ts').ServerMessage} ServerMessage */
+  /** @typedef {import('../../../shared/messages.ts').OddsGridFeedEvent} OddsGridFeedEvent */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'wager.new'>} WagerNewMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'wager.alert'>} WagerAlertMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'agentUpdate'>} AgentUpdateMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'exposure.update'>} ExposureUpdateMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'auth_failed'>} AuthFailedMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'odds.movement'>} OddsMovementMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'odds.update'>} OddsUpdateMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'pattern.detected'>} PatternDetectedMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'betAction'>} BetActionResultMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'rawApiLog.new'>} RawApiLogMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'weeklyFigure.new'>} WeeklyFigureMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'masterSnapshot.new'>} MasterSnapshotMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'token_refreshed'>} TokenRefreshedMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'token_refresh_error'>} TokenRefreshErrorMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'betAction_error'>} BetActionErrorMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'data_error'>} DataErrorMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'refresh_initiated'>} RefreshInitiatedMessage */
+  /** @typedef {import('../../../shared/messages.ts').ExtractServer<'betAction_queued'>} BetActionQueuedMessage */
+
   // Register WebSocket event handlers
-  wsClient.on('wager.new', (msg) => {
+  wsClient.on('wager.new', (/** @type {WagerNewMessage} */ msg) => {
     if (msg.payload) {
       const wager = normalizeBackendWager(msg.payload);
       buckeyeWagers = buckeyeWagers.filter(w => w.WagerNumber !== wager.WagerNumber);
@@ -394,30 +418,30 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  wsClient.on('wager.alert', (msg) => {
+  wsClient.on('wager.alert', (/** @type {WagerAlertMessage} */ msg) => {
     if (msg.payload) {
       showToast(msg.payload.message || 'Alert triggered', msg.payload.severity === 'critical' ? 'error' : 'warning');
       scheduleRender('alerts');
     }
   });
 
-  wsClient.on('agentUpdate', (msg) => {
+  wsClient.on('agentUpdate', (/** @type {AgentUpdateMessage} */ msg) => {
     mergeAgentDelta(msg.payload || msg);
   });
 
-  wsClient.on('exposure.update', (msg) => {
+  wsClient.on('exposure.update', (/** @type {ExposureUpdateMessage} */ msg) => {
     sectionCache.exposure.at = 0;
     scheduleRender('buckeye');
     if (currentSection === 'positions') fetchExposureData();
   });
 
-  wsClient.on('auth_failed', (msg) => {
+  wsClient.on('auth_failed', (/** @type {AuthFailedMessage} */ msg) => {
     showToast(msg.message || 'Session expired. Please reconnect.', 'error');
     wsClient.isAuthenticated = false;
     updateConnectionStatus('disconnected');
   });
 
-  wsClient.on('odds.movement', (msg) => {
+  wsClient.on('odds.movement', (/** @type {OddsMovementMessage} */ msg) => {
     const move = msg.payload || {};
     if (!move.eventId || !move.book) return;
     const normalized = {
@@ -439,7 +463,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderOddsMatrix();
   });
 
-  wsClient.on('odds.update', () => {
+  wsClient.on('odds.update', (/** @type {OddsUpdateMessage} */ _msg) => {
     // Count-only socket nudge. While the SSE price stream is fresh, deltas
     // already patched the changed cells. Refetch only as a fallback.
     if (marketDrift?.isLive()) return;
@@ -447,51 +471,51 @@ document.addEventListener('DOMContentLoaded', () => {
     if (currentSection === 'floor') loadOddsData();
   });
 
-  wsClient.on('token_refreshed', (msg) => {
+  wsClient.on('token_refreshed', (/** @type {TokenRefreshedMessage} */ msg) => {
     if (msg.token) {
       localStorage.setItem('wsToken', msg.token);
     }
   });
 
-  wsClient.on('token_refresh_error', (msg) => {
+  wsClient.on('token_refresh_error', (/** @type {TokenRefreshErrorMessage} */ msg) => {
     console.warn('[WS] Token refresh failed:', msg.message);
   });
 
-  wsClient.on('betAction_error', (msg) => {
+  wsClient.on('betAction_error', (/** @type {BetActionErrorMessage} */ msg) => {
     showToast(msg.message || 'Action failed', 'error');
   });
 
-  wsClient.on('data_error', (msg) => {
+  wsClient.on('data_error', (/** @type {DataErrorMessage} */ msg) => {
     console.warn('[WS] Data fetch error:', msg.message);
     showToast('Failed to load data: ' + (msg.message || 'Unknown error'), 'warning');
   });
 
-  wsClient.on('refresh_initiated', (msg) => {
+  wsClient.on('refresh_initiated', (/** @type {RefreshInitiatedMessage} */ msg) => {
     console.log('[WS] Refresh initiated for', msg.agentId);
   });
 
-  wsClient.on('rawApiLog.new', (msg) => {
+  wsClient.on('rawApiLog.new', (/** @type {RawApiLogMessage} */ msg) => {
     if (currentSection === 'performance') {
       performanceState.rawLogs.unshift(msg.payload);
       renderRawLogsTable();
     }
   });
 
-  wsClient.on('weeklyFigure.new', (msg) => {
+  wsClient.on('weeklyFigure.new', (/** @type {WeeklyFigureMessage} */ msg) => {
     if (currentSection === 'performance') {
       performanceState.weeklyFigures.unshift(msg.payload);
       renderWeeklyFiguresTable();
     }
   });
 
-  wsClient.on('masterSnapshot.new', (msg) => {
+  wsClient.on('masterSnapshot.new', (/** @type {MasterSnapshotMessage} */ msg) => {
     if (currentSection === 'performance') {
       performanceState.masterSnapshots.unshift(msg.payload);
       renderMasterSnapshotsTable();
     }
   });
 
-  wsClient.on('pattern.detected', (msg) => {
+  wsClient.on('pattern.detected', (/** @type {PatternDetectedMessage} */ msg) => {
     sectionCache.patterns.at = 0;
     const pattern = msg.payload || {};
     if (pattern.severity === 'critical') {
@@ -535,7 +559,7 @@ document.addEventListener('DOMContentLoaded', () => {
     updatePatternBadge();
   });
 
-  wsClient.on('betAction', (msg) => {
+  wsClient.on('betAction', (/** @type {BetActionResultMessage} */ msg) => {
     const result = msg.payload || {};
     if (result.success) {
       showToast(`${result.action === 'accept' ? 'Accepted' : 'Declined'} wager #${result.wagerNumber}`, 'success');
@@ -544,7 +568,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  wsClient.on('betAction_queued', (msg) => {
+  wsClient.on('betAction_queued', (/** @type {BetActionQueuedMessage} */ msg) => {
     showToast(`${msg.action === 'accept' ? 'Accept' : 'Decline'} queued for wager #${msg.wagerNumber}`, 'info');
   });
 

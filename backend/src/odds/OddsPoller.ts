@@ -5,12 +5,39 @@
  */
 
 import type { Database } from '../database';
-import type { OddsProvider, EventOdds, LineMovement, BookHealth } from './types';
+import type { OddsProvider, EventOdds, LineMovement } from './types';
 import { OddsEventStream } from './OddsEventStream';
 import { TheOddsProvider } from './providers/TheOddsApiProvider';
 import { createManagedInterval, type ManagedIntervalTask } from '../services/Scheduler';
+import type { BroadcastMessage } from '../../../shared/messages.ts';
+import type {
+  BookHealthRow,
+  EventRow,
+  LineMovementRow,
+  LiveOddsMatrix,
+  OddsSnapshotRow,
+  PatternAgentCount,
+  PatternSummaryResponse,
+  PatternSummaryRow,
+} from '../../../shared/domain.ts';
 
 type PatternSeverity = 'info' | 'warning' | 'critical';
+
+interface OpenLineQueryRow {
+  event_id: string;
+  book: string;
+  spread_home: number | null;
+  spread_away: number | null;
+  spread_home_price: number | null;
+  spread_away_price: number | null;
+  total_over: number | null;
+  total_under: number | null;
+  total_over_price: number | null;
+  total_under_price: number | null;
+  moneyline_home: number | null;
+  moneyline_away: number | null;
+  open_at: string;
+}
 
 interface DetectedPattern {
   id: string;
@@ -41,10 +68,10 @@ export class OddsPoller {
   private pollIntervalMs: number = 30000; // 30 seconds
   private healthIntervalMs: number = 60000; // 60 seconds
   private lastOdds: EventOdds[] = [];
-  private broadcast: (msg: object) => void;
+  private broadcast: (msg: BroadcastMessage) => void;
   private oddsStream = new OddsEventStream();
 
-  constructor(db: Database, broadcast: (msg: object) => void) {
+  constructor(db: Database, broadcast: (msg: BroadcastMessage) => void) {
     this.db = db;
     this.broadcast = broadcast;
     this.pollIntervalMs = readPositiveIntEnv('ODDS_POLL_INTERVAL_MS', this.pollIntervalMs);
@@ -223,7 +250,7 @@ export class OddsPoller {
 
     const placeholders = eventIds.map(() => '?').join(',');
     const cutoff = new Date(Date.now() - 20 * 60 * 1000).toISOString();
-    const recentMovements = await this.db.all(
+    const recentMovements = await this.db.all<LineMovementRow>(
       `SELECT * FROM line_movements
        WHERE event_id IN (${placeholders}) AND recorded_at >= ?
        ORDER BY recorded_at DESC
@@ -377,10 +404,10 @@ export class OddsPoller {
     );
   }
 
-  async getPatternSummary(sinceHours: number = 24): Promise<any> {
+  async getPatternSummary(sinceHours: number = 24): Promise<PatternSummaryResponse> {
     const hours = Math.min(Math.max(sinceHours, 1), 168);
     const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-    const rows = await this.db.all(
+    const rows = await this.db.all<PatternSummaryRow>(
       `SELECT type, severity, category, COUNT(*) AS count, MAX(detected_at) AS last_detected_at
        FROM detected_patterns
        WHERE detected_at >= ?
@@ -416,10 +443,10 @@ export class OddsPoller {
     return { sinceHours: hours, total, byType: totals, bySeverity: severity, byCategory: category, rows };
   }
 
-  async getPatternAgentCounts(sinceHours: number = 24): Promise<any[]> {
+  async getPatternAgentCounts(sinceHours: number = 24): Promise<PatternAgentCount[]> {
     const hours = Math.min(Math.max(sinceHours, 1), 168);
     const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-    return this.db.all(
+    return this.db.all<PatternAgentCount>(
       `SELECT
          pa.agent_login AS agent,
          COUNT(*) AS pattern_count,
@@ -435,24 +462,24 @@ export class OddsPoller {
     );
   }
 
-  async getBookHealth(): Promise<any[]> {
-    return this.db.all(`SELECT * FROM book_health ORDER BY book`);
+  async getBookHealth(): Promise<BookHealthRow[]> {
+    return this.db.all<BookHealthRow>(`SELECT * FROM book_health ORDER BY book`);
   }
 
   /**
    * Return a structured odds matrix suitable for the Trading Floor grid.
    * Includes games, per-book odds, recent movements, open lines, and patterns.
    */
-  async getLiveOddsMatrix(sport?: string, books?: string[], includeBookMoves: boolean = false): Promise<any> {
+  async getLiveOddsMatrix(sport?: string, books?: string[], includeBookMoves: boolean = false): Promise<LiveOddsMatrix> {
     // Fetch events
-    let eventRows: any[];
+    let eventRows: EventRow[];
     if (sport && sport !== 'all') {
-      eventRows = await this.db.all(
+      eventRows = await this.db.all<EventRow>(
         `SELECT * FROM events WHERE sport = ? OR league = ? ORDER BY start_time ASC`,
         [sport, sport]
       );
     } else {
-      eventRows = await this.db.all(`SELECT * FROM events ORDER BY start_time ASC`);
+      eventRows = await this.db.all<EventRow>(`SELECT * FROM events ORDER BY start_time ASC`);
     }
 
     const eventIds = eventRows.map(e => e.id);
@@ -463,7 +490,7 @@ export class OddsPoller {
     const placeholders = eventIds.map(() => '?').join(',');
 
     // Fetch odds snapshots
-    const oddsRows = await this.db.all(
+    const oddsRows = await this.db.all<OddsSnapshotRow>(
       `SELECT * FROM odds_snapshots WHERE event_id IN (${placeholders})`,
       eventIds
     );
@@ -471,14 +498,14 @@ export class OddsPoller {
     // Fetch recent movements for these events. The top-level list is enough for
     // grid arrows and tooltips; per-book expansion is opt-in because it balloons
     // the payload quickly.
-    const allMovementRows = await this.db.all(
+    const allMovementRows = await this.db.all<LineMovementRow>(
       `SELECT * FROM line_movements WHERE event_id IN (${placeholders}) ORDER BY recorded_at DESC LIMIT 500`,
       [...eventIds]
     );
 
     // Fetch open lines (first snapshot of the day per event/book)
     const today = new Date().toISOString().split('T')[0];
-    const openLineRows = await this.db.all(
+    const openLineRows = await this.db.all<OpenLineQueryRow>(
       `SELECT event_id, book, spread_home, spread_away, spread_home_price, spread_away_price, total_over, total_under, total_over_price, total_under_price, moneyline_home, moneyline_away, MIN(scraped_at) as open_at
        FROM odds_snapshots
        WHERE event_id IN (${placeholders}) AND scraped_at >= ?
@@ -488,7 +515,7 @@ export class OddsPoller {
 
     // Group odds by event and book
     const booksSet = new Set<string>();
-    const oddsByEvent: Record<string, Record<string, any>> = {};
+    const oddsByEvent: Record<string, Record<string, OddsSnapshotRow>> = {};
     const lastUpdatedByEventBook: Record<string, string> = {};
     for (const row of oddsRows) {
       if (!oddsByEvent[row.event_id]) oddsByEvent[row.event_id] = {};
@@ -501,7 +528,7 @@ export class OddsPoller {
     }
 
     // Group open lines
-    const openLinesByKey: Record<string, any> = {};
+    const openLinesByKey: Record<string, OpenLineQueryRow> = {};
     for (const row of openLineRows) {
       const key = `${row.event_id}:${row.book}`;
       openLinesByKey[key] = row;
@@ -509,7 +536,7 @@ export class OddsPoller {
 
     // Group all movements by event and book only when a caller explicitly needs
     // expanded per-cell history.
-    const movementsByEventBook: Record<string, any[]> = {};
+    const movementsByEventBook: Record<string, LineMovementRow[]> = {};
     if (includeBookMoves) {
       for (const m of allMovementRows) {
         const key = `${m.event_id}:${m.book}`;
@@ -519,7 +546,7 @@ export class OddsPoller {
     }
 
     // Build latest movement lookup
-    const latestMovementByKey: Record<string, any> = {};
+    const latestMovementByKey: Record<string, LineMovementRow> = {};
     const recentMovementCountByEvent: Record<string, number> = {};
     const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     for (const m of allMovementRows) {
@@ -643,7 +670,7 @@ export class OddsPoller {
 
     // Build book metadata
     const health = await this.getBookHealth();
-    const healthMap: Record<string, any> = {};
+    const healthMap: Record<string, BookHealthRow> = {};
     for (const h of health) healthMap[h.book] = h;
 
     const booksMeta = bookList.map(b => ({
@@ -747,7 +774,7 @@ export class OddsPoller {
     const health = await this.getBookHealth();
     const allBooks = new Set(health.map(h => h.book));
     // Also include books from current odds
-    const oddsBooks = await this.db.all(`SELECT DISTINCT book FROM odds_snapshots`);
+    const oddsBooks = await this.db.all<{ book: string }>(`SELECT DISTINCT book FROM odds_snapshots`);
     for (const row of oddsBooks) allBooks.add(row.book);
 
     const list = Array.from(allBooks).sort().map(b => {

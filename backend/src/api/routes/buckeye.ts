@@ -1,17 +1,18 @@
 /**
  * Buckeye-specific routes: UI config, account info, weekly figures, connect test
  */
-import { clampInt, readJsonBody, handleAsync, corsHeaders } from '../helpers';
+import { clampInt, readTypedBody, handleAsync, corsHeaders } from '../helpers';
 import { BuckeyeAPI } from '../../scrapers/BuckeyeAPI';
 import type { BuckeyeScraperManager } from '../../scrapers/ScraperManager';
 import type { BuckeyeSecretStatus, BunSecretVault } from '../../services/BunSecretVault';
+import { buckeyeSessionSchema, type BuckeyeSessionBody } from '../../../../shared/schemas.ts';
 
 export function registerBuckeyeRoutes(
   url: URL,
   request: Request,
   scraperManager: BuckeyeScraperManager,
   secretVault?: BunSecretVault
-): Response | null {
+): Response | Promise<Response | null> | null {
   if (url.pathname === '/api/buckeye/vault-status') {
     if (request.method === 'GET') {
       return handleAsync(async () => {
@@ -39,7 +40,9 @@ export function registerBuckeyeRoutes(
         if (!secretVault) {
           return { success: false, message: 'Secret vault unavailable' };
         }
-        const body = request.method === 'POST' ? await readJsonBody(request) : {};
+        const body: BuckeyeSessionBody = request.method === 'POST'
+          ? await readTypedBody(request, buckeyeSessionSchema)
+          : {};
         const clearAll = url.searchParams.get('all') === '1' || body.all === true || body.all === '1';
         if (clearAll) {
           const agentIds = await secretVault.getBuckeyeAgentIds();
@@ -83,26 +86,8 @@ export function registerBuckeyeRoutes(
     }
     if (request.method === 'POST') {
       return handleAsync(async () => {
-        const body = await readJsonBody(request);
-        const api = new BuckeyeAPI(
-          {
-            agentId: body.agentId,
-            password: body.password || '',
-            baseUrl: body.baseUrl,
-            cfCookie: body.cfCookie,
-          },
-          false
-        );
-
-        if (body.token) {
-          (api as any).token = body.token;
-          (api as any).loggedIn = true;
-        } else {
-          const ok = await api.login();
-          if (!ok) {
-            throw new Error('Login failed — invalid credentials or site unreachable');
-          }
-        }
+        const body = await readTypedBody(request, buckeyeSessionSchema);
+        const api = await openBuckeyeSession(body);
 
         return api.getLanguageUiConfig({
           includeRaw: body.includeRaw === true,
@@ -121,26 +106,7 @@ export function registerBuckeyeRoutes(
     }
     if (request.method === 'POST') {
       return handleAsync(async () => {
-        const body = await readJsonBody(request);
-        const api = new BuckeyeAPI(
-          {
-            agentId: body.agentId,
-            password: body.password || '',
-            baseUrl: body.baseUrl,
-            cfCookie: body.cfCookie,
-          },
-          false
-        );
-
-        if (body.token) {
-          (api as any).token = body.token;
-          (api as any).loggedIn = true;
-        } else {
-          const ok = await api.login();
-          if (!ok) {
-            throw new Error('Login failed — invalid credentials or site unreachable');
-          }
-        }
+        const api = await openBuckeyeSession(await readTypedBody(request, buckeyeSessionSchema));
 
         return api.getAccountInfoOwner();
       }, corsHeaders);
@@ -161,29 +127,12 @@ export function registerBuckeyeRoutes(
     }
     if (request.method === 'POST') {
       return handleAsync(async () => {
-        const body = await readJsonBody(request);
-        const api = new BuckeyeAPI(
-          {
-            agentId: body.agentId,
-            password: body.password || '',
-            baseUrl: body.baseUrl,
-            cfCookie: body.cfCookie,
-          },
-          false
-        );
-
-        if (body.token) {
-          (api as any).token = body.token;
-          (api as any).loggedIn = true;
-        } else {
-          const ok = await api.login();
-          if (!ok) {
-            throw new Error('Login failed — invalid credentials or site unreachable');
-          }
-        }
+        const body = await readTypedBody(request, buckeyeSessionSchema);
+        const api = await openBuckeyeSession(body);
+        const week = typeof body.week === 'number' && Number.isInteger(body.week) ? body.week : 0;
 
         return api.getWeeklyFigureByAgentLite({
-          week: Number.isInteger(body.week) ? body.week : 0,
+          week,
           type: body.type || 'A',
           layout: body.layout || 'byDay',
         });
@@ -252,26 +201,8 @@ export function registerBuckeyeRoutes(
     }
     if (request.method === 'POST') {
       return handleAsync(async () => {
-        const body = await readJsonBody(request);
-        const api = new BuckeyeAPI(
-          {
-            agentId: body.agentId,
-            password: body.password || '',
-            baseUrl: body.baseUrl,
-            cfCookie: body.cfCookie,
-          },
-          false
-        );
-
-        if (body.token) {
-          (api as any).token = body.token;
-          (api as any).loggedIn = true;
-        } else {
-          const ok = await api.login();
-          if (!ok) {
-            throw new Error('Login failed — invalid credentials or site unreachable');
-          }
-        }
+        const body = await readTypedBody(request, buckeyeSessionSchema);
+        const api = await openBuckeyeSession(body);
 
         const result = await api.getAgentPerformanceReport({
           ...resolveReportPreset(body.week, body.start, body.end),
@@ -304,26 +235,7 @@ export function registerBuckeyeRoutes(
     }
     if (request.method === 'POST') {
       return handleAsync(async () => {
-        const body = await readJsonBody(request);
-        const api = new BuckeyeAPI(
-          {
-            agentId: body.agentId,
-            password: body.password || '',
-            baseUrl: body.baseUrl,
-            cfCookie: body.cfCookie,
-          },
-          false
-        );
-
-        if (body.token) {
-          (api as any).token = body.token;
-          (api as any).loggedIn = true;
-        } else {
-          const ok = await api.login();
-          if (!ok) {
-            throw new Error('Login failed — invalid credentials or site unreachable');
-          }
-        }
+        const api = await openBuckeyeSession(await readTypedBody(request, buckeyeSessionSchema));
 
         return api.getManagerSnapshot();
       }, corsHeaders);
@@ -337,7 +249,7 @@ export function registerBuckeyeRoutes(
     }
     if (request.method === 'POST') {
       return handleAsync(async () => {
-        const body = await readJsonBody(request);
+        const body = await readTypedBody(request, buckeyeSessionSchema);
         if (!body.agentId) throw new Error('agentId is required');
         return scraperManager.forceAccessLogRefresh(body.agentId);
       }, corsHeaders);
@@ -347,11 +259,11 @@ export function registerBuckeyeRoutes(
   // Test Buckeye login (no polling — just validate credentials)
   if (url.pathname === '/api/connect' && request.method === 'POST') {
     return handleAsync(async () => {
-      const body = await readJsonBody(request);
+      const body = await readTypedBody(request, buckeyeSessionSchema);
       const api = new BuckeyeAPI(
         {
-          agentId: body.agentId,
-          password: body.password,
+          agentId: body.agentId as string,
+          password: body.password as string,
           baseUrl: body.baseUrl,
           cfCookie: body.cfCookie,
         },
@@ -365,7 +277,7 @@ export function registerBuckeyeRoutes(
       const wagers = await api.getBetTicker();
       if (secretVault) {
         await secretVault.saveBuckeyeSecrets({
-          agentId: body.agentId,
+          agentId: body.agentId as string,
           password: body.password || undefined,
           cfCookie: api.getCookie() || body.cfCookie || undefined,
           token: api.getToken(),
@@ -381,6 +293,30 @@ export function registerBuckeyeRoutes(
   }
 
   return null;
+}
+
+async function openBuckeyeSession(body: BuckeyeSessionBody): Promise<BuckeyeAPI> {
+  const api = new BuckeyeAPI(
+    {
+      agentId: body.agentId as string,
+      password: body.password || '',
+      baseUrl: body.baseUrl,
+      cfCookie: body.cfCookie,
+    },
+    false
+  );
+
+  if (body.token) {
+    api.token = body.token;
+    api.loggedIn = true;
+  } else {
+    const ok = await api.login();
+    if (!ok) {
+      throw new Error('Login failed — invalid credentials or site unreachable');
+    }
+  }
+
+  return api;
 }
 
 function decorateVaultStatus(status: BuckeyeSecretStatus, scraperManager: BuckeyeScraperManager): BuckeyeSecretStatus & {
