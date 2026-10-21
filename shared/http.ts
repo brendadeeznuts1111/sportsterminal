@@ -113,6 +113,11 @@ export interface LiveOddsQuery {
   includeBookMoves?: string;
 }
 
+/** Manual EventSource reconnects cannot set Last-Event-ID, so the stream also accepts it here. */
+export interface OddsStreamQuery {
+  lastEventId?: string;
+}
+
 export interface VaultStatusQuery {
   agentId?: string;
   all?: string;
@@ -283,6 +288,8 @@ export interface ApiRoutes {
   'DELETE /api/webhooks/:webhookId': Spec<{ webhookId: string }, NoQuery, NoBody, WebhookDeleteResponse>;
   'GET /api/webhooks/:webhookId/deliveries': Spec<{ webhookId: string }, NoQuery, NoBody, WebhookDelivery[]>;
   'GET /api/odds/live': Spec<NoParams, LiveOddsQuery, NoBody, LiveOddsMatrix>;
+  /** text/event-stream of price deltas. The body is framed text, not JSON. */
+  'GET /api/odds/stream': Spec<NoParams, OddsStreamQuery, NoBody, string>;
   'GET /api/odds/events': Spec<NoParams, NoQuery, NoBody, EventRow[]>;
   'GET /api/odds/events/:eventId': Spec<{ eventId: string }, NoQuery, NoBody, OddsSnapshotRow[]>;
   'GET /api/odds/snapshots': Spec<NoParams, NoQuery, NoBody, OddsSnapshotWithEvent[]>;
@@ -353,6 +360,7 @@ export const routeCatalog = [
   'DELETE /api/webhooks/:webhookId',
   'GET /api/webhooks/:webhookId/deliveries',
   'GET /api/odds/live',
+  'GET /api/odds/stream',
   'GET /api/odds/events',
   'GET /api/odds/events/:eventId',
   'GET /api/odds/snapshots',

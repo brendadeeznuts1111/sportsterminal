@@ -66,6 +66,10 @@ export function registerOddsRoutes(
     return handleAsync(async () => oddsPoller.getBooksList(), corsHeaders);
   }
 
+  if (url.pathname === '/api/odds/stream') {
+    return oddsPoller.openOddsStream(_request);
+  }
+
   if (url.pathname === '/api/odds/live') {
     const sport = url.searchParams.get('sport') || undefined;
     const booksParam = url.searchParams.get('books') || undefined;

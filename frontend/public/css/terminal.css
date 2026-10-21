@@ -72,6 +72,21 @@ body{background:var(--bg);color:var(--text);overflow:hidden;height:100vh;}
 .consensus-cell{background:rgba(59,130,246,0.08);}
 .best-line{background:rgba(16,185,129,0.12)!important;}
 .offline-book{opacity:0.4;}
+.odds-side{border-radius:4px;padding:1px 2px;}
+.odds-side.drift-house{background:rgba(245,158,11,0.22);outline:1px solid rgba(245,158,11,0.9);}
+.odds-side.drift-plus-ev{background:rgba(6,182,212,0.2);outline:1px solid rgba(6,182,212,0.9);}
+.drift-badge:empty{display:none;}
+.drift-badge{display:block;font-size:9px;font-weight:700;letter-spacing:0.01em;line-height:1.2;}
+.drift-house .drift-badge{color:#fbbf24;}
+.drift-plus-ev .drift-badge{color:#67e8f9;}
+.book-pill.drift-house{background:rgba(245,158,11,0.22);outline:1px solid rgba(245,158,11,0.9);}
+.book-pill.drift-plus-ev{background:rgba(6,182,212,0.2);outline:1px solid rgba(6,182,212,0.9);}
+.matrix-table tbody tr.drift-row-house .sticky-col{box-shadow:inset 3px 0 0 #f59e0b;}
+.matrix-table tbody tr.drift-row-plus-ev .sticky-col{box-shadow:inset 3px 0 0 #06b6d4;}
+.drift-legend{display:inline-flex;align-items:center;gap:4px;}
+.drift-swatch{font-size:9px;font-weight:700;padding:1px 4px;border-radius:3px;}
+.drift-swatch-house{color:#fbbf24;background:rgba(245,158,11,0.18);outline:1px solid rgba(245,158,11,0.8);}
+.drift-swatch-ev{color:#67e8f9;background:rgba(6,182,212,0.16);outline:1px solid rgba(6,182,212,0.8);}
 
 /* Detail Drawer */
 .detail-drawer{max-height:0;overflow:hidden;transition:max-height 0.35s ease-out;background:var(--bg);border-bottom:1px solid var(--border);}

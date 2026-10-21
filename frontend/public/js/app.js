@@ -1,4 +1,5 @@
 import { TerminalWebSocketClient } from './ws-client.js';
+import { MarketDriftAlert } from './market-drift.js';
 import { BUCKEYE_ARCHIVE_LIMIT, DATA_SOURCES, SIDEBAR_GROUP_STORAGE_KEY } from './state.js';
 
 // ==================== STATE ====================
@@ -442,14 +443,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
   wsClient.on('odds.movement', (/** @type {OddsMovementMessage} */ msg) => {
     const move = msg.payload || {};
-    if (move.eventId && move.book) {
-      currentMovementIndex[move.eventId] = currentMovementIndex[move.eventId] || {};
-      currentMovementIndex[move.eventId][move.book] = move;
-      if (currentSection === 'floor') renderOddsMatrix();
+    if (!move.eventId || !move.book) return;
+    const normalized = {
+      event_id: move.eventId,
+      book: move.book,
+      market: move.market,
+      side: move.side,
+      old_value: move.oldValue,
+      new_value: move.newValue,
+      delta: move.delta,
+      recorded_at: move.recordedAt,
+    };
+    currentMovementIndex[`${move.eventId}:${move.book}:${move.market}:${move.side}`] = normalized;
+    if (currentSection !== 'floor') return;
+    if (marketDrift?.isLive()) {
+      patchMovementArrow(normalized);
+      return;
     }
+    renderOddsMatrix();
   });
 
-  wsClient.on('odds.update', (/** @type {OddsUpdateMessage} */ msg) => {
+  wsClient.on('odds.update', (/** @type {OddsUpdateMessage} */ _msg) => {
+    // Count-only socket nudge. While the SSE price stream is fresh, deltas
+    // already patched the changed cells. Refetch only as a fallback.
+    if (marketDrift?.isLive()) return;
     sectionCache.odds.at = 0;
     if (currentSection === 'floor') loadOddsData();
   });
@@ -514,9 +531,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (firstKey) livePatterns.delete(firstKey);
     }
 
-    // Re-render odds grid if pattern relates to a visible game
+    // Rebuild the grid for the pattern icon only when the SSE stream is not
+    // already patching prices. A live stream keeps the existing rows.
     if ((pattern.eventId || pattern.event_id) && currentSection === 'floor') {
-      renderOddsMatrix();
+      if (marketDrift?.isLive()) patchPatternIcon(pattern);
+      else renderOddsMatrix();
     }
 
     // Update agent pattern badges and pulse the row for affected agents
@@ -560,6 +579,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     loadPersistedWagers(true);
   }, 10000); // Keep UI cards synced with backend ingestion even if browser WS is offline
+
+  marketDrift = new MarketDriftAlert({
+    getApiBaseUrl,
+    getMatrix: () => currentMatrixData,
+    getMarket: () => matrixState.market,
+    formatLine: (val, market) => formatOddsValue(val, market),
+    formatAmerican: (val) => formatOddsValue(val, 'moneyline'),
+  });
+  marketDrift.mount();
+  marketDrift.connect();
 
   loadOddsData();
   renderPositions();
@@ -2069,6 +2098,7 @@ function setText(id, value) {
 
 // ==================== ODDS MATRIX ====================
 let currentMatrixData = { games: [], books: [], movements: [] };
+let marketDrift = null;
 let currentBookHealth = {};
 let matrixState = {
   sport: 'all',
@@ -2175,6 +2205,39 @@ function getMovement(gameId, book, market, side) {
   return currentMovementIndex[`${gameId}:${book}:${market}:${side}`] || null;
 }
 
+function patchPatternIcon(pattern) {
+  const eventId = pattern.eventId || pattern.event_id;
+  const patternId = pattern.id;
+  if (!eventId || !patternId) return;
+  const anchor = document.querySelector(`#oddsGrid td[data-game-id="${cssEscape(eventId)}"]`);
+  const name = anchor?.closest('tr')?.querySelector('.sticky-col .font-bold');
+  if (!name || name.querySelector(`[data-pattern-id="${cssEscape(patternId)}"]`)) return;
+  const icon = document.createElement('span');
+  icon.className = 'pattern-icon';
+  icon.dataset.patternId = patternId;
+  icon.textContent = pattern.type === 'Steam Move' ? '🔥' : pattern.type === 'Reverse Line' ? '🚨' : '⚠️';
+  icon.addEventListener('click', (event) => event.stopPropagation());
+  name.appendChild(document.createTextNode(' '));
+  name.appendChild(icon);
+}
+
+function patchMovementArrow(move) {
+  if (!move || matrixState.market !== move.market) return;
+  const side = document.querySelector(
+    `#oddsGrid [data-game-id="${cssEscape(move.event_id)}"][data-book="${cssEscape(move.book)}"] [data-side="${cssEscape(move.side)}"]`
+  );
+  if (!side) return;
+  let arrow = side.querySelector('.movement-arrow, .movement-none');
+  if (!arrow) {
+    arrow = document.createElement('span');
+    side.appendChild(document.createTextNode(' '));
+    side.appendChild(arrow);
+  }
+  const up = move.side === 'away' || move.side === 'over';
+  arrow.className = `movement-arrow ${up ? 'movement-up' : 'movement-down'}`;
+  arrow.textContent = `${up ? '▲' : '▼'}${Math.abs(Number(move.delta) || 0).toFixed(1)}`;
+}
+
 function formatOddsValue(val, type) {
   if (val === null || val === undefined) return '—';
   if (oddsFormat === 'decimal') {
@@ -2188,12 +2251,12 @@ function formatOddsValue(val, type) {
   return (val > 0 ? '+' : '') + Math.round(val);
 }
 
-function formatOddsCell(awayVal, homeVal, type, awayPrice, homePrice) {
+function formatOddsCell(awayVal, homeVal, type, awayPrice, homePrice, awaySide = 'away', homeSide = 'home') {
   const awayStr = formatOddsValue(awayVal, type);
   const homeStr = formatOddsValue(homeVal, type);
-  const awayPriceStr = (type === 'spread' || type === 'total') && awayPrice != null ? ` <span style="color:var(--text-dim);font-size:10px;">(${formatOddsValue(awayPrice, 'moneyline')})</span>` : '';
-  const homePriceStr = (type === 'spread' || type === 'total') && homePrice != null ? ` <span style="color:var(--text-dim);font-size:10px;">(${formatOddsValue(homePrice, 'moneyline')})</span>` : '';
-  return `<div class="odds-price">${awayStr}${awayPriceStr}</div><div class="odds-juice">${homeStr}${homePriceStr}</div>`;
+  const awayPriceStr = (type === 'spread' || type === 'total') && awayPrice != null ? ` <span class="odds-american" style="color:var(--text-dim);font-size:10px;">(${formatOddsValue(awayPrice, 'moneyline')})</span>` : '';
+  const homePriceStr = (type === 'spread' || type === 'total') && homePrice != null ? ` <span class="odds-american" style="color:var(--text-dim);font-size:10px;">(${formatOddsValue(homePrice, 'moneyline')})</span>` : '';
+  return `<div class="odds-side odds-price" data-side="${awaySide}"><span class="odds-line">${awayStr}</span>${awayPriceStr}<span class="drift-badge"></span></div><div class="odds-side odds-juice" data-side="${homeSide}"><span class="odds-line">${homeStr}</span>${homePriceStr}<span class="drift-badge"></span></div>`;
 }
 
 function findBestBook(games, market, side) {
@@ -2436,6 +2499,7 @@ function renderOddsMatrix() {
   const mobile = document.getElementById('oddsGridMobile');
   if (!grid || !mobile) return;
 
+  marketDrift?.overlay(currentMatrixData);
   clearTooltipCache();
   const games = getFilteredGames();
   const visibleBooks = getVisibleBooks();
@@ -2493,7 +2557,9 @@ function renderOddsMatrix() {
       const awayPrice = cons ? (market === 'total' ? cons.overPrice : cons.awayPrice) : null;
       const homePrice = cons ? (market === 'total' ? cons.underPrice : cons.homePrice) : null;
       const ctId = cacheTooltip(buildConsensusTooltip(g.id, market));
-      html += `<td class="sticky-col-2 consensus-cell text-center" data-tt="${ctId}" onmouseenter="showTooltip(this, getCachedTooltip(this.dataset.tt))" onmouseleave="hideTooltip()">${formatOddsCell(awayVal, homeVal, market, awayPrice, homePrice)}</td>`;
+      const awaySideName = market === 'total' ? 'over' : 'away';
+      const homeSideName = market === 'total' ? 'under' : 'home';
+      html += `<td class="sticky-col-2 consensus-cell text-center" data-game-id="${g.id}" data-book="PIN" data-market="${market}" data-consensus="1" data-tt="${ctId}" onmouseenter="showTooltip(this, getCachedTooltip(this.dataset.tt))" onmouseleave="hideTooltip()">${formatOddsCell(awayVal, homeVal, market, awayPrice, homePrice, awaySideName, homeSideName)}</td>`;
     }
 
     for (const book of visibleBooks) {
@@ -2521,12 +2587,12 @@ function renderOddsMatrix() {
       const cellTooltipAway = buildOddsCellTooltip(g.id, book.key, market, awaySide);
       const ttId = cacheTooltip(cellTooltipAway);
 
-      const awayPriceStr = awayPrice != null ? ` <span style="color:var(--text-dim);font-size:10px;">(${formatOddsValue(awayPrice, 'moneyline')})</span>` : '';
-      const homePriceStr = homePrice != null ? ` <span style="color:var(--text-dim);font-size:10px;">(${formatOddsValue(homePrice, 'moneyline')})</span>` : '';
+      const awayPriceHtml = awayPrice != null ? ` <span class="odds-american" style="color:var(--text-dim);font-size:10px;">(${formatOddsValue(awayPrice, 'moneyline')})</span>` : '';
+      const homePriceHtml = homePrice != null ? ` <span class="odds-american" style="color:var(--text-dim);font-size:10px;">(${formatOddsValue(homePrice, 'moneyline')})</span>` : '';
 
-      html += `<td class="text-center ${isBest ? 'best-line' : ''} ${offlineClass}" data-tt="${ttId}" onclick="event.stopPropagation();openTradeModal('${g.away} @ ${g.home}','${book.key}',${awayVal ?? 0})" onmouseenter="showTooltip(this, getCachedTooltip(this.dataset.tt))" onmouseleave="hideTooltip()">`;
-      html += `<div class="odds-price">${formatOddsValue(awayVal, market)}${awayPriceStr} ${movAwayHtml}</div>`;
-      html += `<div class="odds-juice">${formatOddsValue(homeVal, market)}${homePriceStr} ${movHomeHtml}</div>`;
+      html += `<td class="text-center odds-book-cell ${isBest ? 'best-line' : ''} ${offlineClass}" data-game-id="${g.id}" data-book="${book.key}" data-market="${market}" data-tt="${ttId}" onclick="event.stopPropagation();openTradeModal('${g.away} @ ${g.home}','${book.key}',${awayVal ?? 0})" onmouseenter="showTooltip(this, getCachedTooltip(this.dataset.tt))" onmouseleave="hideTooltip()">`;
+      html += `<div class="odds-side odds-price" data-side="${awaySide}"><span class="odds-line">${formatOddsValue(awayVal, market)}</span>${awayPriceHtml}<span class="drift-badge"></span> ${movAwayHtml}</div>`;
+      html += `<div class="odds-side odds-juice" data-side="${homeSide}"><span class="odds-line">${formatOddsValue(homeVal, market)}</span>${homePriceHtml}<span class="drift-badge"></span> ${movHomeHtml}</div>`;
       html += `</td>`;
     }
     html += '</tr>';
@@ -2543,6 +2609,8 @@ function renderOddsMatrix() {
 
   // Mobile card view
   renderOddsMatrixMobile(games, visibleBooks, bestAway, bestHome, market);
+  marketDrift?.paint(grid);
+  marketDrift?.paint(mobile);
 }
 
 function renderOddsMatrixMobile(games, visibleBooks, bestAway, bestHome, market) {
@@ -2560,8 +2628,9 @@ function renderOddsMatrixMobile(games, visibleBooks, bestAway, bestHome, market)
       const awayPrice = (market === 'spread' || market === 'total') && val ? (market === 'total' ? val.overPrice : val.awayPrice) : null;
       const isBest = bestAway[g.id] === book.key || bestHome[g.id] === book.key;
       const activeClass = isBest ? 'active' : '';
-      const priceStr = awayPrice != null ? ` (${formatOddsValue(awayPrice, 'moneyline')})` : '';
-      return `<button class="book-pill ${activeClass}" onclick="event.stopPropagation();openTradeModal('${g.away} @ ${g.home}','${book.key}',${awayVal ?? 0})">${book.key}<br><span class="text-[10px]">${formatOddsValue(awayVal, market)}${priceStr}</span></button>`;
+      const priceStr = awayPrice != null ? ` <span class="odds-american">(${formatOddsValue(awayPrice, 'moneyline')})</span>` : '';
+      const awaySide = market === 'total' ? 'over' : 'away';
+      return `<button class="book-pill ${activeClass}" data-game-id="${g.id}" data-book="${book.key}" data-market="${market}" data-side="${awaySide}" onclick="event.stopPropagation();openTradeModal('${g.away} @ ${g.home}','${book.key}',${awayVal ?? 0})">${book.key}<br><span class="odds-line text-[10px]">${formatOddsValue(awayVal, market)}</span>${priceStr}<span class="drift-badge"></span></button>`;
     }).join('');
 
     return `<div class="game-card" onclick="toggleDetailDrawer('${g.id}')">
@@ -2756,9 +2825,9 @@ function closeConsensusModal() {
   modal.classList.remove('flex');
 }
 
-// Poll odds every 30s
+// REST poll stays as a fallback when the SSE price stream is down.
 setInterval(() => {
-  if (currentSection === 'floor') {
+  if (currentSection === 'floor' && !marketDrift?.isLive()) {
     loadOddsData(true);
   }
 }, 30000);

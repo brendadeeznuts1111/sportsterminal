@@ -26,6 +26,25 @@ const GAMES: GameEvent[] = [
   { id: 'soccer-002', sport: 'Soccer', league: 'UCL', homeTeam: 'Real Madrid', awayTeam: 'Bayern Munich', startTime: '2026-05-09T19:45:00Z', status: 'upcoming' },
 ];
 
+/**
+ * Stable juice offsets so the drift alert has both signs against a -105 Pinnacle.
+ * PIN no-vig of -105/-105 is 0.5. -110 is about +238 bps (house). +115 is about
+ * -349 bps (+EV). Line jitter still moves; the juice stays put.
+ */
+const DEFAULT_JUICE = { home: -110, away: -110, over: -110, under: -110 };
+const BOOK_JUICE: Record<string, { home: number; away: number; over: number; under: number }> = {
+  PIN: { home: -105, away: -105, over: -105, under: -105 },
+  BOL: { home: -110, away: -110, over: -110, under: -110 },
+  BOV: { home: -110, away: -110, over: -115, under: -105 },
+  BUC: { home: -120, away: -110, over: -120, under: -110 },
+  ACE: { home: 115, away: -130, over: 115, under: -130 },
+  MET: { home: -125, away: 108, over: -125, under: 108 },
+  DK: { home: -115, away: -115, over: -115, under: -115 },
+  FD: { home: -118, away: -112, over: -118, under: -112 },
+  MGM: { home: -115, away: 120, over: -115, under: 120 },
+  CZR: { home: 110, away: -125, over: 110, under: -125 },
+};
+
 // Base lines for each game
 const BASE_LINES: Record<string, { spread: number; total: number; mlHome: number; mlAway: number }> = {
   'nba-001': { spread: -2.5, total: 214, mlHome: -135, mlAway: 115 },
@@ -66,16 +85,17 @@ export class DemoOddsProvider implements OddsProvider {
         const mlHome = base.mlHome + mlJitter + (isSharp ? 0 : (Math.random() - 0.5) * 15);
         const mlAway = base.mlAway + mlJitter + (isSharp ? 0 : (Math.random() - 0.5) * 15);
 
+        const juice = BOOK_JUICE[book] || DEFAULT_JUICE;
         return {
           book,
           spreadHome: Math.round(spread * 10) / 10,
           spreadAway: Math.round(-spread * 10) / 10,
-          spreadHomePrice: -110,
-          spreadAwayPrice: -110,
+          spreadHomePrice: juice.home,
+          spreadAwayPrice: juice.away,
           totalOver: Math.round(total * 10) / 10,
           totalUnder: Math.round(total * 10) / 10,
-          totalOverPrice: -110,
-          totalUnderPrice: -110,
+          totalOverPrice: juice.over,
+          totalUnderPrice: juice.under,
           moneylineHome: Math.round(mlHome),
           moneylineAway: Math.round(mlAway),
         };

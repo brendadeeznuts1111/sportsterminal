@@ -262,6 +262,21 @@
             <input type="checkbox" id="consensusToggle" checked onchange="matrixState.showConsensus = this.checked; renderOddsMatrix();" class="accent-orange-500">
             <span>Show PIN</span>
           </label>
+          <span class="ml-auto flex items-center gap-2">
+            <span class="drift-legend" title="Edge versus Pinnacle multiplicative no-vig. HOUSE means the book is worse than fair. +EV means the book is better than fair.">
+              <span class="drift-swatch drift-swatch-house">HOUSE</span>
+              <span class="drift-swatch drift-swatch-ev">+EV</span>
+            </span>
+            <label class="flex items-center gap-1" for="driftThresholdBps" title="Highlight when the absolute edge exceeds this many basis points. Saved in this browser.">
+              Drift
+              <input id="driftThresholdBps" type="number" min="0" max="5000" step="5" inputmode="numeric" class="rounded px-1 py-0.5 text-xs outline-none" style="width:4.2rem;background:var(--bg);border:1px solid var(--border);color:var(--text);" />
+              bps
+            </label>
+            <span id="oddsFeedStatus" role="status" aria-live="polite" class="topbar-chip offline">
+              <span class="topbar-dot"></span>
+              <span id="oddsFeedStatusText">Odds offline</span>
+            </span>
+          </span>
         </div>
       </div>
       <!-- Matrix Grid -->
@@ -1247,7 +1262,7 @@
   <div class="tooltip-content" id="globalTooltipContent"></div>
 </div>
 
-<script type="module" src="/js/app.js?v=5.31"></script>
+<script type="module" src="/js/app.js?v=5.32"></script>
 </body>
 </html>
 

@@ -1,9 +1,8 @@
 /**
  * Socket, broadcast, webhook, and internal event messages.
  *
- * The odds grid is fed by WebSocket frames (`odds.update`, `odds.movement`,
- * `pattern.detected`), not by an SSE response. There is no text/event-stream
- * route in this server.
+ * The odds grid still receives WebSocket frames (`odds.update`, `odds.movement`,
+ * `pattern.detected`). Live price deltas also arrive on `GET /api/odds/stream`.
  */
 import type {
   ActionResultPayload,

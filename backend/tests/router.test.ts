@@ -49,6 +49,7 @@ describe('API route registration', () => {
     const router = createTestRouter();
     const routes: Array<[string, string]> = [
       ['GET', '/api/odds/live'],
+      ['GET', '/api/odds/stream'],
       ['GET', '/api/odds/events'],
       ['GET', '/api/odds/events/nba-1'],
       ['GET', '/api/odds/snapshots'],

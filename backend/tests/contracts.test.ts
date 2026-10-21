@@ -23,7 +23,7 @@ describe('shared route and message contracts', () => {
   test('route catalog is the route map', () => {
     expect(routesInSync).toBe(true);
     expectTypeOf<RouteKey>().toEqualTypeOf<keyof ApiRoutes>();
-    expect(routeCatalog.length).toBe(65);
+    expect(routeCatalog.length).toBe(66);
   });
 
   test('sample route slots stay aligned with handlers', () => {

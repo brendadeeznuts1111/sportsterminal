@@ -96,6 +96,7 @@ export function createRouter(deps: RouterDeps, _rateLimiter?: RateLimiter): UrlP
     'DELETE /api/webhooks/:webhookId': async (url, request) => registerWebhookRoutes(url, request, deps.scraperManager),
     'GET /api/webhooks/:webhookId/deliveries': async (url, request) => registerWebhookRoutes(url, request, deps.scraperManager),
     'GET /api/odds/live': async (url, request) => registerOddsRoutes(url, request, deps.oddsPoller),
+    'GET /api/odds/stream': async (url, request) => registerOddsRoutes(url, request, deps.oddsPoller),
     'GET /api/odds/events': async (url, request) => registerOddsRoutes(url, request, deps.oddsPoller),
     'GET /api/odds/events/:eventId': async (url, request) => registerOddsRoutes(url, request, deps.oddsPoller),
     'GET /api/odds/snapshots': async (url, request) => registerOddsRoutes(url, request, deps.oddsPoller),
