@@ -1,0 +1,756 @@
+{
+  "generatedBy": "bun run teams:ref (scripts/teams-ref/donors.ts) from scripts/teams-ref/donors/*.json; do not edit by hand",
+  "sources": ["brendadeeznuts1111/4c-odds-integration@789bdbd probes/lib/resolve.mjs TEAM_ALIASES, exported with bun (audit ref/ex4c.mjs) on 2026-10-21; league sections from the comment headers in that table","brendadeeznuts1111/deeplink-automation@76a9264 lib/teams.ts (WNBA per-book display names: FanDuel, DraftKings, BetMGM)"],
+  "teams": {
+    "MLB": {
+      "1": [
+        {"form":"bal","donor":"4c"},
+        {"form":"baltimore orioles","donor":"4c"},
+        {"form":"orioles","donor":"4c"}
+      ],
+      "2": [
+        {"form":"bos","donor":"4c"},
+        {"form":"boston red sox","donor":"4c"},
+        {"form":"red sox","donor":"4c"}
+      ],
+      "3": [
+        {"form":"angels","donor":"4c"},
+        {"form":"laa","donor":"4c"},
+        {"form":"los angeles","donor":"4c"},
+        {"form":"los angeles angels","donor":"4c"}
+      ],
+      "4": [
+        {"form":"chicago white sox","donor":"4c"},
+        {"form":"cws","donor":"4c"},
+        {"form":"white sox","donor":"4c"}
+      ],
+      "5": [
+        {"form":"cle","donor":"4c"},
+        {"form":"cleveland guardians","donor":"4c"},
+        {"form":"guardians","donor":"4c"}
+      ],
+      "6": [
+        {"form":"det","donor":"4c"},
+        {"form":"detroit tigers","donor":"4c"},
+        {"form":"tigers","donor":"4c"}
+      ],
+      "7": [
+        {"form":"kansas city royals","donor":"4c"},
+        {"form":"kc","donor":"4c"},
+        {"form":"royals","donor":"4c"}
+      ],
+      "8": [
+        {"form":"brewers","donor":"4c"},
+        {"form":"mil","donor":"4c"},
+        {"form":"milwaukee brewers","donor":"4c"}
+      ],
+      "9": [
+        {"form":"min","donor":"4c"},
+        {"form":"minnesota twins","donor":"4c"},
+        {"form":"twins","donor":"4c"}
+      ],
+      "10": [
+        {"form":"new york","donor":"4c"},
+        {"form":"new york yankees","donor":"4c"},
+        {"form":"nyy","donor":"4c"},
+        {"form":"yankees","donor":"4c"}
+      ],
+      "11": [
+        {"form":"athletics","donor":"4c"},
+        {"form":"oak","donor":"4c"},
+        {"form":"oakland athletics","donor":"4c"}
+      ],
+      "12": [
+        {"form":"mariners","donor":"4c"},
+        {"form":"sea","donor":"4c"},
+        {"form":"seattle mariners","donor":"4c"}
+      ],
+      "13": [
+        {"form":"rangers","donor":"4c"},
+        {"form":"tex","donor":"4c"},
+        {"form":"texas rangers","donor":"4c"}
+      ],
+      "14": [
+        {"form":"blue jays","donor":"4c"},
+        {"form":"jays","donor":"4c"},
+        {"form":"toronto","donor":"4c"},
+        {"form":"toronto blue jays","donor":"4c"}
+      ],
+      "15": [
+        {"form":"atl","donor":"4c"},
+        {"form":"atlanta braves","donor":"4c"},
+        {"form":"braves","donor":"4c"}
+      ],
+      "16": [
+        {"form":"chc","donor":"4c"},
+        {"form":"chicago cubs","donor":"4c"},
+        {"form":"cubs","donor":"4c"}
+      ],
+      "17": [
+        {"form":"cin","donor":"4c"},
+        {"form":"cincinnati reds","donor":"4c"},
+        {"form":"reds","donor":"4c"}
+      ],
+      "18": [
+        {"form":"astros","donor":"4c"},
+        {"form":"hou","donor":"4c"},
+        {"form":"houston astros","donor":"4c"}
+      ],
+      "19": [
+        {"form":"dodgers","donor":"4c"},
+        {"form":"lad","donor":"4c"},
+        {"form":"los angeles","donor":"4c"},
+        {"form":"los angeles dodgers","donor":"4c"}
+      ],
+      "20": [
+        {"form":"nationals","donor":"4c"},
+        {"form":"nats","donor":"4c"},
+        {"form":"was","donor":"4c"},
+        {"form":"washington nationals","donor":"4c"}
+      ],
+      "21": [
+        {"form":"mets","donor":"4c"},
+        {"form":"new york","donor":"4c"},
+        {"form":"new york mets","donor":"4c"},
+        {"form":"nym","donor":"4c"}
+      ],
+      "22": [
+        {"form":"phi","donor":"4c"},
+        {"form":"philadelphia phillies","donor":"4c"},
+        {"form":"phillies","donor":"4c"}
+      ],
+      "23": [
+        {"form":"pirates","donor":"4c"},
+        {"form":"pit","donor":"4c"},
+        {"form":"pittsburgh pirates","donor":"4c"}
+      ],
+      "24": [
+        {"form":"cardinals","donor":"4c"},
+        {"form":"st louis cardinals","donor":"4c"},
+        {"form":"stl","donor":"4c"}
+      ],
+      "25": [
+        {"form":"padres","donor":"4c"},
+        {"form":"san diego padres","donor":"4c"},
+        {"form":"sd","donor":"4c"}
+      ],
+      "26": [
+        {"form":"giants","donor":"4c"},
+        {"form":"san francisco giants","donor":"4c"},
+        {"form":"sf","donor":"4c"}
+      ],
+      "27": [
+        {"form":"col","donor":"4c"},
+        {"form":"colorado rockies","donor":"4c"},
+        {"form":"rockies","donor":"4c"}
+      ],
+      "28": [
+        {"form":"marlins","donor":"4c"},
+        {"form":"mia","donor":"4c"},
+        {"form":"miami marlins","donor":"4c"}
+      ],
+      "29": [
+        {"form":"ari","donor":"4c"},
+        {"form":"arizona diamondbacks","donor":"4c"},
+        {"form":"d-backs","donor":"4c"},
+        {"form":"dbacks","donor":"4c"},
+        {"form":"diamondbacks","donor":"4c"}
+      ],
+      "30": [
+        {"form":"rays","donor":"4c"},
+        {"form":"tampa bay rays","donor":"4c"},
+        {"form":"tb","donor":"4c"}
+      ]
+    },
+    "NBA": {
+      "1": [
+        {"form":"atl","donor":"4c"},
+        {"form":"atlanta hawks","donor":"4c"},
+        {"form":"hawks","donor":"4c"}
+      ],
+      "2": [
+        {"form":"bos","donor":"4c"},
+        {"form":"boston","donor":"4c"},
+        {"form":"boston celtics","donor":"4c"},
+        {"form":"celtics","donor":"4c"}
+      ],
+      "3": [
+        {"form":"new orleans pelicans","donor":"4c"},
+        {"form":"nop","donor":"4c"},
+        {"form":"pelicans","donor":"4c"}
+      ],
+      "4": [
+        {"form":"bulls","donor":"4c"},
+        {"form":"chi","donor":"4c"},
+        {"form":"chicago bulls","donor":"4c"}
+      ],
+      "5": [
+        {"form":"cavaliers","donor":"4c"},
+        {"form":"cavs","donor":"4c"},
+        {"form":"cle","donor":"4c"},
+        {"form":"cleveland cavaliers","donor":"4c"}
+      ],
+      "6": [
+        {"form":"dal","donor":"4c"},
+        {"form":"dallas mavericks","donor":"4c"},
+        {"form":"mavericks","donor":"4c"},
+        {"form":"mavs","donor":"4c"}
+      ],
+      "7": [
+        {"form":"den","donor":"4c"},
+        {"form":"denver nuggets","donor":"4c"},
+        {"form":"nuggets","donor":"4c"}
+      ],
+      "8": [
+        {"form":"det","donor":"4c"},
+        {"form":"detroit pistons","donor":"4c"},
+        {"form":"pistons","donor":"4c"}
+      ],
+      "9": [
+        {"form":"golden state","donor":"4c"},
+        {"form":"golden state warriors","donor":"4c"},
+        {"form":"gsw","donor":"4c"},
+        {"form":"warriors","donor":"4c"}
+      ],
+      "10": [
+        {"form":"hou","donor":"4c"},
+        {"form":"houston rockets","donor":"4c"},
+        {"form":"rockets","donor":"4c"}
+      ],
+      "11": [
+        {"form":"ind","donor":"4c"},
+        {"form":"indiana pacers","donor":"4c"},
+        {"form":"pacers","donor":"4c"}
+      ],
+      "12": [
+        {"form":"clippers","donor":"4c"},
+        {"form":"clips","donor":"4c"},
+        {"form":"lac","donor":"4c"},
+        {"form":"los angeles","donor":"4c"},
+        {"form":"los angeles clippers","donor":"4c"}
+      ],
+      "13": [
+        {"form":"lakers","donor":"4c"},
+        {"form":"lal","donor":"4c"},
+        {"form":"los angeles","donor":"4c"},
+        {"form":"los angeles lakers","donor":"4c"}
+      ],
+      "14": [
+        {"form":"heat","donor":"4c"},
+        {"form":"mia","donor":"4c"},
+        {"form":"miami heat","donor":"4c"}
+      ],
+      "15": [
+        {"form":"bucks","donor":"4c"},
+        {"form":"mil","donor":"4c"},
+        {"form":"milwaukee bucks","donor":"4c"}
+      ],
+      "16": [
+        {"form":"min","donor":"4c"},
+        {"form":"minnesota timberwolves","donor":"4c"},
+        {"form":"timberwolves","donor":"4c"},
+        {"form":"wolves","donor":"4c"}
+      ],
+      "17": [
+        {"form":"bkn","donor":"4c"},
+        {"form":"bknets","donor":"4c"},
+        {"form":"brooklyn nets","donor":"4c"},
+        {"form":"nets","donor":"4c"}
+      ],
+      "18": [
+        {"form":"knicks","donor":"4c"},
+        {"form":"new york","donor":"4c"},
+        {"form":"new york knicks","donor":"4c"},
+        {"form":"nyk","donor":"4c"}
+      ],
+      "19": [
+        {"form":"magic","donor":"4c"},
+        {"form":"orl","donor":"4c"},
+        {"form":"orlando magic","donor":"4c"}
+      ],
+      "20": [
+        {"form":"76ers","donor":"4c"},
+        {"form":"phi","donor":"4c"},
+        {"form":"philadelphia 76ers","donor":"4c"},
+        {"form":"sixers","donor":"4c"}
+      ],
+      "21": [
+        {"form":"phoenix suns","donor":"4c"},
+        {"form":"phx","donor":"4c"},
+        {"form":"suns","donor":"4c"}
+      ],
+      "22": [
+        {"form":"blazers","donor":"4c"},
+        {"form":"portland","donor":"4c"},
+        {"form":"portland trail blazers","donor":"4c"},
+        {"form":"trail blazers","donor":"4c"}
+      ],
+      "23": [
+        {"form":"kings","donor":"4c"},
+        {"form":"sac","donor":"4c"},
+        {"form":"sacramento kings","donor":"4c"}
+      ],
+      "24": [
+        {"form":"san antonio spurs","donor":"4c"},
+        {"form":"sas","donor":"4c"},
+        {"form":"spurs","donor":"4c"}
+      ],
+      "25": [
+        {"form":"okc","donor":"4c"},
+        {"form":"oklahoma city","donor":"4c"},
+        {"form":"oklahoma city thunder","donor":"4c"},
+        {"form":"thunder","donor":"4c"}
+      ],
+      "26": [
+        {"form":"jazz","donor":"4c"},
+        {"form":"uta","donor":"4c"},
+        {"form":"utah jazz","donor":"4c"}
+      ],
+      "27": [
+        {"form":"was","donor":"4c"},
+        {"form":"washington wizards","donor":"4c"},
+        {"form":"wizards","donor":"4c"},
+        {"form":"wsh","donor":"4c"}
+      ],
+      "28": [
+        {"form":"raptors","donor":"4c"},
+        {"form":"tor","donor":"4c"},
+        {"form":"toronto raptors","donor":"4c"}
+      ],
+      "29": [
+        {"form":"grizzlies","donor":"4c"},
+        {"form":"mem","donor":"4c"},
+        {"form":"memphis grizzlies","donor":"4c"}
+      ],
+      "30": [
+        {"form":"cha","donor":"4c"},
+        {"form":"charlotte","donor":"4c"},
+        {"form":"charlotte hornets","donor":"4c"},
+        {"form":"hornets","donor":"4c"}
+      ]
+    },
+    "NFL": {
+      "1": [
+        {"form":"atl","donor":"4c"},
+        {"form":"atlanta falcons","donor":"4c"},
+        {"form":"falcons","donor":"4c"}
+      ],
+      "2": [
+        {"form":"bills","donor":"4c"},
+        {"form":"buf","donor":"4c"},
+        {"form":"buffalo bills","donor":"4c"}
+      ],
+      "3": [
+        {"form":"bears","donor":"4c"},
+        {"form":"chi","donor":"4c"},
+        {"form":"chicago bears","donor":"4c"}
+      ],
+      "4": [
+        {"form":"bengals","donor":"4c"},
+        {"form":"cin","donor":"4c"},
+        {"form":"cincinnati bengals","donor":"4c"}
+      ],
+      "5": [
+        {"form":"browns","donor":"4c"},
+        {"form":"cle","donor":"4c"},
+        {"form":"cleveland browns","donor":"4c"}
+      ],
+      "6": [
+        {"form":"cowboys","donor":"4c"},
+        {"form":"dal","donor":"4c"},
+        {"form":"dallas cowboys","donor":"4c"}
+      ],
+      "7": [
+        {"form":"broncos","donor":"4c"},
+        {"form":"den","donor":"4c"},
+        {"form":"denver broncos","donor":"4c"}
+      ],
+      "8": [
+        {"form":"det","donor":"4c"},
+        {"form":"detroit lions","donor":"4c"},
+        {"form":"lions","donor":"4c"}
+      ],
+      "9": [
+        {"form":"gb","donor":"4c"},
+        {"form":"green bay","donor":"4c"},
+        {"form":"green bay packers","donor":"4c"},
+        {"form":"packers","donor":"4c"}
+      ],
+      "10": [
+        {"form":"ten","donor":"4c"},
+        {"form":"tennessee titans","donor":"4c"},
+        {"form":"titans","donor":"4c"}
+      ],
+      "11": [
+        {"form":"colts","donor":"4c"},
+        {"form":"ind","donor":"4c"},
+        {"form":"indianapolis colts","donor":"4c"},
+        {"form":"indy","donor":"4c"}
+      ],
+      "12": [
+        {"form":"chiefs","donor":"4c"},
+        {"form":"kansas city","donor":"4c"},
+        {"form":"kansas city chiefs","donor":"4c"},
+        {"form":"kc","donor":"4c"}
+      ],
+      "13": [
+        {"form":"las vegas raiders","donor":"4c"},
+        {"form":"lv","donor":"4c"},
+        {"form":"raiders","donor":"4c"},
+        {"form":"vegas","donor":"4c"}
+      ],
+      "14": [
+        {"form":"lar","donor":"4c"},
+        {"form":"los angeles","donor":"4c"},
+        {"form":"los angeles rams","donor":"4c"},
+        {"form":"rams","donor":"4c"}
+      ],
+      "15": [
+        {"form":"dolphins","donor":"4c"},
+        {"form":"mia","donor":"4c"},
+        {"form":"miami dolphins","donor":"4c"}
+      ],
+      "16": [
+        {"form":"min","donor":"4c"},
+        {"form":"minnesota vikings","donor":"4c"},
+        {"form":"vikings","donor":"4c"}
+      ],
+      "17": [
+        {"form":"new england","donor":"4c"},
+        {"form":"new england patriots","donor":"4c"},
+        {"form":"patriots","donor":"4c"},
+        {"form":"pats","donor":"4c"}
+      ],
+      "18": [
+        {"form":"new orleans saints","donor":"4c"},
+        {"form":"saints","donor":"4c"}
+      ],
+      "19": [
+        {"form":"giants","donor":"4c"},
+        {"form":"new york","donor":"4c"},
+        {"form":"new york giants","donor":"4c"},
+        {"form":"nyg","donor":"4c"}
+      ],
+      "20": [
+        {"form":"jets","donor":"4c"},
+        {"form":"new york","donor":"4c"},
+        {"form":"new york jets","donor":"4c"},
+        {"form":"nyj","donor":"4c"}
+      ],
+      "21": [
+        {"form":"eagles","donor":"4c"},
+        {"form":"phi","donor":"4c"},
+        {"form":"philadelphia eagles","donor":"4c"}
+      ],
+      "22": [
+        {"form":"ari","donor":"4c"},
+        {"form":"arizona cardinals","donor":"4c"},
+        {"form":"cardinals","donor":"4c"}
+      ],
+      "23": [
+        {"form":"pit","donor":"4c"},
+        {"form":"pittsburgh steelers","donor":"4c"},
+        {"form":"steelers","donor":"4c"}
+      ],
+      "25": [
+        {"form":"49ers","donor":"4c"},
+        {"form":"niners","donor":"4c"},
+        {"form":"san francisco","donor":"4c"},
+        {"form":"san francisco 49ers","donor":"4c"},
+        {"form":"sf","donor":"4c"}
+      ],
+      "26": [
+        {"form":"sea","donor":"4c"},
+        {"form":"seahawks","donor":"4c"},
+        {"form":"seattle seahawks","donor":"4c"}
+      ],
+      "27": [
+        {"form":"buccaneers","donor":"4c"},
+        {"form":"bucs","donor":"4c"},
+        {"form":"tampa bay","donor":"4c"},
+        {"form":"tampa bay buccaneers","donor":"4c"},
+        {"form":"tb","donor":"4c"}
+      ],
+      "28": [
+        {"form":"commanders","donor":"4c"},
+        {"form":"was","donor":"4c"},
+        {"form":"washington commanders","donor":"4c"},
+        {"form":"wsh","donor":"4c"}
+      ],
+      "29": [
+        {"form":"car","donor":"4c"},
+        {"form":"carolina panthers","donor":"4c"},
+        {"form":"panthers","donor":"4c"}
+      ],
+      "30": [
+        {"form":"jacksonville jaguars","donor":"4c"},
+        {"form":"jaguars","donor":"4c"},
+        {"form":"jax","donor":"4c"}
+      ],
+      "33": [
+        {"form":"bal","donor":"4c"},
+        {"form":"baltimore ravens","donor":"4c"},
+        {"form":"ravens","donor":"4c"}
+      ],
+      "34": [
+        {"form":"hou","donor":"4c"},
+        {"form":"houston texans","donor":"4c"},
+        {"form":"texans","donor":"4c"}
+      ]
+    },
+    "NHL": {
+      "1": [
+        {"form":"bos","donor":"4c"},
+        {"form":"boston bruins","donor":"4c"},
+        {"form":"bruins","donor":"4c"}
+      ],
+      "2": [
+        {"form":"buf","donor":"4c"},
+        {"form":"buffalo sabres","donor":"4c"},
+        {"form":"sabres","donor":"4c"}
+      ],
+      "3": [
+        {"form":"calgary flames","donor":"4c"},
+        {"form":"cgy","donor":"4c"},
+        {"form":"flames","donor":"4c"}
+      ],
+      "4": [
+        {"form":"blackhawks","donor":"4c"},
+        {"form":"chi","donor":"4c"},
+        {"form":"chicago blackhawks","donor":"4c"}
+      ],
+      "5": [
+        {"form":"det","donor":"4c"},
+        {"form":"detroit red wings","donor":"4c"},
+        {"form":"red wings","donor":"4c"}
+      ],
+      "6": [
+        {"form":"edm","donor":"4c"},
+        {"form":"edmonton oilers","donor":"4c"},
+        {"form":"oilers","donor":"4c"}
+      ],
+      "7": [
+        {"form":"canes","donor":"4c"},
+        {"form":"car","donor":"4c"},
+        {"form":"carolina hurricanes","donor":"4c"},
+        {"form":"hurricanes","donor":"4c"}
+      ],
+      "8": [
+        {"form":"kings","donor":"4c"},
+        {"form":"lak","donor":"4c"},
+        {"form":"los angeles","donor":"4c"},
+        {"form":"los angeles kings","donor":"4c"}
+      ],
+      "9": [
+        {"form":"dal","donor":"4c"},
+        {"form":"dallas stars","donor":"4c"},
+        {"form":"stars","donor":"4c"}
+      ],
+      "11": [
+        {"form":"devils","donor":"4c"},
+        {"form":"new jersey devils","donor":"4c"},
+        {"form":"njd","donor":"4c"}
+      ],
+      "12": [
+        {"form":"islanders","donor":"4c"},
+        {"form":"new york islanders","donor":"4c"},
+        {"form":"nyi","donor":"4c"}
+      ],
+      "13": [
+        {"form":"new york rangers","donor":"4c"},
+        {"form":"nyr","donor":"4c"},
+        {"form":"rangers","donor":"4c"}
+      ],
+      "15": [
+        {"form":"flyers","donor":"4c"},
+        {"form":"phi","donor":"4c"},
+        {"form":"philadelphia flyers","donor":"4c"}
+      ],
+      "16": [
+        {"form":"penguins","donor":"4c"},
+        {"form":"pens","donor":"4c"},
+        {"form":"pit","donor":"4c"},
+        {"form":"pittsburgh penguins","donor":"4c"}
+      ],
+      "17": [
+        {"form":"avalanche","donor":"4c"},
+        {"form":"avs","donor":"4c"},
+        {"form":"col","donor":"4c"},
+        {"form":"colorado avalanche","donor":"4c"}
+      ],
+      "18": [
+        {"form":"san jose","donor":"4c"},
+        {"form":"san jose sharks","donor":"4c"},
+        {"form":"sharks","donor":"4c"},
+        {"form":"sj","donor":"4c"}
+      ],
+      "19": [
+        {"form":"blues","donor":"4c"},
+        {"form":"st louis blues","donor":"4c"},
+        {"form":"stl","donor":"4c"}
+      ],
+      "20": [
+        {"form":"bolts","donor":"4c"},
+        {"form":"lightning","donor":"4c"},
+        {"form":"tampa bay","donor":"4c"},
+        {"form":"tampa bay lightning","donor":"4c"},
+        {"form":"tb","donor":"4c"}
+      ],
+      "21": [
+        {"form":"leafs","donor":"4c"},
+        {"form":"maple leafs","donor":"4c"},
+        {"form":"tor","donor":"4c"},
+        {"form":"toronto","donor":"4c"},
+        {"form":"toronto maple leafs","donor":"4c"}
+      ],
+      "22": [
+        {"form":"canucks","donor":"4c"},
+        {"form":"van","donor":"4c"},
+        {"form":"vancouver canucks","donor":"4c"}
+      ],
+      "23": [
+        {"form":"capitals","donor":"4c"},
+        {"form":"caps","donor":"4c"},
+        {"form":"was","donor":"4c"},
+        {"form":"washington capitals","donor":"4c"}
+      ],
+      "25": [
+        {"form":"ana","donor":"4c"},
+        {"form":"anaheim ducks","donor":"4c"},
+        {"form":"ducks","donor":"4c"}
+      ],
+      "26": [
+        {"form":"fla","donor":"4c"},
+        {"form":"florida panthers","donor":"4c"},
+        {"form":"panthers","donor":"4c"}
+      ],
+      "27": [
+        {"form":"nashville predators","donor":"4c"},
+        {"form":"nsh","donor":"4c"},
+        {"form":"predators","donor":"4c"},
+        {"form":"preds","donor":"4c"}
+      ],
+      "28": [
+        {"form":"jets","donor":"4c"},
+        {"form":"winnipeg jets","donor":"4c"},
+        {"form":"wpg","donor":"4c"}
+      ],
+      "29": [
+        {"form":"blue jackets","donor":"4c"},
+        {"form":"cbj","donor":"4c"},
+        {"form":"columbus","donor":"4c"},
+        {"form":"columbus blue jackets","donor":"4c"}
+      ],
+      "30": [
+        {"form":"min","donor":"4c"},
+        {"form":"minnesota wild","donor":"4c"},
+        {"form":"wild","donor":"4c"}
+      ],
+      "37": [
+        {"form":"golden knights","donor":"4c"},
+        {"form":"vegas","donor":"4c"},
+        {"form":"vegas golden knights","donor":"4c"},
+        {"form":"vgk","donor":"4c"}
+      ],
+      "124292": [
+        {"form":"kraken","donor":"4c"},
+        {"form":"sea","donor":"4c"},
+        {"form":"seattle kraken","donor":"4c"}
+      ],
+      "129764": [
+        {"form":"mammoth","donor":"4c"},
+        {"form":"uta","donor":"4c"},
+        {"form":"utah mammoth","donor":"4c"}
+      ]
+    },
+    "WNBA": {
+      "3": [
+        {"form":"DAL Wings","donor":"deeplink"},
+        {"form":"Dallas Wings","donor":"deeplink"},
+        {"form":"Wings","donor":"deeplink"}
+      ],
+      "5": [
+        {"form":"Fever","donor":"deeplink"},
+        {"form":"IND Fever","donor":"deeplink"},
+        {"form":"Indiana Fever","donor":"deeplink"}
+      ],
+      "6": [
+        {"form":"LA Sparks","donor":"deeplink"},
+        {"form":"Los Angeles Sparks","donor":"deeplink"},
+        {"form":"Sparks","donor":"deeplink"}
+      ],
+      "8": [
+        {"form":"Lynx","donor":"deeplink"},
+        {"form":"MIN Lynx","donor":"deeplink"},
+        {"form":"Minnesota Lynx","donor":"deeplink"}
+      ],
+      "9": [
+        {"form":"Liberty","donor":"deeplink"},
+        {"form":"New York Liberty","donor":"deeplink"},
+        {"form":"NY Liberty","donor":"deeplink"}
+      ],
+      "11": [
+        {"form":"Mercury","donor":"deeplink"},
+        {"form":"PHO Mercury","donor":"deeplink"},
+        {"form":"Phoenix Mercury","donor":"deeplink"}
+      ],
+      "14": [
+        {"form":"SEA Storm","donor":"deeplink"},
+        {"form":"Seattle Storm","donor":"deeplink"},
+        {"form":"Storm","donor":"deeplink"}
+      ],
+      "16": [
+        {"form":"Mystics","donor":"deeplink"},
+        {"form":"WAS Mystics","donor":"deeplink"},
+        {"form":"Washington Mystics","donor":"deeplink"}
+      ],
+      "17": [
+        {"form":"Aces","donor":"deeplink"},
+        {"form":"Las Vegas Aces","donor":"deeplink"},
+        {"form":"LV Aces","donor":"deeplink"}
+      ],
+      "18": [
+        {"form":"CON Sun","donor":"deeplink"},
+        {"form":"Connecticut Sun","donor":"deeplink"},
+        {"form":"Sun","donor":"deeplink"}
+      ],
+      "19": [
+        {"form":"CHI Sky","donor":"deeplink"},
+        {"form":"Chicago Sky","donor":"deeplink"},
+        {"form":"Sky","donor":"deeplink"}
+      ],
+      "20": [
+        {"form":"ATL Dream","donor":"deeplink"},
+        {"form":"Atlanta Dream","donor":"deeplink"},
+        {"form":"Dream","donor":"deeplink"}
+      ],
+      "129689": [
+        {"form":"Golden State Valkyries","donor":"deeplink"},
+        {"form":"GS Valkyries","donor":"deeplink"},
+        {"form":"Valkyries","donor":"deeplink"}
+      ],
+      "131935": [
+        {"form":"Tempo","donor":"deeplink"},
+        {"form":"TOR Tempo","donor":"deeplink"},
+        {"form":"Toronto Tempo","donor":"deeplink"}
+      ],
+      "132052": [
+        {"form":"Fire","donor":"deeplink"},
+        {"form":"POR Fire","donor":"deeplink"},
+        {"form":"Portland Fire","donor":"deeplink"}
+      ]
+    }
+  },
+  "inferred": [
+    {"league":"MLB","key":"oakland athletics","espnId":"11","reason":"the club left Oakland; ESPN lists it as Athletics (ATH). Kept as an alias of the current club"}
+  ],
+  "skipped": [
+    {"section":"Soccer","key":"united arab emirates","reason":"no covered league (national teams)"},
+    {"section":"Soccer","key":"united states","reason":"no covered league (national teams)"},
+    {"section":"Soccer","key":"south korea","reason":"no covered league (national teams)"},
+    {"section":"Soccer","key":"north korea","reason":"no covered league (national teams)"},
+    {"section":"Soccer","key":"czech republic","reason":"no covered league (national teams)"},
+    {"section":"Soccer","key":"ivory coast","reason":"no covered league (national teams)"},
+    {"section":"Soccer","key":"saudi arabia","reason":"no covered league (national teams)"}
+  ]
+}

@@ -4,7 +4,9 @@
  * Set ODDS_API_KEY env var to enable.
  */
 
-import type { OddsProvider, GameEvent, EventOdds, BookOdds, BookHealth } from '../types';
+import type { OddsProvider, GameEvent, EventOdds, BookOdds, BookHealth, TeamIdentity } from '../types';
+import { DEFAULT_SPORT_KEYS, REGISTRY_LEAGUE_OF_KEY, sportOfKey } from '../sportKeys';
+import { resolveTeam } from '../teams/team-registry';
 
 const API_BASE = 'https://api.the-odds-api.com/v4';
 const BOOK_MAP: Record<string, string> = {
@@ -24,22 +26,26 @@ const BOOK_MAP: Record<string, string> = {
 export class TheOddsProvider implements OddsProvider {
   name = 'the-odds-api';
   private apiKey: string;
-  private sport: string;
+  private sports: string[];
 
-  constructor(apiKey: string, sport: string = 'basketball_nba') {
+  /** `sports`: The Odds API sport keys to poll (see `ODDS_API_SPORTS`). */
+  constructor(apiKey: string, sports: string | readonly string[] = DEFAULT_SPORT_KEYS) {
     this.apiKey = apiKey;
-    this.sport = sport;
+    this.sports = typeof sports === 'string' ? [sports] : [...sports];
   }
 
   async fetchOdds(): Promise<EventOdds[]> {
-    const url = `${API_BASE}/sports/${this.sport}/odds?apiKey=${this.apiKey}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`;
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`TheOddsAPI error: ${response.status} ${response.statusText}`);
+    const out: EventOdds[] = [];
+    for (const sport of this.sports) {
+      const url = `${API_BASE}/sports/${sport}/odds?apiKey=${this.apiKey}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`;
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`TheOddsAPI error: ${response.status} ${response.statusText} (${sport})`);
+      }
+      const data = await response.json() as unknown[];
+      for (const item of data) out.push(this.mapEvent(item));
     }
-
-    const data = await response.json() as unknown[];
-    return data.map((item) => this.mapEvent(item));
+    return out;
   }
 
   async checkHealth(): Promise<BookHealth[]> {
@@ -54,15 +60,7 @@ export class TheOddsProvider implements OddsProvider {
   }
 
   private mapEvent(item: any): EventOdds {
-    const event: GameEvent = {
-      id: item.id,
-      sport: item.sport_title || 'Unknown',
-      league: item.sport_key || '',
-      homeTeam: item.home_team,
-      awayTeam: item.away_team,
-      startTime: item.commence_time,
-      status: new Date(item.commence_time) > new Date() ? 'upcoming' : 'live',
-    };
+    const event = mapOddsApiEvent(item);
 
     const books: BookOdds[] = (item.bookmakers || []).map((bm: any) => {
       const bookCode = BOOK_MAP[bm.key] || bm.key.toUpperCase().substring(0, 3);
@@ -87,4 +85,33 @@ export class TheOddsProvider implements OddsProvider {
 
     return { event, books };
   }
+}
+
+/**
+ * One The Odds API event as a GameEvent. `sport_key` is `{group}_{league}`,
+ * so the sport is its group and the league is `sport_title` (the two were
+ * swapped before). A game is `finished` only when the API says `completed`
+ * (scores endpoint); the odds endpoint lists upcoming and in-play games.
+ */
+export function mapOddsApiEvent(item: any, now: Date = new Date()): GameEvent {
+  const key = String(item.sport_key || '');
+  const registryLeague = REGISTRY_LEAGUE_OF_KEY[key] ?? null;
+  const team = (name: string): TeamIdentity | undefined => {
+    const hit = registryLeague && name ? resolveTeam(registryLeague, name) : null;
+    return hit ? { abbr: hit.abbr, espnId: hit.espnId, displayName: hit.displayName, logo: hit.logo, color: hit.color } : undefined;
+  };
+  const home = team(item.home_team);
+  const away = team(item.away_team);
+  return {
+    id: item.id,
+    sport: key ? sportOfKey(key) : 'unknown',
+    league: registryLeague ?? (item.sport_title || key),
+    homeTeam: item.home_team,
+    awayTeam: item.away_team,
+    startTime: item.commence_time,
+    status: item.completed === true ? 'finished' : new Date(item.commence_time) > now ? 'upcoming' : 'live',
+    ...(key ? { sportKey: key } : {}),
+    ...(home ? { homeTeamId: home } : {}),
+    ...(away ? { awayTeamId: away } : {}),
+  };
 }
